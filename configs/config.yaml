@@ -10,6 +10,7 @@ run_name: null # default: <task>_<timestamp>
 seed: 0
 smoke: false # tiny CPU-sized run for a pipeline check
 restore: null # checkpoint dir to warm-start from
+domain_rand: false
 
 wandb:
   enable: true

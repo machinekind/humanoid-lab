@@ -9,3 +9,4 @@ outputs/
 robots/*/mjx/
 *.egg-info/
 MUJOCO_LOG.TXT
+train.log

@@ -7,9 +7,14 @@ tuple/float coercion so yaml `vx: [-0.8, 1.8]` lands on a tuple field.
 
 from ml_collections import config_dict
 
-# Tasks register themselves here once their env classes land (build order
-# step 6: joystick/velocity; step 7: sizing). Empty for now.
-TASKS = {}
+from humanoid_lab.envs.joystick import Joystick
+from humanoid_lab.envs.joystick import default_config as joystick_default_config
+
+# Tasks register themselves here as their env classes land (build order
+# step 6: joystick/velocity; step 7: sizing).
+TASKS = {
+    "joystick": (Joystick, joystick_default_config),
+}
 
 
 def _apply_overrides(cfg: config_dict.ConfigDict, overrides: dict) -> None:
@@ -31,10 +36,10 @@ def _apply_overrides(cfg: config_dict.ConfigDict, overrides: dict) -> None:
         setattr(cfg, key, value)
 
 
-def make_env(task: str, env_overrides: dict | None = None):
+def make_env(task: str, robot_dir, preset_name: str, env_overrides: dict | None = None):
     if task not in TASKS:
         raise KeyError(f"unknown task '{task}', have {sorted(TASKS)}")
     cls, default_config = TASKS[task]
     cfg = default_config()
     _apply_overrides(cfg, env_overrides or {})
-    return cls(cfg)
+    return cls(robot_dir, preset_name, cfg)

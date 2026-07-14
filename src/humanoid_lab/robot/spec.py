@@ -65,6 +65,13 @@ class RobotSpec:
     keyframes: dict[str, Keyframe] = field(default_factory=dict)
     termination_bodies: list[str] = field(default_factory=list)
     obs_layout: dict[str, Any] = field(default_factory=dict)
+    # Optional MJCF sensor names the env reads instead of computing the
+    # equivalent signal from qpos/qvel. Recognized keys: gyro (3-vector
+    # angular velocity), quat (4-vector base orientation), linvel (3-vector
+    # local-frame linear velocity), acc (3-vector local-frame linear
+    # acceleration). Any subset may be present; envs fall back to a
+    # qpos/qvel-derived computation for keys not listed here.
+    sensors: dict[str, str] = field(default_factory=dict)
 
     @property
     def model_xml_path(self) -> Path:
@@ -130,6 +137,7 @@ def load_robot_spec(robot_dir: Path) -> RobotSpec:
         keyframes=keyframes,
         termination_bodies=list(raw.get("termination_bodies") or []),
         obs_layout=dict(raw.get("obs_layout") or {}),
+        sensors=dict(raw.get("sensors") or {}),
     )
 
 
@@ -192,6 +200,7 @@ def validate_against_model(spec: RobotSpec, model: mujoco.MjModel) -> None:
     _check_names_exist(spec.foot_sites, "site", model.site)
     _check_names_exist(spec.foot_geoms, "geom", model.geom)
     _check_names_exist(spec.termination_bodies, "body", model.body)
+    _check_names_exist(spec.sensors.values(), "sensor", model.sensor)
 
     for left, right in spec.symmetry.items():
         _check_names_exist([left, right], "joint", model.joint)

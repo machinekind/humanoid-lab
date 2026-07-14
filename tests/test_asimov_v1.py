@@ -76,13 +76,59 @@ def test_build_spec_sizing_ideal_compiles(robot_spec, built_model):
         assert joint.damping[0] == pytest.approx(15.0)
 
     assert model.nkey >= 1
-    key = model.key("home")
+
+
+def _capsule_bottom(model: mujoco.MjModel, data: mujoco.MjData, geom_id: int) -> float:
+    """Exact world-frame bottom of a capsule geom.
+
+    A capsule is the Minkowski sum of a line segment and a ball of
+    `radius`, so its lowest point is always (the lower of its two
+    world-frame end-cap centers) minus `radius`, regardless of orientation.
+    This is exact where `model.geom_rbound` (bounding-sphere radius) is not:
+    rbound over-estimates badly for a capsule lying flat.
+    """
+    xpos = data.geom_xpos[geom_id]
+    xmat = data.geom_xmat[geom_id].reshape(3, 3)
+    radius, half_len = model.geom_size[geom_id, 0], model.geom_size[geom_id, 1]
+    local_z = xmat[:, 2]
+    end1 = xpos + local_z * half_len
+    end2 = xpos - local_z * half_len
+    return min(end1[2], end2[2]) - radius
+
+
+def test_keyframe_base_z_matches_robot_yaml(robot_spec, built_model):
+    """robot.yaml is the single source of truth for keyframe base height
+    (its own comment records how the value was measured); lock the
+    compiled model's keyframe to whatever robot.yaml currently says instead
+    of a hardcoded literal that can silently drift from it.
+    """
     free_addr = next(
-        model.jnt_qposadr[i]
-        for i in range(model.njnt)
-        if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
+        built_model.jnt_qposadr[i]
+        for i in range(built_model.njnt)
+        if built_model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
     )
-    assert key.qpos[free_addr + 2] == pytest.approx(0.75)
+    for kf_name, kf in robot_spec.keyframes.items():
+        key = built_model.key(kf_name)
+        assert key.qpos[free_addr + 2] == pytest.approx(kf.base_pos[2])
+
+
+def test_keyframe_feet_touch_the_floor(robot_spec, built_model):
+    """Regression guard for the keyframe-height bug (PLAN.md step 6 review):
+    every keyframe's lowest foot-geom bottom must sit just above the floor
+    -- not floating the robot in the air (the original 0.75/0.70 values, a
+    copy of v0's height plus an unmeasured margin) and not clipping through
+    it.
+    """
+    model = built_model
+    foot_geom_ids = [model.geom(n).id for n in robot_spec.foot_geoms]
+    data = mujoco.MjData(model)
+    for kf_name in robot_spec.keyframes:
+        key = model.key(kf_name)
+        data.qpos[:] = key.qpos
+        data.qvel[:] = 0
+        mujoco.mj_forward(model, data)
+        lowest = min(_capsule_bottom(model, data, gid) for gid in foot_geom_ids)
+        assert 0.0 <= lowest <= 0.02, f"keyframe '{kf_name}': lowest foot bottom {lowest:.4f} m"
 
 
 def test_home_keyframe_steps_without_nan(robot_spec, built_model):

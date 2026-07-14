@@ -94,15 +94,24 @@ symmetry:
   left_ankle_roll_joint: right_ankle_roll_joint
 
 keyframes:
+  # base_pos z was originally 0.75 (home) / 0.70 (knees_bent), copied from
+  # v0's standing height plus a margin -- never actually measured against
+  # v1's foot geoms. Measured 2026-07-15 by compiling sizing_ideal, setting
+  # qpos to each keyframe, mj_forward, and computing the exact capsule
+  # bottom (min over the two world-frame end-cap centers, minus radius) of
+  # every robot.yaml foot_geoms entry: at the old z, the lowest foot-geom
+  # bottom sat 0.119 m (home) / 0.061 m (knees_bent) above the floor -- both
+  # keyframes were floating the robot well clear of the ground. base_pos z
+  # below is shifted so the lowest foot bottom sits ~0.005 m above the floor.
   home:
-    base_pos: [0.0, 0.0, 0.75]
+    base_pos: [0.0, 0.0, 0.636]
     # All actuated/passive joints default to 0.0 (see spec.py's Keyframe).
   # Knees-bent stabilization pose. Left/right signs are opposite here because
   # the XML's left/right knee and ankle-pitch joints have opposite hinge
   # axes: see asimov-mjlab's asimov_constants.py, KNEES_BENT_KEYFRAME comment
   # ("Left and right sides have OPPOSITE axis directions").
   knees_bent:
-    base_pos: [0.0, 0.0, 0.70]
+    base_pos: [0.0, 0.0, 0.644]
     joints:
       left_knee_joint: 0.4
       right_knee_joint: -0.4

@@ -1,5 +1,62 @@
 name: joystick
 
-env: {}
+env:
+  # robot.yaml keyframe used for reset qpos and the PD default_pose anchor
+  # (see envs/base.py). Validated to exist in the model at construct time.
+  reset_keyframe: "home"
+
+  # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) added to
+  # every actuated joint's qpos at reset. 0.0 disables it.
+  reset_noise: 0.05
+
+  # Observations, in order. state = actor (only signals a real robot has:
+  # IMU + joint encoders + own action/command history + the env's own gait
+  # clock), privileged = critic (sim-only extras allowed). Catalog: gyro,
+  # gravity, joint_pos, joint_vel, last_action, linvel, height,
+  # actuator_force, contacts, command, phase.
+  obs:
+    state:
+      - gyro
+      - gravity
+      - joint_pos
+      - joint_vel
+      - last_action
+      - command
+      - phase
+    privileged:
+      - gyro
+      - gravity
+      - joint_pos
+      - joint_vel
+      - last_action
+      - command
+      - phase
+      - linvel
+      - height
+      - contacts
+      - actuator_force
+
+  # asimov docs (PLAN.md "Research findings"): command envelope x +-0.8 m/s,
+  # y +-0.6 m/s, yaw +-0.6 rad/s.
+  command:
+    vx: [-0.8, 0.8]
+    vy: [-0.6, 0.6]
+    wz: [-0.6, 0.6]
+
+  # asimov docs (PLAN.md): gyro +-0.01, joint_pos +-0.01 rad, joint_vel
+  # +-0.1 rad/s. No published gravity-noise figure; unlisted components
+  # default to noise-free.
+  obs_noise:
+    gyro: 0.01
+    joint_pos: 0.01
+    joint_vel: 0.1
+
+  # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
+  # (0.636 m) is not this: it's the floating-base placeholder measured so
+  # the feet just touch the floor, not the robot's standing height.
+  # max_tilt_gz is w01-tek's own untuned value, carried as a starting point.
+  fall:
+    min_height: 0.45
+    max_tilt_gz: -0.4
+
 ppo: {}
-# filled in step 6

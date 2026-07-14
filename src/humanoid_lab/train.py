@@ -77,9 +77,12 @@ def main(cfg: DictConfig) -> None:
     from brax.training.agents.ppo import train as ppo
     from mujoco_playground import wrapper
 
+    from humanoid_lab.dr.randomize import make_domain_randomize
     from humanoid_lab.registry import make_env
 
     task = cfg.task.name
+    robot_dir = paths.REPO_ROOT / cfg.robot.dir
+    preset_name = cfg.actuators.name
     env_overrides = OmegaConf.to_container(cfg.task.env, resolve=True) or {}
 
     # PPO params resolve before the envs because the warp backend sizes its
@@ -105,8 +108,8 @@ def main(cfg: DictConfig) -> None:
     env_overrides.setdefault("sim", {})["num_envs"] = int(
         max(ppo_params.num_envs, ppo_params.get("num_eval_envs", 0))
     )
-    env = make_env(task, env_overrides)
-    eval_env = make_env(task, env_overrides)
+    env = make_env(task, robot_dir, preset_name, env_overrides)
+    eval_env = make_env(task, robot_dir, preset_name, env_overrides)
     print(f"actor obs ({len(env.actor_obs_names)} components): {env.actor_obs_names}")
 
     # Episode length follows the env config unless ppo yaml overrides it.
@@ -136,9 +139,21 @@ def main(cfg: DictConfig) -> None:
         ppo_networks.make_ppo_networks, **network_factory_cfg
     )
 
-    # cfg.dr composes here (configs/dr) but isn't applied yet: domain
-    # randomization needs a robot mj_model to build offsets/ranges against,
-    # which lands with the RobotSpec/env classes in a later build-order step.
+    # cfg.dr composes here (configs/dr); domain_rand gates whether it is
+    # actually applied, mirroring w01-tek's wojtek_rl/train.py.
+    dr_cfg = OmegaConf.to_container(cfg.dr, resolve=True)
+    if cfg.domain_rand:
+        training_params["randomization_fn"] = make_domain_randomize(
+            env.mj_model, env.robot_spec, dr_cfg
+        )
+    else:
+        enabled = [k for k, v in dr_cfg.items() if isinstance(v, dict) and v.get("enable")]
+        if enabled:
+            raise ValueError(
+                f"domain_rand=false disables the whole dr block, but "
+                f"cfg.dr fields {enabled} have enable=true; either set "
+                f"domain_rand=true or disable those fields too"
+            )
 
     wb = None
     if cfg.wandb.enable:
