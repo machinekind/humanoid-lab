@@ -1,0 +1,35 @@
+# Toy robot.yaml fixture for tests/test_robot_spec.py and tests/test_injection.py.
+# Not a real robot: one leg (hip_pitch_joint, knee_joint) plus two unrelated
+# passive joints (toe_joint_a, toe_joint_b), matching tests/data/toy_robot/source/xmls/toy_biped.xml.
+
+name: toy_biped
+model_xml: source/xmls/toy_biped.xml
+
+actuated_joints:
+  - hip_pitch_joint
+  - knee_joint
+
+joint_groups:
+  hip_pitch: [hip_pitch_joint]
+  knee: [knee_joint]
+
+passive_joints:
+  toe_joint_a: {stiffness: 5.0, damping: 0.3}
+  toe_joint_b: {stiffness: 5.0, damping: 0.3}
+
+foot_sites: [foot_site]
+foot_geoms: [foot_geom]
+
+symmetry: {}
+
+keyframes:
+  standing:
+    base_pos: [0.0, 0.0, 0.8]
+    base_quat: [1.0, 0.0, 0.0, 0.0]
+    joints:
+      hip_pitch_joint: 0.2
+      knee_joint: -0.4
+
+termination_bodies: [torso]
+
+obs_layout: {}

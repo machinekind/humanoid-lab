@@ -1,0 +1,21 @@
+# Toy PD actuator preset for tests/test_injection.py.
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  hip_pitch:
+    kp: 50.0
+    kd: 2.0
+    effort_limit: 40.0
+    velocity_limit: 10.0
+    armature: 0.05
+    frictionloss: 0.1
+  knee:
+    kp: 60.0
+    kd: 3.0
+    effort_limit: 55.0
+    velocity_limit: 12.0
+    armature: 0.04
+    # frictionloss intentionally omitted: optional field, must not be overridden.

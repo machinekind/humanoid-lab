@@ -1,0 +1,42 @@
+<mujoco model="toy_biped">
+  <!--
+    Minimal toy MJCF for exercising the RobotSpec loader and actuator injection,
+    not a real robot. Shape only: free-floating base, one leg with two actuated
+    hinges across two joint groups (nonzero XML armature, to prove injection
+    overrides it), and two passive hinge joints elsewhere on the base.
+  -->
+  <compiler angle="radian"/>
+
+  <default>
+    <joint damping="0.1"/>
+  </default>
+
+  <worldbody>
+    <body name="torso" pos="0 0 0.8">
+      <freejoint/>
+      <geom name="torso_geom" type="box" size="0.1 0.05 0.15" mass="5.0"/>
+
+      <body name="thigh" pos="0 0 -0.2">
+        <joint name="hip_pitch_joint" type="hinge" axis="0 1 0" range="-1.2 1.2" armature="99.0"/>
+        <geom name="thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.04" mass="2.0"/>
+
+        <body name="shank" pos="0 0 -0.25">
+          <joint name="knee_joint" type="hinge" axis="0 1 0" range="-1.0 1.0" armature="88.0" frictionloss="0.25"/>
+          <geom name="shank_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.035" mass="1.5"/>
+          <site name="foot_site" pos="0 0 -0.28"/>
+          <geom name="foot_geom" type="sphere" pos="0 0 -0.28" size="0.03" mass="0.3"/>
+        </body>
+      </body>
+
+      <body name="toe_a" pos="0.1 0.05 -0.3">
+        <joint name="toe_joint_a" type="hinge" axis="1 0 0" range="-0.3 0.3"/>
+        <geom name="toe_a_geom" type="sphere" size="0.02" mass="0.05"/>
+      </body>
+
+      <body name="toe_b" pos="-0.1 0.05 -0.3">
+        <joint name="toe_joint_b" type="hinge" axis="1 0 0" range="-0.3 0.3"/>
+        <geom name="toe_b_geom" type="sphere" size="0.02" mass="0.05"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
