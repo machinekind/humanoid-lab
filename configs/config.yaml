@@ -1,0 +1,27 @@
+defaults:
+  - robot: asimov_v1
+  - task: joystick
+  - actuators: sizing_ideal
+  - network: default
+  - dr: default
+  - _self_
+
+run_name: null # default: <task>_<timestamp>
+seed: 0
+smoke: false # tiny CPU-sized run for a pipeline check
+restore: null # checkpoint dir to warm-start from
+
+wandb:
+  enable: true
+  project: humanoid-lab
+
+# Free-form overrides applied onto the tuned playground Go1 PPO config,
+# after the task's own ppo block (so CLI ppo.foo=... wins).
+ppo: {}
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
