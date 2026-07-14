@@ -1,0 +1,82 @@
+# The ENCOS v0 leg motors, carried onto v1 as an existence-proof preset
+# (PLAN.md "First experiments" #3: "the v0 ENCOS table above is an existence
+# proof for this mass class (35 kg, 1.2 m). Sizing results far outside it
+# mean the setup is wrong.") This is a reference point, not the final motor
+# choice (PLAN.md "Decisions already made").
+#
+# model: pd. The eventually-right model for a real motor is
+#   dc_motor_speed_saturation (reflected inertia + torque/speed-curve
+#   saturation) -- it is registered in ACTUATOR_MODELS but not implemented
+#   yet (src/humanoid_lab/actuators/models.py's _NotImplementedActuatorModel),
+#   so this preset uses pd for now, same as sizing_ideal.
+#
+# kp: same v0-sim-scheme derivation as sizing_ideal.yaml -- KP = armature *
+#   (2*pi*10 Hz)^2 = armature * 3947.84 -- applied to the v1 XML armatures
+#   (PLAN.md "v1 armatures"):
+#     hip_pitch:   0.095625  * 3947.84 = 377.5
+#     hip_roll:    0.11      * 3947.84 = 434.3
+#     hip_yaw:     0.038     * 3947.84 = 150.0
+#     knee:        0.0339552 * 3947.84 = 134.1
+#     ankle_pitch: 0.0565056 * 3947.84 = 223.1
+#     ankle_roll:  0.0565056 * 3947.84 = 223.1
+#   kd: 5.0 Nm*s/rad everywhere (CAN hardware max, PLAN.md "Gain schemes").
+#
+# effort_limit / velocity_limit: ENCOS datasheet peak torque / peak speed,
+#   PLAN.md "v0 leg motors (ENCOS)" table, verbatim (not the CAN clamp --
+#   see deploy_pd.yaml for that).
+#
+# armature: v1 XML joint defaults (PLAN.md "v1 armatures"). Per that section,
+#   the v1 ankle armature (0.0565056) is already doubled to account for the
+#   parallel-ankle arrangement (two motors per ankle, modeled as serial
+#   pitch/roll joints). The v1 ankle motor itself is unpublished; PLAN.md
+#   says to "treat the v0 ankle effort limit as approximate for v1" -- so
+#   this whole preset's ankle row is an approximation, most of all here.
+#
+# frictionloss: omitted. PLAN.md's "v1 sysid example row" publishes sysid
+#   friction for hip pitch ONLY (static 1.30, dynamic 0.10, DC-motor model)
+#   -- there is no published per-joint friction for the other groups, and no
+#   friction number at all under the pd/datasheet framing used here. Do not
+#   invent per-joint values; leave frictionloss unset so the XML's own
+#   default (if any) survives injection (see build.py).
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  hip_pitch:
+    kp: 377.5
+    kd: 5.0
+    effort_limit: 120.0
+    velocity_limit: 12.57
+    armature: 0.095625
+  hip_roll:
+    kp: 434.3
+    kd: 5.0
+    effort_limit: 90.0
+    velocity_limit: 3.98
+    armature: 0.11
+  hip_yaw:
+    kp: 150.0
+    kd: 5.0
+    effort_limit: 60.0
+    velocity_limit: 5.45
+    armature: 0.038
+  knee:
+    kp: 134.1
+    kd: 5.0
+    effort_limit: 75.0
+    velocity_limit: 12.25
+    armature: 0.0339552
+  ankle_pitch:
+    kp: 223.1
+    kd: 5.0
+    effort_limit: 36.0
+    velocity_limit: 9.32
+    armature: 0.0565056
+  ankle_roll:
+    kp: 223.1
+    kd: 5.0
+    effort_limit: 36.0
+    velocity_limit: 9.32
+    armature: 0.0565056

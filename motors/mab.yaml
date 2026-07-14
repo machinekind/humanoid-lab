@@ -1,0 +1,125 @@
+# MAB Robotics (Poznan, mabrobotics.pl) MA-series actuator survey, from
+# PLAN.md's "MAB Robotics actuator survey (2026-07-14)". Integrated
+# actuators: brushless motor + planetary/harmonic reducer + MD-series
+# controller with an absolute encoder, one housing, CAN-FD/CANopen at
+# 12-48 VDC (60 V option). Prices are single-unit list prices from the
+# shop; PLAN.md notes the shop states volume pricing is significantly
+# lower. Customization is offered on all models.
+#
+# max_speed_rad_s is computed from the published RPM (rad/s = rpm * pi/30)
+# for every row -- PLAN.md itself gives both units for 4 of the 7 rows
+# (MA-p-100-30, both MA-p-100-IP66 variants, MA-p-45-36); the conversion
+# formula reproduces those published rad/s figures exactly (e.g. 96 RPM ->
+# 10.1 rad/s), so the same formula is used here to fill in rad/s for the
+# MA-p-80-IP66 variants and MA-H, which PLAN.md gives in RPM only.
+#
+# No J_rotor/armature field: see caveats.no_j_rotor below -- MAB publishes
+# no rotor inertia, so armature cannot be computed for any of these yet.
+
+MA-p-100-30:
+  torque_rated_nm: 50
+  torque_peak_nm: 150
+  max_speed_rpm: 96
+  max_speed_rad_s: 10.1
+  gear: {ratio: 30, type: planetary}
+  mass_kg: 1.1
+  price_eur_list: 898
+  url: https://www.mabrobotics.pl/product-page/ak10-30-cubemars-t-motor
+
+MA-p-100-IP66-KV60:
+  torque_rated_nm: 18
+  torque_peak_nm: 48
+  max_speed_rpm: 228
+  max_speed_rad_s: 23.9
+  gear: {ratio: 9, type: planetary}
+  mass_kg: 1.1
+  price_eur_list: 1559
+  url: https://www.mabrobotics.pl/product-page/ma-p-100-ip66
+
+MA-p-100-IP66-KV100:
+  torque_rated_nm: 15
+  torque_peak_nm: 38
+  max_speed_rpm: 421
+  max_speed_rad_s: 44.1
+  gear: {ratio: 9, type: planetary}
+  mass_kg: 1.1
+  price_eur_list: 1559
+  url: https://www.mabrobotics.pl/product-page/ma-p-100-ip66
+
+MA-p-80-IP66-6to1:
+  torque_rated_nm: 6
+  torque_peak_nm: 12
+  max_speed_rpm: 603
+  max_speed_rad_s: 63.1 # computed: PLAN.md gives RPM only for this row
+  gear: {ratio: 6, type: planetary}
+  mass_kg: 0.5
+  price_eur_list: 1059
+  url: https://www.mabrobotics.pl/product-page/ma-p-80-ip66
+
+MA-p-80-IP66-9to1:
+  torque_rated_nm: 9
+  torque_peak_nm: 18
+  max_speed_rpm: 390
+  max_speed_rad_s: 40.8 # computed: PLAN.md gives RPM only for this row
+  gear: {ratio: 9, type: planetary}
+  mass_kg: 0.5
+  price_eur_list: 1059
+  url: https://www.mabrobotics.pl/product-page/ma-p-80-ip66
+
+MA-p-45-36:
+  torque_rated_nm: 8
+  torque_peak_nm: 24
+  max_speed_rpm: 80
+  max_speed_rad_s: 8.4
+  gear: {ratio: 36, type: planetary}
+  mass_kg: 0.34
+  price_eur_list: 357
+  url: https://www.mabrobotics.pl/product-page/ma-p-45-36
+
+MA-H:
+  # Sizes 14/17/20/25/32 in one product line; PLAN.md gives ranges across
+  # sizes, not per-size numbers (see caveats.ma_h_needs_quote).
+  sizes: [14, 17, 20, 25, 32]
+  torque_rated_peak_nm_range: "4-151 across sizes"
+  max_speed_rpm_range: "35-100"
+  max_speed_rad_s_range: "3.7-10.5" # computed: PLAN.md gives RPM only
+  gear: {ratio: "50/80/100", type: harmonic}
+  mass_kg: 0.54 # smallest size only, per PLAN.md
+  price_eur_list: "from 1609"
+  url: https://www.mabrobotics.pl/product-page/ma-h
+
+# Open gaps before a mab.yaml-backed actuator preset can be written
+# (PLAN.md "Open gaps before a `mab.yaml` preset can be written"). Carried
+# here verbatim in spirit so nobody re-derives them from the shop pages.
+caveats:
+  no_j_rotor: >
+    MAB publishes no rotor inertia, so armature cannot be computed from the
+    shop specs. Ask MAB for J_rotor, or identify it on the bench with the
+    fbb MD/mdtool setup. Lead: the MA-p-100-30 product URL slug is
+    "ak10-30-cubemars-t-motor", so the base motor is likely a CubeMars AK10
+    and its rotor inertia may be in CubeMars datasheets. MAB also resells
+    CubeMars actuators directly (shop category "Cubemars Actuators").
+  no_torque_speed_curves: >
+    MAB publishes no torque-speed curves, only the peak-torque and
+    max-speed points. The DC-motor model needs the corner speed. Ask or
+    measure.
+  ma_h_needs_quote: >
+    MA-H specs are given as ranges across sizes. Per-size numbers require
+    a quote.
+
+# Joint mapping against the ENCOS anchor (PLAN.md "Joint mapping against
+# the ENCOS anchor"), with the margin comments carried verbatim in spirit.
+joint_mapping:
+  hip_pitch_and_knee: >
+    MA-p-100-30 covers both (150 Nm peak vs 120/70 needed; 10.1 rad/s vs
+    the ~7.4 rad/s demand peak in the mockup, though below the ENCOS
+    12.6 rad/s spec).
+  hip_roll: >
+    MA-p-100-30, or an MA-H size 25/32 if the harmonic-drive properties
+    matter.
+  hip_yaw: >
+    MA-p-100-IP66 KV60 (48 Nm peak vs 60 spec, but the demand estimate is
+    ~12 Nm).
+  ankle: >
+    2x MA-p-45-36 in the parallel-ankle arrangement, ~48 Nm combined peak
+    in pitch. A single unit is marginal against the ~22 Nm P99 estimate.

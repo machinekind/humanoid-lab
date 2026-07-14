@@ -1,0 +1,76 @@
+# Deployable PD preset: the v0 firmware gains after gain identification
+# (PLAN.md "Gain schemes": "v0 firmware gains after gain identification" --
+# the docs note the v0-sim-scheme's physics-calculated KPs "caused vibration
+# on hardware", so these identified gains are the ones that actually ran on
+# ENCOS hardware). These are v0-identified gains carried onto v1 as a
+# starting point ONLY -- v1 has its own inertias, arm/waist mass
+# distribution, and motor choice pending, so v1 gains need their own
+# identification pass before this preset is trusted on real v1 hardware.
+#
+# model: pd.
+#
+# kp/kd: PLAN.md "Gain schemes" v0 firmware gains after gain identification
+#   (KP/KD), one-to-one per group:
+#     hip_pitch:   12.8  / 0.8
+#     hip_roll:    328   / 5
+#     hip_yaw:     212.2 / 5
+#     knee:        64.2  / 2.7
+#     ankle_pitch: 19.3  / 3.3
+#     ankle_roll:  18.1  / 0.9
+#
+# effort_limit: the CAN command clamp (PLAN.md "v0 leg motors" table's "CAN
+#   tau clamp" column) -- "the real deployable limit... tighter than the
+#   datasheet peak for knee and ankle" (PLAN.md). NOT the datasheet peak
+#   (see encos_datasheet.yaml for that): knee is clamped to 70 (vs. 75
+#   datasheet peak) and ankle to 30 (vs. 36 datasheet peak).
+#
+# velocity_limit: ENCOS datasheet peak speed, PLAN.md "v0 leg motors" table
+#   (same as encos_datasheet.yaml -- the CAN protocol clamps torque, not
+#   speed, so there is no separate "CAN speed clamp" to use instead).
+#
+# armature: v1 XML joint defaults (PLAN.md "v1 armatures"), same caveats as
+#   encos_datasheet.yaml: the ankle value is already doubled for the
+#   parallel-ankle arrangement, and the v1 ankle motor is unpublished so
+#   this row is approximate.
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  hip_pitch:
+    kp: 12.8
+    kd: 0.8
+    effort_limit: 120.0
+    velocity_limit: 12.57
+    armature: 0.095625
+  hip_roll:
+    kp: 328.0
+    kd: 5.0
+    effort_limit: 90.0
+    velocity_limit: 3.98
+    armature: 0.11
+  hip_yaw:
+    kp: 212.2
+    kd: 5.0
+    effort_limit: 60.0
+    velocity_limit: 5.45
+    armature: 0.038
+  knee:
+    kp: 64.2
+    kd: 2.7
+    effort_limit: 70.0
+    velocity_limit: 12.25
+    armature: 0.0339552
+  ankle_pitch:
+    kp: 19.3
+    kd: 3.3
+    effort_limit: 30.0
+    velocity_limit: 9.32
+    armature: 0.0565056
+  ankle_roll:
+    kp: 18.1
+    kd: 0.9
+    effort_limit: 30.0
+    velocity_limit: 9.32
+    armature: 0.0565056

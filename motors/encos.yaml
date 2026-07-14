@@ -1,0 +1,72 @@
+# ENCOS leg motor catalog: the v0 Asimov leg motors, one entry per motor
+# model. Source: asimov-mjlab's motor_parameters.md (ENCOS datasheets, CAN
+# protocol limits), as surveyed in PLAN.md's "v0 leg motors (ENCOS, from
+# motor_parameters.md)" table. Feeds robots/asimov_v1/actuators/
+# encos_datasheet.yaml and deploy_pd.yaml, and the sizing report's
+# torque-speed scatter overlay (PLAN.md "First experiments" #3 sanity
+# anchor).
+#
+# joints: which asimov_v1 joint_groups (robot.yaml) role(s) this motor
+#   model drives. The ankle motor drives both ankle_pitch and ankle_roll --
+#   PLAN.md's "v1 armatures" section: two motors drive a parallel ankle,
+#   modeled as serial pitch/roll joints, so one ENCOS ankle motor model
+#   covers both roles.
+# gear: ratio (N in "N:1") and reducer type, from the table's "Gear" column.
+# can_clamp_nm: the CAN protocol torque command clamp -- "the real
+#   deployable limit... tighter than the datasheet peak for knee and ankle"
+#   (PLAN.md).
+
+hip_pitch:
+  model: EC-A6416-P2-25
+  joints: [hip_pitch]
+  gear: {ratio: 25, type: planetary}
+  tau_peak_nm: 120
+  tau_rated_nm: 40
+  can_clamp_nm: 120
+  omega_max_rad_s: 12.57
+  kt_nm_a: 2.74
+  j_rotor_kg_mm2: 104.395
+
+hip_roll:
+  model: EC-A5013-H17-100
+  joints: [hip_roll]
+  gear: {ratio: 100, type: harmonic}
+  tau_peak_nm: 90
+  tau_rated_nm: 30
+  can_clamp_nm: 90
+  omega_max_rad_s: 3.98
+  kt_nm_a: 5.9
+  j_rotor_kg_mm2: 10
+
+hip_yaw:
+  model: EC-A3814-H14-107
+  joints: [hip_yaw]
+  gear: {ratio: 107, type: harmonic}
+  tau_peak_nm: 60
+  tau_rated_nm: 20
+  can_clamp_nm: 60
+  omega_max_rad_s: 5.45
+  kt_nm_a: 4.2
+  j_rotor_kg_mm2: 3
+
+knee:
+  model: EC-A4315-P2-36
+  joints: [knee]
+  gear: {ratio: 36, type: planetary}
+  tau_peak_nm: 75
+  tau_rated_nm: 25
+  can_clamp_nm: 70
+  omega_max_rad_s: 12.25
+  kt_nm_a: 2.8
+  j_rotor_kg_mm2: 25.5
+
+ankle:
+  model: EC-A4310-P2-36
+  joints: [ankle_pitch, ankle_roll]
+  gear: {ratio: 36, type: planetary}
+  tau_peak_nm: 36
+  tau_rated_nm: 12
+  can_clamp_nm: 30
+  omega_max_rad_s: 9.32
+  kt_nm_a: 1.4
+  j_rotor_kg_mm2: 18.2
