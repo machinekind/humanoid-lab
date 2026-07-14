@@ -1,5 +1,4 @@
-import humanoid_lab
-
-
 def test_import():
-    assert True
+    import humanoid_lab
+
+    assert humanoid_lab is not None

@@ -72,7 +72,7 @@ def build_ppo_params(overrides, smoke: bool):
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
-    import jax
+    import jax  # noqa: F401  # heavy imports stay inside main so --cfg job is fast
     from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.agents.ppo import train as ppo
     from mujoco_playground import wrapper
