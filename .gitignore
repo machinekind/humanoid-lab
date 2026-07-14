@@ -10,3 +10,4 @@ robots/*/mjx/
 *.egg-info/
 MUJOCO_LOG.TXT
 train.log
+hpc/local.env
