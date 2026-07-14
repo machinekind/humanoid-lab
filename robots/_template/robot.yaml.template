@@ -1,0 +1,85 @@
+# RobotSpec template. Copy to robots/<name>/robot.yaml and fill in every
+# field. Field contracts are walked in full in docs/adding-a-robot.md. This
+# file is the skeleton.
+
+# Robot identifier string.
+name: <robot_name>
+
+# Path to the base MJCF, relative to this file's directory. The vendored
+# source XML, untouched (see PROVENANCE.md).
+model_xml: source/xmls/<model>.xml
+
+# The joints to inject actuators for, in document order from model_xml.
+# CANONICAL ORDER: this list is the action/obs contract. build_spec injects
+# actuators in this order. The policy's action vector and joint obs follow
+# it. Never reorder this list once a checkpoint exists for this robot.
+actuated_joints:
+  - <left_hip_pitch_joint>
+  - <left_hip_roll_joint>
+  - <right_hip_pitch_joint>
+  - <right_hip_roll_joint>
+
+# group_name -> list of actuated joint names. Every actuated joint must
+# belong to exactly one group. Every joint listed here must be in
+# actuated_joints. Actuator presets carry parameters per group, not per
+# joint.
+joint_groups:
+  hip_pitch: [<left_hip_pitch_joint>, <right_hip_pitch_joint>]
+  hip_roll: [<left_hip_roll_joint>, <right_hip_roll_joint>]
+
+# Unactuated joint -> {stiffness, damping} spring/damper, applied at build
+# time. Omit a joint here if model_xml already gives it its own spring
+# (check the source XML's default classes before adding one here too).
+passive_joints:
+  <passive_joint_name>: {stiffness: <float>, damping: <float>}
+
+# MJCF site names, one per physical foot.
+foot_sites: [<left_foot_site>, <right_foot_site>]
+
+# MJCF collision geom names covering the feet. May be several per foot.
+# Every geom listed here must sit under a foot_sites body in the kinematic
+# tree (validated by body ancestry at env construction).
+foot_geoms:
+  - <left_foot_collision_geom>
+  - <right_foot_collision_geom>
+
+# Optional: left joint name -> right joint name, for symmetry augmentation.
+# Leave {} if unused.
+symmetry:
+  <left_hip_pitch_joint>: <right_hip_pitch_joint>
+
+# Optional: named poses. base_pos is a required 3-vector. base_quat
+# defaults to identity (1,0,0,0) if omitted. joints is a sparse map. Any
+# actuated or passive joint left out defaults to 0.0.
+#
+# Measure base_pos z against the compiled model. Compile this robot.yaml
+# with an actuator preset injected, set qpos to the keyframe, and run
+# mj_forward. Compute the exact world-frame bottom of every foot_geoms
+# entry: for a capsule, take the lower of its two world-frame end-cap
+# centers and subtract its radius. Do not use geom_rbound. It overestimates
+# badly for a capsule lying flat. Shift base_pos z so the lowest foot-geom
+# bottom sits about 5 mm above the floor. See docs/lessons/asimov_v1.md for
+# the bug this rule exists to prevent.
+keyframes:
+  home:
+    base_pos: [0.0, 0.0, <measured_z>]
+    base_quat: [1.0, 0.0, 0.0, 0.0]
+    joints: {}
+
+# Optional: MJCF body names, validated to exist against the compiled model.
+# Not yet read by the joystick or sizing envs. Still validate what you list.
+termination_bodies: [<root_body>]
+
+# Optional: free-form dict. No code consumes this yet. Leave {} unless a
+# downstream consumer needs it.
+obs_layout: {}
+
+# Optional: recognized keys gyro, quat, linvel, acc -> MJCF <sensor> name.
+# Envs read the named sensor directly for any key present here, and fall
+# back to a qpos/qvel-derived computation for any key left out. Omit keys
+# the source XML has no matching sensor for.
+sensors:
+  gyro: <imu_gyro_sensor_name>
+  quat: <imu_quat_sensor_name>
+  linvel: <imu_linvel_sensor_name>
+  acc: <imu_acc_sensor_name>

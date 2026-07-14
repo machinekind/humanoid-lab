@@ -1,0 +1,52 @@
+# Lessons: Asimov v1
+
+Facts learned while bootstrapping the asimov_v1 robot into humanoid-lab.
+Add to this file as new lessons turn up. Keep each entry a plain statement
+of what happened.
+
+## Keyframe base height comes from measuring the compiled model
+
+The vendored XML ships no keyframe. The first `robot.yaml` set `home`'s
+`base_pos` z to v0's standing height plus a margin, 0.75 m, and `knees_bent`
+to a similarly guessed 0.70 m. Neither value was ever checked against v1's
+own foot geoms.
+
+The fix is to measure the exact capsule bottom of every `foot_geoms` entry:
+compile the model, set qpos to the keyframe, run `mj_forward`, and take the
+lower of each capsule's two world-frame end-cap centers minus its radius.
+That measurement showed both keyframes floating the robot in the air:
+0.119 m clear at `home`, 0.061 m clear at `knees_bent`. The corrected,
+measured `home` height is 0.636 m, with the lowest foot bottom about 5 mm
+above the floor. See `robots/asimov_v1/robot.yaml`'s `keyframes` comment and
+`tests/test_asimov_v1.py`'s `test_keyframe_feet_touch_the_floor`.
+
+## PD setpoints stay unclamped at the actuator
+
+`PositionPD.inject` in `src/humanoid_lab/actuators/models.py` builds the
+injected actuator with `ctrllimited=False`. A PD setpoint past the joint's
+kinematic range is not clipped at the MuJoCo actuator level. This follows
+the asimov-mjlab convention. Soft limits, `soft_limit_factor` (default 0.9),
+apply in the RL layer as an observation and reward concern. An unclamped
+setpoint lets the PD loop keep pulling toward the target even past a limit.
+
+## `isfinite` alone does not catch a diverging simulation
+
+MuJoCo's bad-qacc auto-reset replaces a diverging acceleration with something
+large but still finite, so a simulation that has blown up can still pass an
+`isfinite` check on `qpos`/`qvel`. `check_model.py`'s gate adds a `--max-qvel`
+bound (default 100 rad/s) checked alongside `isfinite`, and fails if either
+one trips. A stability gate needs both checks. `isfinite` by itself waves
+through gross instability.
+
+## Static mjx model fields must be set before `in_axes` is derived
+
+`geom_priority` and other numpy-typed fields on `mjx.Model` are static aux
+data in the pytree, part of the treedef rather than a leaf. `in_axes` for
+`jax.vmap` is built by mapping over `model`'s pytree structure, in
+`dr/randomize.py`'s `make_domain_randomize`. Mutating a static field like
+`geom_priority` after `in_axes` has already been derived from `model`, or
+after `model` has already been batched, changes the treedef out from under
+`in_axes`. `jax.vmap(fn, in_axes=[in_axes, 0])` then fails with a
+pytree-prefix mismatch. The error gives no hint that mutation order is the
+real cause. The fix is to set every static field first, before deriving
+`in_axes` or batching anything.

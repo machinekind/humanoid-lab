@@ -1,0 +1,42 @@
+# Actuator preset template. Copy to robots/<name>/actuators/<preset>.yaml
+# and fill in every field. Full contract in
+# src/humanoid_lab/robot/presets.py and docs/configuration.md's preset
+# section. A matching configs/actuators/<preset>.yaml pointer file (just
+# `name: <preset>`) makes this preset selectable on the Hydra CLI.
+
+# Actuator model, looked up in ACTUATOR_MODELS
+# (src/humanoid_lab/actuators/models.py). Implemented today: pd,
+# ideal_torque. Registered but not implemented yet (raises
+# NotImplementedError if selected): dc_motor_speed_saturation, delayed.
+model: <pd_or_ideal_torque>
+
+# Fraction of the joint's kinematic range used as the RL-layer soft limit.
+# This is an observation and reward concern. The injected actuator itself
+# is unclamped. Default if omitted: 0.9.
+soft_limit_factor: 0.9
+
+# Scales effort_limit/kp into the policy's action_scale for the pd model.
+# Unused for ideal_torque, whose action_scale is effort_limit directly.
+# Default if omitted: 0.3.
+action_scale_factor: 0.3
+
+# group_name -> per-joint parameters. group_name must match a key in the
+# robot's robot.yaml joint_groups. Every actuated joint's group must have an
+# entry here.
+groups:
+  hip_pitch:
+    # Required. Actuator forcerange, +/- this value (Nm).
+    effort_limit: <float>
+    # Required for model: pd. Position gain (Nm/rad).
+    kp: <float>
+    # Required for model: pd. Velocity gain (Nm*s/rad).
+    kd: <float>
+    # Optional. Carried through for sizing telemetry and future speed-
+    # saturation models. MuJoCo actuators clamp force and ctrl, never
+    # joint speed, so this limit is not enforced in the compiled model.
+    velocity_limit: <float>
+    # Optional. Overrides model_xml's per-joint armature at build time.
+    armature: <float>
+    # Optional. Overrides model_xml's per-joint frictionloss at build time.
+    # Omit to leave the source XML's own default (if any) in place.
+    frictionloss: <float>
