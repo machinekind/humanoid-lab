@@ -1,0 +1,123 @@
+# RobotSpec for Asimov v1. See PROVENANCE.md for the vendored source.
+#
+# v1 ships 12 leg joints plus a passive waist and 10 passive arm joints; only
+# the legs are actuated for the first (sizing) experiments. See PLAN.md
+# "Research findings" for the ENCOS motor table and armature values this
+# depends on downstream (actuators/sizing_ideal.yaml).
+
+name: asimov_v1
+model_xml: source/xmls/asimov.xml
+
+# The 12 actuated leg joints, in source/xmls/asimov.xml document order:
+# left leg (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll) then
+# the right leg in the same pattern. This order is the action/obs contract
+# (see build.py); nothing downstream should reorder it.
+actuated_joints:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+
+joint_groups:
+  hip_pitch: [left_hip_pitch_joint, right_hip_pitch_joint]
+  hip_roll: [left_hip_roll_joint, right_hip_roll_joint]
+  hip_yaw: [left_hip_yaw_joint, right_hip_yaw_joint]
+  knee: [left_knee_joint, right_knee_joint]
+  ankle_pitch: [left_ankle_pitch_joint, right_ankle_pitch_joint]
+  ankle_roll: [left_ankle_roll_joint, right_ankle_roll_joint]
+
+# Waist + arms are unactuated in v1 sizing runs; each gets a damped spring
+# back to zero at build time (see build.py's passive-joint handling), mirroring
+# the XML's own `passive_upper` default class (which the XML already applies
+# to the neck -- neck is NOT repeated here). Toe joints are also excluded:
+# they already carry an explicit joint-level spring in the XML.
+#
+# PROVISIONAL: stiffness 80.0 / damping 15.0 are stabilization values copied
+# from the XML's passive_upper class, not sized hardware. Revisit once arm/
+# waist motors are chosen.
+passive_joints:
+  waist_yaw_joint: {stiffness: 80.0, damping: 15.0}
+  left_shoulder_pitch_joint: {stiffness: 80.0, damping: 15.0}
+  left_shoulder_roll_joint: {stiffness: 80.0, damping: 15.0}
+  left_shoulder_yaw_joint: {stiffness: 80.0, damping: 15.0}
+  left_elbow_joint: {stiffness: 80.0, damping: 15.0}
+  left_wrist_yaw_joint: {stiffness: 80.0, damping: 15.0}
+  right_shoulder_pitch_joint: {stiffness: 80.0, damping: 15.0}
+  right_shoulder_roll_joint: {stiffness: 80.0, damping: 15.0}
+  right_shoulder_yaw_joint: {stiffness: 80.0, damping: 15.0}
+  right_elbow_joint: {stiffness: 80.0, damping: 15.0}
+  right_wrist_yaw_joint: {stiffness: 80.0, damping: 15.0}
+
+foot_sites: [left_foot, right_foot]
+
+# Every geom tagged class="foot_capsule" in source/xmls/asimov.xml: the
+# ankle-roll-link foot capsules (5 per side; note the XML's own naming skips
+# left_foot5_collision and right_foot6_collision -- vendored verbatim) plus
+# the toe capsules (5 per side). Toe joints stay passive/unlisted above, but
+# their collision capsules are still feet for contact/termination purposes.
+foot_geoms:
+  - left_foot1_collision
+  - left_foot2_collision
+  - left_foot3_collision
+  - left_foot4_collision
+  - left_foot6_collision
+  - left_toe1_collision
+  - left_toe2_collision
+  - left_toe3_collision
+  - left_toe4_collision
+  - left_toe5_collision
+  - right_foot1_collision
+  - right_foot2_collision
+  - right_foot3_collision
+  - right_foot4_collision
+  - right_foot5_collision
+  - right_toe1_collision
+  - right_toe2_collision
+  - right_toe3_collision
+  - right_toe4_collision
+  - right_toe5_collision
+
+symmetry:
+  left_hip_pitch_joint: right_hip_pitch_joint
+  left_hip_roll_joint: right_hip_roll_joint
+  left_hip_yaw_joint: right_hip_yaw_joint
+  left_knee_joint: right_knee_joint
+  left_ankle_pitch_joint: right_ankle_pitch_joint
+  left_ankle_roll_joint: right_ankle_roll_joint
+
+keyframes:
+  home:
+    base_pos: [0.0, 0.0, 0.75]
+    # All actuated/passive joints default to 0.0 (see spec.py's Keyframe).
+  # Knees-bent stabilization pose. Left/right signs are opposite here because
+  # the XML's left/right knee and ankle-pitch joints have opposite hinge
+  # axes: see asimov-mjlab's asimov_constants.py, KNEES_BENT_KEYFRAME comment
+  # ("Left and right sides have OPPOSITE axis directions").
+  knees_bent:
+    base_pos: [0.0, 0.0, 0.70]
+    joints:
+      left_knee_joint: 0.4
+      right_knee_joint: -0.4
+      left_ankle_pitch_joint: -0.2
+      right_ankle_pitch_joint: 0.2
+
+# pelvis_link is the free-floating root body; waist_yaw_link is the
+# torso/trunk body carrying most of the upper-body mass (8.2 kg).
+termination_bodies: [pelvis_link, waist_yaw_link]
+
+# IMU sensors at the pelvis (source/xmls/asimov.xml's <sensor> block), named
+# generically so envs never hardcode a robot's sensor names. Envs fall back
+# to a qpos/qvel-derived computation for any key not listed here.
+sensors:
+  gyro: imu_ang_vel
+  quat: imu_quat
+  linvel: imu_lin_vel
+  acc: imu_lin_acc

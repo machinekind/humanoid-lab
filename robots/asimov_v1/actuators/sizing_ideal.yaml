@@ -1,0 +1,82 @@
+# Actuator preset for the motor-sizing task (task=sizing, PLAN.md "First
+# experiments" #2: "robot=asimov_v1 task=sizing actuators=sizing_ideal" --
+# "torque and energy penalties on, DR off, generous effort caps").
+#
+# Purpose: instrumented idealized actuators for reading off per-joint
+# torque/speed demand BEFORE a motor is chosen -- not a real motor. PLAN.md's
+# "v0 leg motors (ENCOS)" table is used only as a sanity anchor (the 35 kg,
+# 1.2 m mass class existence proof), not the target.
+#
+# kp: PLAN.md "Gain schemes" v0 sim scheme -- KP = armature * (2*pi*10 Hz)^2
+#   -- applied to the v1 XML armatures (PLAN.md "v1 armatures"), i.e. the
+#   same scheme asimov-mjlab used for v0, carried onto v1's own inertias.
+#   (2*pi*10)^2 = 3947.84 (rad/s)^2. Per group:
+#     hip_pitch:   0.095625  * 3947.84 = 377.5
+#     hip_roll:    0.11      * 3947.84 = 434.3
+#     hip_yaw:     0.038     * 3947.84 = 150.0
+#     knee:        0.0339552 * 3947.84 = 134.1
+#     ankle_pitch: 0.0565056 * 3947.84 = 223.1
+#     ankle_roll:  0.0565056 * 3947.84 = 223.1
+#   (ankle_pitch and ankle_roll share one armature value in the v1 armatures
+#   list -- PLAN.md's "doubled: two motors drive a parallel ankle, modeled
+#   as serial pitch/roll joints" -- so they share one kp too.)
+#
+# kd: 5.0 Nm*s/rad everywhere -- PLAN.md "Gain schemes": "KD = 5.0 (the CAN
+#   hardware max)".
+#
+# effort_limit / velocity_limit: 2x the ENCOS datasheet peak torque / peak
+#   speed (PLAN.md "v0 leg motors" table), NOT the ENCOS numbers themselves.
+#   This preset's whole point is generous headroom so the sizing task isn't
+#   torque/speed-clamped before the policy tells us what it actually needs;
+#   PLAN.md's sizing loop (First experiments #2) reads the resulting
+#   torque-speed percentiles and TIGHTENS these caps between runs -- these
+#   2x figures are a starting ceiling, not a motor spec.
+#
+# armature: v1 XML joint defaults (PLAN.md "v1 armatures"). Overrides
+#   source/xmls/asimov.xml's own per-joint armature at build time (see
+#   build.py) -- a future motor swap only has to edit this file.
+#
+# frictionloss: omitted everywhere -- these are ideal (frictionless)
+#   actuators for sizing, not a hardware model.
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  hip_pitch:
+    kp: 377.5
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 25.14
+    armature: 0.095625
+  hip_roll:
+    kp: 434.3
+    kd: 5.0
+    effort_limit: 180.0
+    velocity_limit: 7.96
+    armature: 0.11
+  hip_yaw:
+    kp: 150.0
+    kd: 5.0
+    effort_limit: 120.0
+    velocity_limit: 10.90
+    armature: 0.038
+  knee:
+    kp: 134.1
+    kd: 5.0
+    effort_limit: 150.0
+    velocity_limit: 24.50
+    armature: 0.0339552
+  ankle_pitch:
+    kp: 223.1
+    kd: 5.0
+    effort_limit: 72.0
+    velocity_limit: 18.64
+    armature: 0.0565056
+  ankle_roll:
+    kp: 223.1
+    kd: 5.0
+    effort_limit: 72.0
+    velocity_limit: 18.64
+    armature: 0.0565056
