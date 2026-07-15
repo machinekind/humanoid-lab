@@ -158,6 +158,7 @@ def render_report_markdown(
     joint_groups: dict,
     catalog_matches: dict | None,
     png_name: str,
+    n_dropped: int = 0,
 ) -> str:
     lines = [
         f"# Sizing report: {run_name}",
@@ -197,6 +198,9 @@ def render_report_markdown(
         "under (generous headroom by design), not a real motor's limits.",
         f"- {n_samples} control steps kept for this rollout; per-group sample counts above "
         "are steps x joints-in-group (both left/right).",
+        f"- {n_dropped} fall-transition step(s) dropped from the percentiles (episode-"
+        "termination samples measure impact, not gait demand). A policy that never falls "
+        "drops zero.",
         "- PLAN.md \"First experiments\" #3: the ENCOS v0 leg-motor table (35 kg, 1.2 m mass "
         "class) is a sanity anchor, not a target -- results far outside it mean the sizing "
         "setup is wrong, not that motor selection is done.",
@@ -306,6 +310,17 @@ def build_report(run_dir: Path, motors_name: str | None = "encos") -> tuple[str,
         )
     data = np.load(npz_path)
     tau, omega = data["tau"], data["omega"]
+    # Drop fall-transition samples: collect.py keeps the step on which an
+    # episode terminated, and impact/post-gait torques from a falling robot
+    # do not belong in a motor-sizing percentile. The done mask is saved for
+    # exactly this filter. A converged policy never falls, so on a good run
+    # this drops nothing.
+    if "done" in data:
+        alive = ~data["done"].astype(bool)
+        n_dropped = int((~alive).sum())
+        tau, omega = tau[alive], omega[alive]
+    else:
+        n_dropped = 0
     joint_names = [str(x) for x in data["joint_names"]]
     effort_limit, velocity_limit = data["effort_limit"], data["velocity_limit"]
 
@@ -344,6 +359,7 @@ def build_report(run_dir: Path, motors_name: str | None = "encos") -> tuple[str,
         joint_groups=joint_groups,
         catalog_matches=catalog_matches,
         png_name=png_path.name,
+        n_dropped=n_dropped,
     )
     (run_dir / "sizing_report.md").write_text(md)
     return md, png_path

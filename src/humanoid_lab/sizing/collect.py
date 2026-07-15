@@ -172,6 +172,9 @@ def collect(run_dir: Path, episodes: int, steps: int, seed: int, out_path: Path 
     from humanoid_lab.policy_io import load_policy
 
     ppo_params = _ppo_params_from_run(run)
+    # deterministic=True: sizing measures the deployed mean policy's demand,
+    # and the numbers must be reproducible run to run. Stochastic rollouts
+    # would inflate percentiles with exploration noise no real robot sees.
     policy_fn = jax.jit(load_policy(ckpt_dir, env, ppo_params, deterministic=True))
     reset_fn = jax.jit(env.reset)
     step_fn = jax.jit(env.step)
