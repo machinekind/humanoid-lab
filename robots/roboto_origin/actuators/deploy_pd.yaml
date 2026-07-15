@@ -25,10 +25,8 @@
 #   model is registered but raises NotImplementedError (presets.py), so the
 #   delay is not modeled here.
 #
-# No sizing preset is shipped for this robot: asimov's sizing scheme
-#   (actuators/sizing_ideal.yaml) derives kp from measured armatures, and
-#   RPO has none (see above) -- there is nothing for a sizing preset to
-#   derive from.
+# The sizing preset for this robot is actuators/sizing_ideal.yaml; its
+#   DM-J10010L armature row is PROVISIONAL (see that file's header).
 
 model: pd
 soft_limit_factor: 0.9

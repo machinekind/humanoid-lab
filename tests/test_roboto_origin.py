@@ -36,6 +36,12 @@ def built_model():
     return compile_spec(spec)
 
 
+@pytest.fixture(scope="module")
+def sizing_ideal_model():
+    spec = build_spec(ROBOT_DIR, "sizing_ideal")
+    return compile_spec(spec)
+
+
 def test_load_robot_spec_parses_and_validates_against_built_model(robot_spec, built_model):
     assert robot_spec.name == "roboto_origin"
     assert robot_spec.model_xml == "source/mjcf/rpo.xml"
@@ -152,6 +158,63 @@ def test_home_keyframe_steps_without_nan(robot_spec, built_model):
     assert np.all(np.isfinite(data.qvel))
 
     # The PD gains should hold the pose, not let the robot collapse.
+    free_addr = next(
+        model.jnt_qposadr[i]
+        for i in range(model.njnt)
+        if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
+    )
+    assert data.qpos[free_addr + 2] > 0.5
+
+
+def test_build_spec_sizing_ideal_compiles(robot_spec, sizing_ideal_model):
+    model = sizing_ideal_model
+
+    assert model.nu == 23
+    actuator_names = [model.actuator(i).name for i in range(model.nu)]
+    assert actuator_names == robot_spec.actuated_joints  # canonical action/obs order
+
+    # Lock the preset's headline numbers into the compiled model: one
+    # actuator from the 4340P ankle group and one from the PROVISIONAL
+    # 10010L thigh group (see the preset's header for both derivations).
+    ankle = model.actuator("left_ankle_pitch_joint")
+    assert ankle.gainprm[0] == pytest.approx(252.7)
+    assert list(ankle.forcerange) == pytest.approx([-54.0, 54.0])
+
+    thigh = model.actuator("left_thigh_pitch_joint")
+    assert thigh.gainprm[0] == pytest.approx(120.8)
+    assert list(thigh.forcerange) == pytest.approx([-240.0, 240.0])
+
+    ankle_dof = model.joint("left_ankle_pitch_joint").dofadr[0]
+    assert model.dof_armature[ankle_dof] == pytest.approx(0.064)
+    thigh_dof = model.joint("left_thigh_pitch_joint").dofadr[0]
+    assert model.dof_armature[thigh_dof] == pytest.approx(0.0306)
+
+
+def test_sizing_ideal_home_keyframe_steps_without_nan(robot_spec, sizing_ideal_model):
+    """sizing_ideal's kp reaches 252.7. deploy_pd's kp reaches 150.0 at
+    most. This test reruns test_home_keyframe_steps_without_nan's hold
+    check against sizing_ideal's own compiled model. It confirms the
+    stiffer gains still hold the home pose instead of letting the robot
+    collapse.
+    """
+    model = sizing_ideal_model
+    data = mujoco.MjData(model)
+    key = model.key("home")
+    home = robot_spec.keyframes["home"]
+
+    data.qpos[:] = key.qpos
+    ctrl = np.zeros(model.nu)
+    for i, joint_name in enumerate(robot_spec.actuated_joints):
+        ctrl[i] = home.joints.get(joint_name, 0.0)
+    data.ctrl[:] = ctrl
+    mujoco.mj_forward(model, data)
+
+    for _ in range(200):
+        mujoco.mj_step(model, data)
+
+    assert np.all(np.isfinite(data.qpos))
+    assert np.all(np.isfinite(data.qvel))
+
     free_addr = next(
         model.jnt_qposadr[i]
         for i in range(model.njnt)

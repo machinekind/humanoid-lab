@@ -1,0 +1,172 @@
+# Actuator preset for the motor-sizing task (task=sizing).
+# It mirrors asimov_v1's actuators/sizing_ideal.yaml. See PLAN.md "First
+# experiments" #2. This preset applies that scheme to robot=roboto_origin.
+#
+# Purpose: instrumented idealized actuators for reading off per-joint
+# torque and speed demand from a motor that is already chosen.
+# Asimov's sizing preset used its ENCOS table only as a sanity anchor.
+# RPO's upstream BOM and deploy driver publish real motor numbers for
+# this robot, so this preset anchors kp, effort_limit, and velocity_limit
+# directly to those numbers.
+#
+# This preset diverges from actuators/deploy_pd.yaml's flat armature of
+# 0.01 for every group. deploy_pd's 0.01 is upstream's own placeholder;
+# see its header comment. Upstream publishes no per-joint armature table.
+# Sizing needs the real reflected inertia to produce a meaningful kp.
+# The armatures below come from the motors actually installed. See
+# "Motor identity" below.
+#
+# Motor identity: the upstream BOM lists exactly two motors, the Damiao
+# "DM 4340P" and "DM 10010L".
+#   modules/rpo_hardware/V1.0/atom01_mechanic/00_Docs/BOM_Mechanical.xlsx
+#   at PROVENANCE.md's pinned commit:
+#   https://github.com/Roboparty/roboto_origin/blob/de10e7a624805b79b547abf3eec846618136f52f/modules/rpo_hardware/V1.0/atom01_mechanic/00_Docs/BOM_Mechanical.xlsx
+# The deploy driver confirms both as 48V variants and carries their CAN
+# limit table (the dm_limit_param table):
+#   modules/roboparty_deploy/src/motors/src/drivers/dm/dm_motor_driver.cpp
+#   at PROVENANCE.md's pinned commit:
+#   https://github.com/Roboparty/roboto_origin/blob/de10e7a624805b79b547abf3eec846618136f52f/modules/roboparty_deploy/src/motors/src/drivers/dm/dm_motor_driver.cpp
+#     DM4340P_48V:  SpdMax 20 rad/s, TauMax 28 Nm,  OKdMax 5
+#     DM10010L_48V: SpdMax 25 rad/s, TauMax 200 Nm, OKdMax 5
+# The deploy motor_model map assigns the 10010L to thigh_yaw, thigh_roll,
+# thigh_pitch, knee, and torso. It assigns the 4340P to the ankles and
+# arms.
+#
+# armature = rotor inertia * reduction^2.
+#
+# DM-J4340P: rotor inertia 2.00e-5 kg*m^2, reduction 40.
+#   Seeed Damiao spec table: https://wiki.seeedstudio.com/damiao_series/
+#   2.00e-5 * 40^2 = 0.032.
+#
+# The ankles carry two 4340P motors through a closed-chain parallel
+# ankle. Upstream's deploy config lists close_chain_motor_idx [4,5,10,11].
+# ankle_pitch and ankle_roll get 2x this armature: 0.064.
+# robots/asimov_v1/actuators/sizing_ideal.yaml uses the same doubling for
+# its own parallel ankle.
+#
+# DM-J10010L: rotor inertia is unpublished. This row is PROVISIONAL.
+# J is estimated by scaling the 4340 rotor's 2.0e-5 kg*m^2 by mass and
+# diameter squared: (1485 g / 375 g) * (112 mm / 57 mm)^2 = 15.29x
+# -> J ~ 3.06e-4 kg*m^2.
+#   10010 mass 1485 g and diameter 112 mm:
+#   https://rcdrone.top/products/damiao-dm-j10010-2ec-servo-motor
+#   4340 mass 375 g and diameter 57 mm: the Seeed Damiao spec table
+#   linked above.
+#   Reduction 10 (10010 frame): armature = 3.06e-4 * 10^2 = 0.0306.
+# This row will be replaced once Damiao publishes the figure, or once we
+# measure it. asimov_v1's v1 ankle motor was unpublished too, so this row
+# carries the same approximation.
+#
+# kp: PLAN.md "Gain schemes" sizing scheme. KP = armature * (2*pi*10 Hz)^2,
+# applied to roboto's own armatures above. (2*pi*10)^2 = 3947.84 (rad/s)^2.
+# Per group:
+#   thigh_yaw, thigh_roll, thigh_pitch, knee, torso:      0.0306 * 3947.84 = 120.8
+#   ankle_pitch, ankle_roll:                               0.064  * 3947.84 = 252.7
+#   arm_pitch, arm_roll, arm_yaw, elbow_pitch, elbow_yaw:  0.032  * 3947.84 = 126.3
+#
+# kd: 5.0 Nm*s/rad everywhere. This is OKdMax in RoboParty's own DM driver
+# limit table above, the protocol ceiling. It is the same rationale as
+# asimov's CAN hardware max.
+#
+# effort_limit: 2x peak torque. This gives the sizing task headroom above
+# the raw motor rating, the same rationale as asimov's preset: the point
+# is that the sizing task isn't torque-clamped before the policy tells us
+# what it actually needs. PLAN.md's sizing loop (First experiments #2)
+# reads the resulting torque-speed percentiles and tightens these caps
+# between runs.
+#   10010L groups: 2 * 120 = 240.0. 120 Nm is the upstream sim effort
+#     cap (effort_limit_sim) only, not a hardware rating. The hardware
+#     envelope: the rcdrone page linked above lists the DM-J10010
+#     (non-L) peak at 150 Nm, and the CAN encoding range is 200 (TauMax
+#     above). 120 is what RoboParty trains and deploys with, so 2x120 is
+#     the sizing ceiling.
+#   4340P groups:  2 * 27  = 54.0. 27 Nm is the datasheet peak and the
+#     upstream sim cap. The CAN range is 28 (TauMax above).
+#
+# velocity_limit: 2x peak speed, the same headroom rationale.
+#   10010L groups: 2 * 25   = 50.0. 25 rad/s is the upstream sim
+#     velocity_limit_sim and the CAN SpdMax.
+#   4340P groups:  2 * 10.5 = 21.0. 48V no-load speed is 100 rpm, about
+#     10.5 rad/s, per the Damiao spec table linked above. The CAN SpdMax
+#     is 20. Upstream sim uses 8.
+#
+# frictionloss: omitted everywhere. These actuators model an ideal,
+# frictionless joint for sizing. asimov's preset does the same.
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  thigh_yaw:
+    kp: 120.8
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 50.0
+    armature: 0.0306
+  thigh_roll:
+    kp: 120.8
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 50.0
+    armature: 0.0306
+  thigh_pitch:
+    kp: 120.8
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 50.0
+    armature: 0.0306
+  knee:
+    kp: 120.8
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 50.0
+    armature: 0.0306
+  torso:
+    kp: 120.8
+    kd: 5.0
+    effort_limit: 240.0
+    velocity_limit: 50.0
+    armature: 0.0306
+  ankle_pitch:
+    kp: 252.7
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.064
+  ankle_roll:
+    kp: 252.7
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.064
+  arm_pitch:
+    kp: 126.3
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.032
+  arm_roll:
+    kp: 126.3
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.032
+  arm_yaw:
+    kp: 126.3
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.032
+  elbow_pitch:
+    kp: 126.3
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.032
+  elbow_yaw:
+    kp: 126.3
+    kd: 5.0
+    effort_limit: 54.0
+    velocity_limit: 21.0
+    armature: 0.032
