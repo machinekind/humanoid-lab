@@ -1,9 +1,9 @@
 # Adding a robot
 
-PLAN.md names Unitree G1 as the default candidate for robot #2, pending
-confirmation with Marcin. This checklist applies to G1 or to any other
-robot. `robots/asimov_v1/` is the worked example throughout. `robots/_template/`
-carries a stub version of the same files to copy from.
+This checklist applies to any robot. `robots/asimov_v1/` is the worked
+example throughout; `robots/roboto_origin/` (robot #2) is the worked example
+for a source XML that needs `model_patches`. `robots/_template/` carries a
+stub version of the same files to copy from.
 
 ## 1. Vendor the upstream source
 
@@ -11,6 +11,13 @@ Copy the upstream MJCF and meshes verbatim into `robots/<name>/source/`, at
 one pinned commit. Do not edit anything under `source/`. Every robot-specific
 change goes into `robot.yaml` or `actuators/*.yaml`, applied at build time
 through `mujoco.MjSpec` injection.
+
+`build_spec` always deletes every actuator already in the source XML, and
+every actuatorpos/actuatorvel/actuatorfrc sensor that does not resolve to an
+actuated joint, before injecting its own actuators. A vendored source XML
+that ships its own `<actuator>` block and actuator sensors needs no special
+handling for this; see "model_patches" below for the other build-time
+patches available for a source XML that isn't otherwise MJX-ready.
 
 Write `robots/<name>/PROVENANCE.md` with:
 
@@ -48,6 +55,39 @@ Optional keys:
 | `termination_bodies` | MJCF body names, validated to exist against the compiled model. Fall detection currently uses base height and tilt only, so the joystick and sizing envs do not read this field yet. Validate what you list here anyway. |
 | `obs_layout` | Free-form dict. No code consumes this yet. Leave it `{}` unless a downstream consumer needs it. |
 | `sensors` | A dict with recognized keys `gyro`, `quat`, `linvel`, `acc`, mapping each to an MJCF `<sensor>` name. Envs read the named sensor directly for any key present here, and fall back to a qpos/qvel-derived computation for any key left out. |
+| `model_patches` | Build-time patches for a source XML that isn't MJX-ready as vendored: `<option>` overrides, injected sites, injected collision geoms, and mesh-collision handling. Every sub-key is optional. See "model_patches" below. |
+
+### model_patches
+
+Reach for `model_patches` when the source XML has no sites or named
+collision geoms to point `foot_sites`/`foot_geoms` at, or when its
+`<option>` settings aren't MJX-compatible. Omit the whole section if the
+source XML needs none of this. `build_spec` applies it right after loading
+the source XML, before actuator injection: `options`, then the actuator
+strip described above, then `sites`, then `geoms`, then `mesh_collisions`.
+
+`options` overrides `<option>` values. The allowed keys are `solver`,
+`iterations`, and `timestep`. `solver` is one of `pgs`, `cg`, `newton`. MJX
+does not support PGS. Pick `newton` or `cg` for a source XML that ships
+`solver="PGS"`.
+
+`sites` injects a named site into a body. Each entry needs `body` and
+`pos`. `quat` is optional and defaults to identity.
+
+`geoms` injects a named collision primitive into a body. Each entry needs
+`body`, `type`, and `size`. `type` is one of `box`, `capsule`, `sphere`.
+`pos` and `fromto` are both optional; set at most one, matching MJCF geom
+semantics. `quat` is optional and defaults to identity. An injected geom
+gets no explicit `contype`/`conaffinity`; it inherits whatever default
+class applies to its body in the source XML.
+
+`mesh_collisions: visual` is the only recognized value. It zeroes
+`contype` and `conaffinity` on every mesh geom in the source XML. Use it
+with `geoms` when the source XML's only collision geometry is full meshes
+and you are replacing them with named primitives.
+
+`tests/test_model_patches.py` has a synthetic worked example of every
+sub-key.
 
 ### Measure keyframe height against the compiled model
 
@@ -113,12 +153,54 @@ Mirror `tests/test_asimov_v1.py`. At minimum:
 ## 6. Wire `configs/robot/<name>.yaml`
 
 ```yaml
-name: <name>
-dir: robots/<name>
+# @package _global_
+robot:
+  name: <name>
+  dir: robots/<name>
 ```
 
-This is a pointer only. It makes `robot=<name>` selectable on the Hydra CLI,
-and it lets `train.py` find `robots/<name>/`.
+The `@package _global_` header and the `robot: {name, dir}` block make
+`robot=<name>` selectable on the Hydra CLI and let `train.py` find
+`robots/<name>/`. That much is a pointer only.
+
+The same file also carries the new robot's training-tuning overlay. The
+overlay is a `task:` and/or `dr:` section that patches the task/dr base
+configs. `robot` composes after `task` and `dr` in `configs/config.yaml`'s
+defaults list, so the overlay wins over the base. `docs/configuration.md`'s
+"Robot configs own robot-specific tuning" section covers the full merge
+order. Decide per value whether the new robot pins its own number or
+inherits the shared base:
+
+- Pin a command envelope (`task.env.command.vx/vy/wz`) and obs-noise scales
+  (`task.env.obs_noise.*`) if the new robot has its own published numbers.
+  Otherwise leave them out of the overlay. The robot then inherits
+  `configs/task/joystick.yaml`'s generic defaults.
+- Pin DR ranges (`dr.dof.*`, `dr.joint_gains.*`, `dr.com_offset.*`, and so
+  on) only for the sub-fields with a real robot-specific source, such as a
+  hardware spec or an upstream sim-to-real training config. Leave the rest
+  out. The rest inherits `configs/dr/default.yaml`'s ranges. Hydra merges
+  nested `dr` dicts recursively, so the overlay only needs to name the keys
+  it actually changes.
+- Pin reward weights (`task.env.reward.scales.*`) only where a source
+  genuinely maps onto one of this repo's reward terms. Check what each term
+  actually computes in `src/humanoid_lab/rewards/terms.py`. A matching name
+  does not guarantee matching math. Pin only the changed entries.
+  `configs/task/joystick.yaml` has no `reward` key of its own, so the
+  overlay's `reward:` section is the only reward content in the resolved
+  config, and `make_env` deep-merges it onto `envs/joystick.py`'s
+  `default_config()` entry by entry at env construction
+  (`registry._apply_overrides`). Every unlisted entry keeps its Python
+  default. `configs/robot/roboto_origin.yaml`'s `reward:` section is the
+  worked example. It also records upstream values with no matching term in
+  a "not ported" comment block, instead of guessing a mapping.
+- `configs/robot/asimov_v1.yaml` is the worked example for the plain case:
+  a command envelope and obs-noise scales, no DR or reward overlay.
+  `configs/robot/roboto_origin.yaml` is the worked example for the fuller
+  case.
+
+A CLI override, such as `task.env.obs_noise.joint_vel=...` or
+`dr.dof.armature=...`, still wins over anything the overlay pins. Hydra
+applies command-line overrides after the whole defaults list composes.
 
 ## Ops rules that apply
 

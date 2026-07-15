@@ -28,6 +28,14 @@ _REQUIRED_ROBOT_YAML_KEYS = (
     "foot_geoms",
 )
 
+_ALLOWED_MODEL_PATCH_KEYS = ("options", "mesh_collisions", "sites", "geoms")
+_ALLOWED_MODEL_PATCH_OPTION_KEYS = ("solver", "iterations", "timestep")
+_ALLOWED_SOLVERS = ("pgs", "cg", "newton")
+_ALLOWED_MESH_COLLISIONS_VALUES = ("visual",)
+_ALLOWED_MODEL_PATCH_SITE_KEYS = ("body", "pos", "quat")
+_ALLOWED_MODEL_PATCH_GEOM_KEYS = ("body", "type", "size", "pos", "fromto", "quat")
+_ALLOWED_GEOM_TYPES = ("box", "capsule", "sphere")
+
 
 @dataclass(frozen=True)
 class PassiveJointParams:
@@ -35,6 +43,57 @@ class PassiveJointParams:
 
     stiffness: float
     damping: float
+
+
+@dataclass(frozen=True)
+class ModelPatchOptions:
+    """<option> overrides from robot.yaml's model_patches.options.
+
+    Any field left unset (None) leaves the source XML's own <option> value
+    untouched.
+    """
+
+    solver: str | None = None
+    iterations: int | None = None
+    timestep: float | None = None
+
+
+@dataclass(frozen=True)
+class ModelPatchSite:
+    """A site to inject into a named body, from a model_patches.sites entry."""
+
+    body: str
+    pos: tuple[float, float, float]
+    quat: tuple[float, float, float, float] = _IDENTITY_QUAT
+
+
+@dataclass(frozen=True)
+class ModelPatchGeom:
+    """A collision primitive to inject into a named body, from a
+    model_patches.geoms entry. `type` is one of box/capsule/sphere; `size`
+    follows mujoco's per-type geom size semantics. `pos` and `fromto` are
+    both optional but mutually exclusive, matching MJCF geom semantics.
+    """
+
+    body: str
+    type: str
+    size: tuple[float, ...]
+    pos: tuple[float, float, float] | None = None
+    fromto: tuple[float, float, float, float, float, float] | None = None
+    quat: tuple[float, float, float, float] = _IDENTITY_QUAT
+
+
+@dataclass(frozen=True)
+class ModelPatches:
+    """Parsed robot.yaml `model_patches` section. The section and every
+    sub-key inside it are optional; an absent robot.yaml key parses to this
+    dataclass's all-empty defaults, which build_spec applies as no-ops.
+    """
+
+    options: ModelPatchOptions = field(default_factory=ModelPatchOptions)
+    mesh_collisions: str | None = None
+    sites: dict[str, ModelPatchSite] = field(default_factory=dict)
+    geoms: dict[str, ModelPatchGeom] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -63,6 +122,7 @@ class RobotSpec:
     foot_geoms: list[str]
     symmetry: dict[str, str] = field(default_factory=dict)
     keyframes: dict[str, Keyframe] = field(default_factory=dict)
+    model_patches: ModelPatches = field(default_factory=ModelPatches)
     termination_bodies: list[str] = field(default_factory=list)
     obs_layout: dict[str, Any] = field(default_factory=dict)
     # Optional MJCF sensor names the env reads instead of computing the
@@ -121,6 +181,7 @@ def load_robot_spec(robot_dir: Path) -> RobotSpec:
         for joint_name, params in raw["passive_joints"].items()
     }
     keyframes = _parse_keyframes(raw.get("keyframes") or {}, yaml_path)
+    model_patches = _parse_model_patches(raw.get("model_patches") or {}, yaml_path)
 
     _validate_joint_groups(joint_groups, actuated_joints, yaml_path)
 
@@ -135,6 +196,7 @@ def load_robot_spec(robot_dir: Path) -> RobotSpec:
         foot_geoms=list(raw["foot_geoms"]),
         symmetry=dict(raw.get("symmetry") or {}),
         keyframes=keyframes,
+        model_patches=model_patches,
         termination_bodies=list(raw.get("termination_bodies") or []),
         obs_layout=dict(raw.get("obs_layout") or {}),
         sensors=dict(raw.get("sensors") or {}),
@@ -155,6 +217,112 @@ def _parse_keyframes(raw_keyframes: dict[str, Any], yaml_path: Path) -> dict[str
         joints = {jn: float(v) for jn, v in (kf_raw.get("joints") or {}).items()}
         keyframes[kf_name] = Keyframe(base_pos=base_pos, base_quat=base_quat, joints=joints)
     return keyframes
+
+
+def _parse_model_patches(raw: dict[str, Any], yaml_path: Path) -> ModelPatches:
+    unknown = [k for k in raw if k not in _ALLOWED_MODEL_PATCH_KEYS]
+    if unknown:
+        raise ValueError(f"{yaml_path}: model_patches has unknown key(s): {unknown}")
+
+    options = _parse_model_patch_options(raw.get("options") or {}, yaml_path)
+
+    mesh_collisions = raw.get("mesh_collisions")
+    if mesh_collisions is not None and mesh_collisions not in _ALLOWED_MESH_COLLISIONS_VALUES:
+        raise ValueError(
+            f"{yaml_path}: model_patches.mesh_collisions must be one of "
+            f"{_ALLOWED_MESH_COLLISIONS_VALUES}, got '{mesh_collisions}'"
+        )
+
+    sites = {
+        name: _parse_model_patch_site(name, raw_site, yaml_path)
+        for name, raw_site in (raw.get("sites") or {}).items()
+    }
+    geoms = {
+        name: _parse_model_patch_geom(name, raw_geom, yaml_path)
+        for name, raw_geom in (raw.get("geoms") or {}).items()
+    }
+
+    return ModelPatches(options=options, mesh_collisions=mesh_collisions, sites=sites, geoms=geoms)
+
+
+def _parse_model_patch_options(raw: dict[str, Any], yaml_path: Path) -> ModelPatchOptions:
+    unknown = [k for k in raw if k not in _ALLOWED_MODEL_PATCH_OPTION_KEYS]
+    if unknown:
+        raise ValueError(f"{yaml_path}: model_patches.options has unknown key(s): {unknown}")
+
+    solver = raw.get("solver")
+    if solver is not None and solver not in _ALLOWED_SOLVERS:
+        raise ValueError(
+            f"{yaml_path}: model_patches.options.solver must be one of "
+            f"{_ALLOWED_SOLVERS}, got '{solver}'"
+        )
+
+    return ModelPatchOptions(
+        solver=solver,
+        iterations=int(raw["iterations"]) if "iterations" in raw else None,
+        timestep=float(raw["timestep"]) if "timestep" in raw else None,
+    )
+
+
+def _parse_model_patch_site(name: str, raw: dict[str, Any], yaml_path: Path) -> ModelPatchSite:
+    unknown = [k for k in raw if k not in _ALLOWED_MODEL_PATCH_SITE_KEYS]
+    if unknown:
+        raise ValueError(
+            f"{yaml_path}: model_patches.sites['{name}'] has unknown key(s): {unknown}"
+        )
+    if "body" not in raw:
+        raise ValueError(f"{yaml_path}: model_patches.sites['{name}'] is missing required 'body'")
+    if "pos" not in raw:
+        raise ValueError(f"{yaml_path}: model_patches.sites['{name}'] is missing required 'pos'")
+
+    pos = tuple(float(x) for x in raw["pos"])
+    if len(pos) != 3:
+        raise ValueError(f"{yaml_path}: model_patches.sites['{name}'] pos must have 3 elements")
+    quat = tuple(float(x) for x in raw.get("quat", _IDENTITY_QUAT))
+    if len(quat) != 4:
+        raise ValueError(f"{yaml_path}: model_patches.sites['{name}'] quat must have 4 elements")
+
+    return ModelPatchSite(body=raw["body"], pos=pos, quat=quat)
+
+
+def _parse_model_patch_geom(name: str, raw: dict[str, Any], yaml_path: Path) -> ModelPatchGeom:
+    unknown = [k for k in raw if k not in _ALLOWED_MODEL_PATCH_GEOM_KEYS]
+    if unknown:
+        raise ValueError(
+            f"{yaml_path}: model_patches.geoms['{name}'] has unknown key(s): {unknown}"
+        )
+    missing = [k for k in ("body", "type", "size") if k not in raw]
+    if missing:
+        raise ValueError(
+            f"{yaml_path}: model_patches.geoms['{name}'] is missing required key(s): {missing}"
+        )
+
+    geom_type = raw["type"]
+    if geom_type not in _ALLOWED_GEOM_TYPES:
+        raise ValueError(
+            f"{yaml_path}: model_patches.geoms['{name}'] type must be one of "
+            f"{_ALLOWED_GEOM_TYPES}, got '{geom_type}'"
+        )
+
+    # size length is type-dependent (mujoco semantics); the compiler rejects
+    # a bad length with a named error, so it is deliberately not checked here.
+    size = tuple(float(x) for x in raw["size"])
+
+    pos = tuple(float(x) for x in raw["pos"]) if "pos" in raw else None
+    if pos is not None and len(pos) != 3:
+        raise ValueError(f"{yaml_path}: model_patches.geoms['{name}'] pos must have 3 elements")
+
+    fromto = tuple(float(x) for x in raw["fromto"]) if "fromto" in raw else None
+    if fromto is not None and len(fromto) != 6:
+        raise ValueError(f"{yaml_path}: model_patches.geoms['{name}'] fromto must have 6 elements")
+
+    quat = tuple(float(x) for x in raw.get("quat", _IDENTITY_QUAT))
+    if len(quat) != 4:
+        raise ValueError(f"{yaml_path}: model_patches.geoms['{name}'] quat must have 4 elements")
+
+    return ModelPatchGeom(
+        body=raw["body"], type=geom_type, size=size, pos=pos, fromto=fromto, quat=quat
+    )
 
 
 def _validate_joint_groups(
