@@ -153,12 +153,54 @@ Mirror `tests/test_asimov_v1.py`. At minimum:
 ## 6. Wire `configs/robot/<name>.yaml`
 
 ```yaml
-name: <name>
-dir: robots/<name>
+# @package _global_
+robot:
+  name: <name>
+  dir: robots/<name>
 ```
 
-This is a pointer only. It makes `robot=<name>` selectable on the Hydra CLI,
-and it lets `train.py` find `robots/<name>/`.
+The `@package _global_` header and the `robot: {name, dir}` block make
+`robot=<name>` selectable on the Hydra CLI and let `train.py` find
+`robots/<name>/`. That much is a pointer only.
+
+The same file also carries the new robot's training-tuning overlay. The
+overlay is a `task:` and/or `dr:` section that patches the task/dr base
+configs. `robot` composes after `task` and `dr` in `configs/config.yaml`'s
+defaults list, so the overlay wins over the base. `docs/configuration.md`'s
+"Robot configs own robot-specific tuning" section covers the full merge
+order. Decide per value whether the new robot pins its own number or
+inherits the shared base:
+
+- Pin a command envelope (`task.env.command.vx/vy/wz`) and obs-noise scales
+  (`task.env.obs_noise.*`) if the new robot has its own published numbers.
+  Otherwise leave them out of the overlay. The robot then inherits
+  `configs/task/joystick.yaml`'s generic defaults.
+- Pin DR ranges (`dr.dof.*`, `dr.joint_gains.*`, `dr.com_offset.*`, and so
+  on) only for the sub-fields with a real robot-specific source, such as a
+  hardware spec or an upstream sim-to-real training config. Leave the rest
+  out. The rest inherits `configs/dr/default.yaml`'s ranges. Hydra merges
+  nested `dr` dicts recursively, so the overlay only needs to name the keys
+  it actually changes.
+- Pin reward weights (`task.env.reward.scales.*`) only where a source
+  genuinely maps onto one of this repo's reward terms. Check what each term
+  actually computes in `src/humanoid_lab/rewards/terms.py`. A matching name
+  does not guarantee matching math. Pin only the changed entries.
+  `configs/task/joystick.yaml` has no `reward` key of its own, so the
+  overlay's `reward:` section is the only reward content in the resolved
+  config, and `make_env` deep-merges it onto `envs/joystick.py`'s
+  `default_config()` entry by entry at env construction
+  (`registry._apply_overrides`). Every unlisted entry keeps its Python
+  default. `configs/robot/roboto_origin.yaml`'s `reward:` section is the
+  worked example. It also records upstream values with no matching term in
+  a "not ported" comment block, instead of guessing a mapping.
+- `configs/robot/asimov_v1.yaml` is the worked example for the plain case:
+  a command envelope and obs-noise scales, no DR or reward overlay.
+  `configs/robot/roboto_origin.yaml` is the worked example for the fuller
+  case.
+
+A CLI override, such as `task.env.obs_noise.joint_vel=...` or
+`dr.dof.armature=...`, still wins over anything the overlay pins. Hydra
+applies command-line overrides after the whole defaults list composes.
 
 ## Ops rules that apply
 

@@ -1,3 +1,28 @@
-name: asimov_v1
-dir: robots/asimov_v1
+# @package _global_
+#
+# asimov_v1's training-tuning overlay: values that are asimov-specific stay
+# owned here, not in the shared task/dr bases. configs/config.yaml composes
+# `robot` after `task`/`dr` (see that file's defaults comment for the wins
+# order), so this section patches configs/task/joystick.yaml. CLI overrides
+# still win over this file.
 
+robot:
+  name: asimov_v1
+  dir: robots/asimov_v1
+
+task:
+  env:
+    # asimov docs (PLAN.md "Research findings"): command envelope x +-0.8
+    # m/s, y +-0.6 m/s, yaw +-0.6 rad/s.
+    command:
+      vx: [-0.8, 0.8]
+      vy: [-0.6, 0.6]
+      wz: [-0.6, 0.6]
+
+    # asimov docs (PLAN.md): gyro +-0.01, joint_pos +-0.01 rad, joint_vel
+    # +-0.1 rad/s. No published gravity-noise figure; unlisted components
+    # default to noise-free.
+    obs_noise:
+      gyro: 0.01
+      joint_pos: 0.01
+      joint_vel: 0.1

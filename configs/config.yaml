@@ -1,9 +1,19 @@
+# Robot configs (configs/robot/*.yaml) are `@package _global_` overlays: a
+# robot yaml carries its own `task:`/`dr:` sections that patch the task/dr
+# bases loaded earlier in this list. Composing `robot` after `task`/`dr`
+# lets a robot pin robot-specific keys (reward weights, DR ranges,
+# obs-noise scales, command envelopes) over the task/dr defaults. CLI
+# overrides win over everything here, robot overlays included: Hydra
+# applies them after the whole defaults list composes. `_self_` placement
+# only governs where this file's own keys merge relative to the groups.
+# Probe-verified on this repo: overlay wins over the task/dr base, CLI
+# wins over the overlay.
 defaults:
-  - robot: asimov_v1
   - task: joystick
   - actuators: sizing_ideal
   - network: default
   - dr: default
+  - robot: asimov_v1
   - _self_
 
 run_name: null # default: <task>_<timestamp>

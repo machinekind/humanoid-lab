@@ -1,2 +1,195 @@
-name: roboto_origin
-dir: robots/roboto_origin
+# @package _global_
+#
+# roboto_origin's training-tuning overlay: values pulled from RoboParty's
+# own upstream training configs (BSD-3-Clause, see
+# robots/roboto_origin/PROVENANCE.md for the license note and pinned
+# commit -- not restated here), mapped onto our keys only where the
+# semantics genuinely correspond. Source paths below are relative to
+# modules/roboparty_train/robolab/robolab/tasks/direct/base/ in the
+# upstream repo. configs/config.yaml composes `robot` after `task`/`dr`
+# (see that file's defaults comment for the wins order), so this section
+# patches configs/task/joystick.yaml and configs/dr/default.yaml. CLI
+# overrides still win over this file.
+
+robot:
+  name: roboto_origin
+  dir: robots/roboto_origin
+
+task:
+  env:
+    # CommandRangesCfg (base_config.py): lin_vel_x, lin_vel_y, ang_vel_z.
+    # RPOFlatEnvCfg does not override these, so these are the ranges RPO's
+    # own training actually uses. Upstream drives yaw through heading-
+    # command control (CommandsCfg.heading_command=True, a heading target
+    # in +-pi tracked by a P controller) rather than a direct uniform draw
+    # like our _sample_command; ang_vel_z is the bound that control is
+    # clipped to, which is the honest envelope-equivalent value here.
+    command:
+      vx: [-0.6, 1.0]
+      vy: [-0.5, 0.5]
+      wz: [-1.57, 1.57]
+
+    # NoiseScalesCfg.joint_pos/joint_vel, as overridden by
+    # RPOFlatEnvCfg.__post_init__ (rpo_env_cfg.py) -- NOT the
+    # NoiseScalesCfg class defaults (0.01, 1.5), which RPO's own flat-env
+    # training does not use. gyro is left at the base joystick.yaml value:
+    # upstream's noise_scales.ang_vel (0.2) is not one of the mapped
+    # fields for this pass.
+    obs_noise:
+      joint_pos: 0.03
+      joint_vel: 1.75
+
+    # Partial reward overlay: only the upstream-mapped entries are pinned
+    # here. configs/task/joystick.yaml defines no "reward" key (the reward
+    # defaults live in envs/joystick.py's default_config()), so this block
+    # is the resolved config's only task.env.reward content, and at env
+    # construction registry._apply_overrides (make_env, the path train.py
+    # uses) deep-merges task.env onto default_config() entry by entry.
+    # Every reward entry not listed here -- tracking_sigma, phase_sigma,
+    # torque_limit_frac, and the scales with no same-shape upstream term --
+    # keeps its Python default; the not-ported block at the bottom records
+    # the upstream values whose shape does not match ours. Weight transfer
+    # is 1:1: upstream's RewardManager.compute multiplies each term by
+    # weight*dt (base_env.py's _get_rewards, step_dt 4*0.005=0.02 s) and
+    # our joystick step multiplies the summed reward by self.dt (ctrl_dt
+    # 0.02 s), the same scaling.
+    reward:
+      scales:
+        # RPORewardCfg.track_lin_vel_xy_exp weight (rpo_env_cfg.py). Same
+        # shape: their exp(-err/std^2) with std=0.5 divides by 0.25,
+        # numerically identical to our exp(-err/tracking_sigma) with
+        # default_config's tracking_sigma=0.25 (inherited, not pinned
+        # here), so our sigma stays and the effective sharpness matches.
+        # Residual differences: theirs reads yaw-frame velocity where ours
+        # reads the body-frame local linvel, and theirs fades out with
+        # base tilt (clamp(-gravity_z,0,0.7)/0.7, ~1 while upright).
+        tracking_lin_vel: 1.0
+        # RPORewardCfg.track_ang_vel_z_exp weight (rpo_env_cfg.py). Same
+        # shape: exp of squared yaw-rate tracking error, same std^2 =
+        # tracking_sigma match as above. Theirs reads world-frame wz where
+        # ours reads body-frame gyro z, and theirs carries the same tilt
+        # fade-out.
+        tracking_ang_vel: 1.0
+        # RPORewardCfg.lin_vel_z_l2 weight (rpo_env_cfg.py). Same shape:
+        # squared body-frame vertical base velocity (mdp/rewards.py's
+        # lin_vel_z_l2; tilt fade-out aside).
+        lin_vel_z: -0.2
+        # RPORewardCfg.ang_vel_xy_l2 weight (rpo_env_cfg.py). Same shape:
+        # sum of squared body-frame roll/pitch rates (mdp/rewards.py's
+        # ang_vel_xy_l2; tilt fade-out aside).
+        ang_vel_xy: -0.1
+        # RPORewardCfg.flat_orientation_l2 weight (rpo_env_cfg.py). Same
+        # shape, identical formula: sum of squared xy components of the
+        # body-frame gravity direction (mdp/rewards.py's
+        # flat_orientation_l2, no tilt fade-out on this one).
+        orientation: -1.0
+        # RPORewardCfg.joint_torques_l2 weight (rpo_env_cfg.py). Same
+        # shape: sum of squared applied joint torques (isaaclab's standard
+        # joint_torques_l2, re-exported by their mdp/__init__.py; the
+        # local mdp/rewards.py does not override it).
+        torques: -1e-5
+        # RPORewardCfg.action_rate_l2 weight (rpo_env_cfg.py). Same shape:
+        # first difference of the raw action, squared and summed
+        # (mdp/rewards.py's action_rate_l2 over their action buffer).
+        action_rate: -2e-2
+        # RPORewardCfg.action_smoothness_l2 weight (rpo_env_cfg.py). Both
+        # terms are the second-order (acceleration) finite difference of
+        # the raw action: their buffer[-3] - 2*buffer[-2] + buffer[-1]
+        # (mdp/rewards.py's action_smoothness_l2) matches our
+        # action - 2*last_action + last_last_action (rewards/terms.py's
+        # action_accel).
+        action_accel: -2e-2
+        # RPORewardCfg.energy weight (rpo_env_cfg.py). Same shape: sum of
+        # |tau * qvel| over joints (mdp/rewards.py's energy; |a*b| =
+        # |a|*|b|, matching terms.energy's |tau|*|qvel|).
+        energy: -1e-4
+        # RPORewardCfg.termination_penalty weight (rpo_env_cfg.py). Same
+        # shape: a 0/1 indicator that fires once, on the step the episode
+        # terminates (their mdp/rewards.py is_terminated reads
+        # reset_terminated, timeouts excluded; our terms.termination reads
+        # the fall flag that ends the episode), dt-scaled identically in
+        # both pipelines (see the weight-transfer note above). The trigger
+        # differs: theirs is contact on torso/thigh bodies
+        # (terminate_contacts_body_names), ours base height/tilt.
+        termination: -200.0
+
+dr:
+  dof:
+    # EventCfg.scale_joint_parameters armature_distribution_params
+    # (base_config.py), operation="scale" -- multiplicative, matching
+    # dr.dof.armature's own semantics. friction_distribution_params is
+    # (1.0, 1.0) upstream (a no-op range), so dr.dof.frictionloss is left
+    # at the base value; upstream has no raw dof_damping randomization
+    # (their only joint-level damping draw is the actuator gain-loop kd in
+    # scale_actuator_gains, mapped to dr.joint_gains.kd_pct below), so
+    # dr.dof.damping is also left at the base value.
+    armature: [0.5, 1.5]
+  joint_gains:
+    # EventCfg.scale_actuator_gains stiffness/damping_distribution_params
+    # (base_config.py), both (0.9, 1.1) = 1 +- 0.1.
+    gain_pct: 0.1
+    kd_pct: 0.1
+  com_offset:
+    # EventCfg.randomize_rigid_body_com com_range (base_config.py): x/y
+    # +-0.025 m, z +-0.05 m.
+    xy: 0.025
+    z: 0.05
+
+# not ported -- either no equivalent switch/term in our reward/DR
+# pipeline, or our term of the same name computes a different shape, so
+# the upstream weight would scale a different quantity. Numbers recorded
+# here so a future reward/DR pass has them in-repo. All from
+# rpo_env_cfg.py's RPORewardCfg or base_config.py's EventCfg unless noted:
+#   feet_air_time (mdp.feet_air_time_positive_biped): weight 0.25,
+#     threshold 0.4 -- shape differs: theirs is a per-step reward of the
+#     current single-stance mode time clamped to the threshold; ours
+#     (terms.feet_air_time) is a per-landing event reward of
+#     (air_time - min_air_time) at first contact.
+#   feet_slide: weight -0.3 -- shape differs: theirs penalizes the linear
+#     norm |v_xy| of each contacting foot; ours (terms.feet_slip) the
+#     squared speed v_xy^2, a different power law.
+#   stand_still: weight -0.2 (pos_weight 1.0, vel_weight 0.04) -- shape
+#     differs: our term (terms.stand_still) mixes position and velocity
+#     at a fixed internal 1.0/0.2 ratio vs. their 1.0/0.04, and theirs
+#     additionally gates on measured body velocity (< 0.5) on top of the
+#     zero-command mask.
+#   undesired_contacts: weight -1.0, any non-ankle-roll body contact
+#   feet_force (mdp.body_force): weight -3e-3, threshold 500, max_reward 400
+#   feet_distance (mdp.body_distance_y, ankle_roll bodies): weight 0.1, min 0.16, max 0.50
+#   knee_distance (mdp.body_distance_y, knee bodies): weight 0.1, min 0.18, max 0.35
+#   feet_stumble: weight -1.0
+#   feet_contact_without_cmd: weight 0.1 -- rewards both feet in contact
+#     under zero command; no equivalent term (our zero-command shaping is
+#     the stand_still penalty, a different quantity)
+#   feet_orientation (mdp.body_orientation_l2, ankle_roll bodies): weight -0.1
+#   feet_height: weight 0.2, ankle_height 0.04, threshold 0.02
+#   upward: weight 0.4
+#   dof_pos_limits (mdp.joint_pos_limits): weight -1.0
+#   joint_vel_l2: weight -2e-4
+#   dof_acc_l2 (mdp.joint_acc_l2): weight -2.5e-7
+#   joint_deviation_* (mdp.joint_deviation_l1, per-group L1 deviation
+#     from the default pose): closest analog to our uniform-L2 pose term
+#     (terms.pose), but L1 vs L2 and a four-way per-group weight split,
+#     so no single weight transfers:
+#   joint_deviation_hip (thigh_yaw, thigh_roll): weight -0.03
+#   joint_deviation_torso (torso, arm_roll, arm_yaw, elbow_pitch, elbow_yaw): weight -1.0
+#   joint_deviation_arms (arm_pitch): weight -0.06
+#   joint_deviation_legs (thigh_pitch, knee, ankle_pitch, ankle_roll): weight -0.01
+#   base/link mass DR (EventCfg.add_base_mass, additive -3.0..3.0 kg on
+#     torso_link/base_link; EventCfg.scale_link_mass, multiplicative
+#     0.9-1.1 on left/right *_link): configs/dr/default.yaml has no
+#     base/link-mass switch -- randomize.py applies a fixed, non-config-
+#     exposed base_scale (0.7-1.3) and link_scale (0.9-1.1) unconditionally
+#     to every robot.
+#   push (EventCfg.push_robot): interval_range_s 10.0-15.0 s, velocity_range
+#     x/y +-0.5 m/s, z +-0.2 m/s, roll/pitch +-0.52 rad/s, yaw +-0.78 rad/s.
+#     envs/joystick.py's default_config() has its own push block (enable,
+#     interval_steps=200, vel=0.4 m/s, planar only) but configs/task/
+#     joystick.yaml's env: block does not expose it, so there is no yaml
+#     key to pin this to.
+#   action_scale: RobotCfg.action_scale = 0.25 (also set directly in
+#     RPOFlatEnvCfg.__post_init__). NOT ported: our action scaling is
+#     preset-owned (action_scale_factor in the actuators yaml). See
+#     robots/roboto_origin/actuators/deploy_pd.yaml's existing comment on
+#     why upstream's flat-0.25-rad scheme has no field in our
+#     ActuatorPreset schema.

@@ -24,7 +24,7 @@ below. Override any of them with `group=name`.
 
 | Axis | Group dir | Default | Selects |
 |---|---|---|---|
-| `robot` | `configs/robot/` | `asimov_v1` | Which `robots/<name>/` directory supplies `robot.yaml`, `actuators/`, and the vendored MJCF. |
+| `robot` | `configs/robot/` | `asimov_v1` | Which `robots/<name>/` directory supplies `robot.yaml`, `actuators/`, and the vendored MJCF. Also an `@package _global_` overlay that patches robot-specific `task`/`dr` tuning. See "Robot configs own robot-specific tuning" below. |
 | `task` | `configs/task/` | `joystick` | Selects the task's env class and its reward and observation overlay. `joystick` tracks commanded velocity. `sizing` is `joystick` with sharpened torque and energy penalties, plus per-step tau/omega/power telemetry. |
 | `actuators` | `configs/actuators/` | `sizing_ideal` | Which named actuator preset to inject. Also available: `encos_datasheet`, `deploy_pd`. |
 | `network` | `configs/network/` | `default` | Policy/value MLP layer sizes, merged into the PPO network factory. |
@@ -35,17 +35,62 @@ overlays. It currently holds no presets, only `.gitkeep`. A preset added
 there needs `+experiment=<name>` on the CLI, since it is not part of the
 `defaults` list.
 
-Each robot config is a plain pointer to a robot directory:
+Each robot config is a `robot.dir` pointer plus an optional training-tuning
+overlay:
 
 ```yaml
 # configs/robot/asimov_v1.yaml
-name: asimov_v1
-dir: robots/asimov_v1
+# @package _global_
+robot:
+  name: asimov_v1
+  dir: robots/asimov_v1
+task:
+  env:
+    command: {...}
+    obs_noise: {...}
 ```
 
 `train.py` reads `cfg.robot.dir` and loads `robot.yaml` from that directory
 at construction time. Adding a robot means adding a matching
 `configs/robot/<name>.yaml` pointer, not restructuring this axis.
+
+### Robot configs own robot-specific tuning
+
+Reward weights, DR ranges, obs-noise scales, and command envelopes differ
+per robot. A robot config carries them as an `@package _global_` overlay.
+The overlay lives in a `task:` and/or `dr:` section next to the
+`robot: {name, dir}` pointer, and it patches the shared task/dr base
+configs.
+
+`configs/config.yaml`'s defaults list is `task, actuators, network, dr,
+robot, _self_`. `robot` composes after `task` and `dr`, so a robot's
+overlay wins over the task/dr base for any key it sets. A CLI override,
+such as `task.env.obs_noise.joint_vel=0.5` or `dr.dof.armature=...`, wins
+over the robot overlay in turn: Hydra applies command-line overrides after
+the whole defaults list composes. `_self_` placement only governs where
+`config.yaml`'s own keys merge relative to the groups. Hydra's
+defaults-list composition merges nested dicts recursively, so a robot
+overlay only needs to name the keys it actually changes. An untouched key
+keeps its task/dr base value.
+
+`task.env.reward` composes through one extra step. `configs/task/
+joystick.yaml` defines no `reward` key. The reward defaults live in
+`envs/joystick.py`'s `default_config()`. A robot overlay's `reward:`
+section is therefore the only `task.env.reward` content in the resolved
+config. At env construction, `make_env` deep-merges the resolved `task.env`
+onto `default_config()` entry by entry (`registry._apply_overrides`). A
+partial reward overlay changes exactly the entries it names, and every
+unlisted entry keeps its Python default. Pin only the changed entries.
+`configs/robot/roboto_origin.yaml`'s `reward:` section is the worked
+example.
+
+`configs/robot/asimov_v1.yaml` is the plain case. It pins a command
+envelope and obs-noise scales, cited to asimov's own published docs.
+`configs/robot/roboto_origin.yaml` is the fuller case. It maps reward
+weights, DR ranges, obs-noise scales, and a command envelope from
+RoboParty's own upstream training config, each with a provenance comment.
+It also carries a "not ported" comment block that records upstream values
+with no equivalent switch or term in this repo yet.
 
 ## Top-level keys
 
@@ -133,21 +178,32 @@ Default config, resolved:
 
 ```bash
 $ ./run.sh train --cfg job --resolve
-robot:
-  name: asimov_v1
-  dir: robots/asimov_v1
 task:
   name: joystick
-  ...
+  env:
+    ...
+    command: {vx: [-0.8, 0.8], vy: [-0.6, 0.6], wz: [-0.6, 0.6]}
+    obs_noise: {gyro: 0.01, joint_pos: 0.01, joint_vel: 0.1}
+    ...
+  ppo: {}
 actuators:
   name: sizing_ideal
 network: {}
 dr:
   com_offset: {enable: false, xy: 0.02, z: 0.01}
   ...
+robot:
+  name: asimov_v1
+  dir: robots/asimov_v1
 domain_rand: false
 wandb: {enable: true, project: humanoid-lab}
 ```
+
+`task`, `actuators`, `network`, `dr`, and `robot` appear in that order
+because that is the defaults-list order in `configs/config.yaml`. `command`
+and `obs_noise` show up under `task.env` because `robot: asimov_v1`'s
+overlay patches them in. That overlay composes after `task` and `dr` in the
+same defaults list.
 
 Switch task and actuator preset:
 
@@ -155,11 +211,20 @@ Switch task and actuator preset:
 $ ./run.sh train robot=asimov_v1 task=sizing actuators=encos_datasheet --cfg job --resolve
 task:
   name: sizing
-  env: {}
+  env:
+    command: {vx: [-0.8, 0.8], vy: [-0.6, 0.6], wz: [-0.6, 0.6]}
+    obs_noise: {gyro: 0.01, joint_pos: 0.01, joint_vel: 0.1}
   ppo: {}
 actuators:
   name: encos_datasheet
 ```
+
+`configs/task/sizing.yaml`'s own `env:` is empty. `robot: asimov_v1`'s
+overlay still patches `command`/`obs_noise` in, because the overlay applies
+regardless of task. The values match what `envs/sizing.py`'s
+`default_config()` already carries as Python literals. `envs/sizing.py`'s
+`default_config()` starts from `envs/joystick.py`'s `default_config()`. The
+resolved config text changes here. The env's runtime behavior does not.
 
 Switch the network group:
 
