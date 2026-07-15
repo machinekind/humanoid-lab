@@ -290,8 +290,9 @@ def load_checkpoint_policy(run_dir: Path):
     hydra = run["hydra_config"]
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
+    actuator_overrides = hydra["actuators"].get("overrides") or {}
     env_overrides = _measurement_env_overrides(run)
-    env = make_env(run["task"], robot_dir, preset_name, env_overrides)
+    env = make_env(run["task"], robot_dir, preset_name, env_overrides, actuator_overrides)
 
     ckpt = _find_latest_checkpoint(run, run_dir)
     ppo_params = config_dict.ConfigDict(run["ppo_config"])

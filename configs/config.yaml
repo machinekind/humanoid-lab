@@ -32,6 +32,15 @@ smoke: false # tiny CPU-sized run for a pipeline check
 restore: null # checkpoint dir to warm-start from
 domain_rand: false
 
+# Deep-merged onto the loaded actuator preset yaml at env/model construction
+# (robot/presets.py's load_actuator_preset -- the one choke point every
+# consumer routes through). Experiment yamls set keys here directly; from
+# the CLI use +actuators.overrides.groups.<group>.<param>=<value>. This
+# dict-merges with the `actuators` group's own `name:` key since `_self_`
+# composes after the `actuators` group (see the defaults comment above).
+actuators:
+  overrides: {}
+
 wandb:
   enable: true
   project: humanoid-lab

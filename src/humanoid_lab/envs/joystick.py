@@ -173,8 +173,10 @@ def default_config() -> config_dict.ConfigDict:
 
 
 class Joystick(HumanoidEnv):
-    def __init__(self, robot_dir, preset_name, config=None, config_overrides=None):
-        super().__init__(robot_dir, preset_name, config or default_config(), config_overrides)
+    def __init__(self, robot_dir, preset_name, config=None, config_overrides=None, actuator_overrides=None):
+        super().__init__(
+            robot_dir, preset_name, config or default_config(), config_overrides, actuator_overrides
+        )
 
         # action_scale override: 0.0 sentinel keeps the preset-derived
         # per-joint vector HumanoidEnv.__init__ already computed; a scalar

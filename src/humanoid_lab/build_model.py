@@ -23,6 +23,7 @@ import mujoco
 
 from humanoid_lab import paths
 from humanoid_lab.robot.build import build_spec
+from humanoid_lab.robot.presets import parse_set_overrides
 
 
 def _has_ground_plane(spec: mujoco.MjSpec) -> bool:
@@ -87,9 +88,11 @@ def _rewrite_meshdir_for_output(xml_text: str, robot_dir: Path, out_path: Path) 
     return xml_text.replace(f'meshdir="{original_meshdir}"', f'meshdir="{new_meshdir}"', 1)
 
 
-def build(robot: str, preset: str, out: Path | None = None) -> Path:
+def build(
+    robot: str, preset: str, out: Path | None = None, actuator_overrides: dict | None = None
+) -> Path:
     robot_dir = paths.ROBOTS_DIR / robot
-    spec = build_spec(robot_dir, preset)
+    spec = build_spec(robot_dir, preset, actuator_overrides)
     scene_notes = ensure_training_scene(spec)
 
     out_path = out if out is not None else robot_dir / "mjx" / f"{preset}.xml"
@@ -118,8 +121,24 @@ def main() -> None:
     parser.add_argument(
         "--out", type=Path, default=None, help="output XML path (default: robots/<robot>/mjx/<preset>.xml)"
     )
+    parser.add_argument(
+        "--set",
+        dest="set_",
+        action="append",
+        default=None,
+        metavar="PATH=VALUE",
+        help="override a preset value (see robot/presets.py's parse_set_overrides); repeatable",
+    )
     args = parser.parse_args()
-    build(args.robot, args.preset, args.out)
+
+    if args.set_ and args.out is None:
+        parser.error(
+            "--set requires --out: the default robots/<robot>/mjx/<preset>.xml is the canonical "
+            "preset build and must not be overwritten by an ad-hoc --set variant"
+        )
+
+    actuator_overrides = parse_set_overrides(args.set_) if args.set_ else None
+    build(args.robot, args.preset, args.out, actuator_overrides)
 
 
 if __name__ == "__main__":

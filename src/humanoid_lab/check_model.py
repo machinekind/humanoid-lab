@@ -31,6 +31,7 @@ import numpy as np
 from humanoid_lab import paths
 from humanoid_lab.build_model import ensure_training_scene
 from humanoid_lab.robot.build import build_spec, compile_spec
+from humanoid_lab.robot.presets import parse_set_overrides
 from humanoid_lab.robot.spec import load_robot_spec
 
 MJX_ROLLOUT_STEPS = 50
@@ -43,17 +44,23 @@ def _free_joint_qpos_addr(model: mujoco.MjModel) -> int:
     raise ValueError("model has no free joint; cannot read base height")
 
 
-def _load_model(robot: str, preset: str, xml_override: Path | None) -> tuple[mujoco.MjModel, str]:
+def _load_model(
+    robot: str, preset: str, xml_override: Path | None, actuator_overrides: dict | None = None
+) -> tuple[mujoco.MjModel, str]:
     if xml_override is not None:
         return mujoco.MjModel.from_xml_path(str(xml_override)), str(xml_override)
 
     robot_dir = paths.ROBOTS_DIR / robot
     xml_path = robot_dir / "mjx" / f"{preset}.xml"
-    if xml_path.exists():
+    # actuator_overrides forces the in-memory build_spec branch even if a
+    # prebuilt XML exists: the prebuilt file was compiled from the bare
+    # preset, so the fast path would silently ignore --set.
+    if not actuator_overrides and xml_path.exists():
         return mujoco.MjModel.from_xml_path(str(xml_path)), str(xml_path)
 
-    print(f"{xml_path} not found; building in-memory (not writing to disk)")
-    spec = build_spec(robot_dir, preset)
+    reason = "--set given" if actuator_overrides else f"{xml_path} not found"
+    print(f"{reason}; building in-memory (not writing to disk)")
+    spec = build_spec(robot_dir, preset, actuator_overrides)
     ensure_training_scene(spec)
     return compile_spec(spec), f"{xml_path} (in-memory, not built yet)"
 
@@ -73,10 +80,11 @@ def check(
     xml_override: Path | None,
     skip_mjx: bool,
     max_qvel: float,
+    actuator_overrides: dict | None = None,
 ) -> bool:
     robot_dir = paths.ROBOTS_DIR / robot
     robot_spec = load_robot_spec(robot_dir)
-    model, xml_label = _load_model(robot, preset, xml_override)
+    model, xml_label = _load_model(robot, preset, xml_override, actuator_overrides)
     base_addr = _free_joint_qpos_addr(model)
 
     print(f"model: {xml_label}")
@@ -166,9 +174,23 @@ def main() -> None:
         default=100.0,
         help="fail if any |qvel| exceeds this (rad/s); catches huge-but-finite divergence",
     )
+    parser.add_argument(
+        "--set",
+        dest="set_",
+        action="append",
+        default=None,
+        metavar="PATH=VALUE",
+        help="override a preset value (see robot/presets.py's parse_set_overrides); repeatable",
+    )
     args = parser.parse_args()
 
-    ok = check(args.robot, args.preset, args.steps, args.xml, args.skip_mjx, args.max_qvel)
+    if args.set_ and args.xml is not None:
+        parser.error("--set and --xml are mutually exclusive: --xml already names a fixed built model")
+
+    actuator_overrides = parse_set_overrides(args.set_) if args.set_ else None
+    ok = check(
+        args.robot, args.preset, args.steps, args.xml, args.skip_mjx, args.max_qvel, actuator_overrides
+    )
     print("GATE PASS" if ok else "GATE FAIL")
     sys.exit(0 if ok else 1)
 

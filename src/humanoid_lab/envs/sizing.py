@@ -51,8 +51,10 @@ class Sizing(Joystick):
     torque/speed/power telemetry added to `state.metrics`.
     """
 
-    def __init__(self, robot_dir, preset_name, config=None, config_overrides=None):
-        super().__init__(robot_dir, preset_name, config or default_config(), config_overrides)
+    def __init__(self, robot_dir, preset_name, config=None, config_overrides=None, actuator_overrides=None):
+        super().__init__(
+            robot_dir, preset_name, config or default_config(), config_overrides, actuator_overrides
+        )
 
         # Per-joint velocity_limit, canonical actuated_joints order.
         # HumanoidEnv doesn't carry this (only kp/kd/effort_limit have an

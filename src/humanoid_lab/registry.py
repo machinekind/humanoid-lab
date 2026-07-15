@@ -39,10 +39,16 @@ def _apply_overrides(cfg: config_dict.ConfigDict, overrides: dict) -> None:
         setattr(cfg, key, value)
 
 
-def make_env(task: str, robot_dir, preset_name: str, env_overrides: dict | None = None):
+def make_env(
+    task: str,
+    robot_dir,
+    preset_name: str,
+    env_overrides: dict | None = None,
+    actuator_overrides: dict | None = None,
+):
     if task not in TASKS:
         raise KeyError(f"unknown task '{task}', have {sorted(TASKS)}")
     cls, default_config = TASKS[task]
     cfg = default_config()
     _apply_overrides(cfg, env_overrides or {})
-    return cls(robot_dir, preset_name, cfg)
+    return cls(robot_dir, preset_name, cfg, actuator_overrides=actuator_overrides)
