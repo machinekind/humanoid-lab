@@ -23,8 +23,9 @@ actuators, read off per-joint torque and speed demands, then choose motors.
   the target: the end goal is choosing our own motors, and a different motor/gearbox pair changes
   reflected inertia, not just torque limits.
 - Motor sizing is a task (`task=sizing`), not a one-off script.
-- Robot #2 defaults to Unitree G1, because known-good baselines exist to validate the pipeline.
-  Confirm with Marcin before starting it.
+- Robot #2 is RoboParty's roboto_origin (`robots/roboto_origin/`), decided by Marcin on
+  2026-07-15. The G1 default existed to validate the pipeline against known-good baselines;
+  Asimov already did that, and roboto_origin ships MJCF plus hardware-proven gains upstream.
 - Keeper policies publish to a private HF repo under <hf-org> with the established flat layout, plus a
   frozen Hydra preset in-repo. This carries the w01-tek convention.
 - Ops rules carry over from w01-tek: resolve config before spending GPU time, smoke run before a
@@ -227,6 +228,5 @@ Each step has a gate. Do not start the next step before the gate passes.
 ## Open questions for Marcin
 
 - Package name and license for the new repo.
-- Confirm G1 as robot #2.
 - Use asimov-mjlab's walking reference for imitation-style training, or velocity rewards only?
 - Sizing first, or a plain walking baseline with the ENCOS datasheet preset first?

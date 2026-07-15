@@ -1,9 +1,9 @@
 # Adding a robot
 
-PLAN.md names Unitree G1 as the default candidate for robot #2, pending
-confirmation with Marcin. This checklist applies to G1 or to any other
-robot. `robots/asimov_v1/` is the worked example throughout. `robots/_template/`
-carries a stub version of the same files to copy from.
+This checklist applies to any robot. `robots/asimov_v1/` is the worked
+example throughout; `robots/roboto_origin/` (robot #2) is the worked example
+for a source XML that needs `model_patches`. `robots/_template/` carries a
+stub version of the same files to copy from.
 
 ## 1. Vendor the upstream source
 

@@ -75,8 +75,10 @@ joint group live in `robots/<robot>/actuators/<name>.yaml`, loaded at
 env-construction time from `cfg.robot.dir` plus that name. A preset name
 only works with a robot that ships a matching file under its own
 `actuators/` directory. `sizing_ideal`, `encos_datasheet`, and `deploy_pd`
-exist under `robots/asimov_v1/actuators/`. A new robot starts with none of
-them and must write its own.
+exist under `robots/asimov_v1/actuators/`; `robots/roboto_origin/actuators/`
+ships `deploy_pd` only, so `robot=roboto_origin` needs
+`actuators=deploy_pd` on the CLI. A new robot starts with no presets and
+must write its own.
 
 A preset also picks the actuator model. Implemented models are `pd` and
 `ideal_torque`. `dc_motor_speed_saturation` and `delayed` are registered but
