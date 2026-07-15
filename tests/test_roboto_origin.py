@@ -24,6 +24,40 @@ from humanoid_lab.robot.spec import load_robot_spec, validate_against_model
 
 ROBOT_DIR = paths.ROBOTS_DIR / "roboto_origin"
 
+# The ten body primitives robot.yaml's model_patches.geoms injects on top of
+# the six foot capsules, so a fallen robot rests on the floor instead of
+# passing through it.
+BODY_COLLISION_GEOMS = (
+    "base_collision",
+    "torso_collision",
+    "left_thigh_collision",
+    "right_thigh_collision",
+    "left_shin_collision",
+    "right_shin_collision",
+    "left_upper_arm_collision",
+    "right_upper_arm_collision",
+    "left_forearm_collision",
+    "right_forearm_collision",
+)
+
+
+def _home_pd_hold(robot_spec, model, data):
+    """Set qpos to the home keyframe and ctrl to the PD targets that hold it."""
+    key = model.key("home")
+    home = robot_spec.keyframes["home"]
+    data.qpos[:] = key.qpos
+    data.qvel[:] = 0
+    for i in range(model.nu):
+        data.ctrl[i] = home.joints.get(model.actuator(i).name, 0.0)
+
+
+def _free_joint_qpos_addr(model):
+    return next(
+        int(model.jnt_qposadr[i])
+        for i in range(model.njnt)
+        if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
+    )
+
 
 @pytest.fixture(scope="module")
 def robot_spec():
@@ -69,9 +103,10 @@ def test_build_spec_deploy_pd_compiles(robot_spec, built_model):
     assert model.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
 
     # model_patches.mesh_collisions: visual makes every mesh geom (all of
-    # the source XML's robot-body geometry) collision-inert; the six
-    # injected foot capsules and the source's ground plane are the only
-    # remaining collision surfaces.
+    # the source XML's robot-body geometry) collision-inert; the injected
+    # primitives (six foot capsules plus the ten body primitives below)
+    # and the source's ground plane are the only remaining collision
+    # surfaces.
     for i in range(model.ngeom):
         if model.geom_type[i] == mujoco.mjtGeom.mjGEOM_MESH:
             assert model.geom_contype[i] == 0
@@ -79,6 +114,12 @@ def test_build_spec_deploy_pd_compiles(robot_spec, built_model):
 
     for name in robot_spec.foot_geoms:
         # model.geom(name) raises KeyError if the capsule was not injected.
+        assert model.geom(name).contype[0] == 1
+
+    # The body primitives from the fell-through-the-floor fix (robot.yaml's
+    # model_patches.geoms comment): without them, only the feet collide and
+    # a toppled robot passes through the floor.
+    for name in BODY_COLLISION_GEOMS:
         assert model.geom(name).contype[0] == 1
 
     assert 33 < model.body_mass.sum() < 34.5
@@ -164,6 +205,70 @@ def test_home_keyframe_steps_without_nan(robot_spec, built_model):
         if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
     )
     assert data.qpos[free_addr + 2] > 0.5
+
+
+def test_home_settle_contacts_floor_and_feet_only(robot_spec, built_model):
+    """Standing at home under PD hold, every contact must be a foot capsule
+    against the floor: no body primitive may touch the ground (a polluted
+    stance would corrupt any contact-derived signal), and no robot-robot
+    pair may exist at all (the source XML's contype=1/conaffinity=0 scheme
+    promises primitives only ever pair with the floor).
+    """
+    model = built_model
+    data = mujoco.MjData(model)
+    _home_pd_hold(robot_spec, model, data)
+    mujoco.mj_forward(model, data)
+
+    floor_id = model.geom("ground").id
+    foot_ids = {model.geom(n).id for n in robot_spec.foot_geoms}
+    for _ in range(500):
+        mujoco.mj_step(model, data)
+        for c in data.contact[: data.ncon]:
+            pair = {c.geom1, c.geom2}
+            assert floor_id in pair, (
+                f"robot-robot contact {model.geom(c.geom1).name} <-> {model.geom(c.geom2).name}"
+            )
+            other = (pair - {floor_id}).pop()
+            assert other in foot_ids, (
+                f"non-foot geom {model.geom(other).name} touches the floor at the home pose"
+            )
+
+
+def test_toppled_robot_rests_on_the_floor(robot_spec, built_model):
+    """Regression for the fell-through-the-floor bug (2026-07-15): with
+    only foot capsules as collision geometry, a lateral shove at the home
+    pose ended with the base at z = -0.73 m, the whole body below the
+    ground plane and dangling from the feet. With the body primitives the
+    same shove must end with the robot lying ON the floor.
+    """
+    model = built_model
+    data = mujoco.MjData(model)
+    _home_pd_hold(robot_spec, model, data)
+    mujoco.mj_forward(model, data)
+
+    free_addr = _free_joint_qpos_addr(model)
+    base_body_id = model.body("base_link").id
+    n_settle = int(1.0 / model.opt.timestep)
+    n_shove = int(0.2 / model.opt.timestep)
+    n_watch = int(3.0 / model.opt.timestep)
+
+    min_base_z = np.inf
+    for step in range(n_settle + n_shove + n_watch):
+        if n_settle <= step < n_settle + n_shove:
+            data.xfrc_applied[base_body_id, :3] = [120.0, 60.0, 0.0]
+        else:
+            data.xfrc_applied[base_body_id, :3] = 0.0
+        mujoco.mj_step(model, data)
+        min_base_z = min(min_base_z, data.qpos[free_addr + 2])
+
+    assert np.all(np.isfinite(data.qpos))
+    # The base may dip briefly while limbs absorb the fall, but must never
+    # sink meaningfully below the plane, and must come to rest on top of it
+    # (lying flat it sits at ~0.054 m, roughly the base box's half-height).
+    assert min_base_z > -0.02, f"base passed through the floor (min z {min_base_z:.3f} m)"
+    assert data.qpos[free_addr + 2] > 0.02, (
+        f"base ended below the floor (z {data.qpos[free_addr + 2]:.3f} m)"
+    )
 
 
 def test_build_spec_sizing_ideal_compiles(robot_spec, sizing_ideal_model):

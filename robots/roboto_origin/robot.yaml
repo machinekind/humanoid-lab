@@ -154,10 +154,17 @@ model_patches:
 
   # Every geom in the source XML is a full-STL mesh doing double duty as
   # both visual and collision geometry. mesh_collisions: visual zeroes
-  # contype/conaffinity on all of them, so the only collision surface left
-  # is the six capsules injected below. Fall detection uses base height/
-  # tilt only (termination_bodies above), so no other body needs contact
-  # geometry.
+  # contype/conaffinity on all of them, so the primitives injected below
+  # are the only collision surface. Feet alone are NOT enough: with only
+  # foot capsules, a toppled robot passes straight through the floor
+  # (reproduced 2026-07-15: shove at home pose -> base settles at
+  # z = -0.73 m, dangling from the feet). Fall detection is base height/
+  # tilt (termination_bodies above), but the body still needs floor
+  # contact for the fall itself to resolve physically, so every major
+  # segment carries a primitive below. Contact-pair cost is small: the
+  # source XML's scheme (robot geoms contype=1 conaffinity=0, ground
+  # conaffinity=15) means primitives pair with the floor only, never with
+  # each other -- no self-collision, no excludes needed.
   mesh_collisions: visual
 
   # left_foot/right_foot sites, one per foot_sites entry, on the
@@ -214,3 +221,79 @@ model_patches:
       type: capsule
       size: [0.012]
       fromto: [-0.042, 0.017, -0.033, 0.092, 0.017, -0.033]
+
+    # Body primitives (added 2026-07-15, the fell-through-the-floor fix;
+    # see the mesh_collisions comment above). All numbers measured from
+    # the body's own STL vertices in the body frame, per
+    # docs/adding-a-robot.md's measurement rule: boxes take the mesh
+    # bounding box verbatim (pos = bbox center, size = half-extents);
+    # capsules take the mid-shaft centerline (midpoint of the
+    # perpendicular bbox over the shaft window) and the largest radial
+    # distance from it, with fromto endpoints pulled in so the rounded
+    # caps stay inside the mesh's axis range and clear of the neighboring
+    # joint pivots. Left/right pairs mirror in y. None of these reach the
+    # floor in any keyframe (the shin capsule, the lowest, clears it by
+    # ~0.034 m at home) -- gated by
+    # tests/test_roboto_origin.py::test_home_settle_contacts_floor_and_feet_only.
+    base_collision:
+      body: base_link
+      type: box
+      size: [0.0931, 0.1352, 0.0792]
+      pos: [-0.0395, 0.0, -0.0105]
+    torso_collision:
+      body: torso_link
+      type: box
+      size: [0.0956, 0.1250, 0.1289]
+      pos: [-0.0131, 0.0, 0.1128]
+    # thigh_pitch_link: shaft along -z, hip pivot at z 0, knee child at
+    # z -0.25; mesh z [-0.3146, +0.0421], mid-shaft radius 0.068 around
+    # centerline (x 0, y -+0.0181).
+    left_thigh_collision:
+      body: left_thigh_pitch_link
+      type: capsule
+      size: [0.068]
+      fromto: [0.0, -0.0181, -0.06, 0.0, -0.0181, -0.24]
+    right_thigh_collision:
+      body: right_thigh_pitch_link
+      type: capsule
+      size: [0.068]
+      fromto: [0.0, 0.0181, -0.06, 0.0, 0.0181, -0.24]
+    # knee_link (the shin): shaft along -z, knee pivot at z 0, ankle child
+    # at z -0.30; mesh z [-0.3125, +0.0425], mid-shaft radius 0.051 around
+    # centerline (x 0, y -+0.0145).
+    left_shin_collision:
+      body: left_knee_link
+      type: capsule
+      size: [0.051]
+      fromto: [0.0, -0.0145, -0.05, 0.0, -0.0145, -0.26]
+    right_shin_collision:
+      body: right_knee_link
+      type: capsule
+      size: [0.051]
+      fromto: [0.0, 0.0145, -0.05, 0.0, 0.0145, -0.26]
+    # arm_yaw_link (the upper arm): shaft along -z, elbow_pitch child at
+    # z -0.1888; mesh z [-0.2173, +0.0058], mid-shaft radius 0.044 around
+    # centerline x 0, y -+0.0025 (sub-3 mm, dropped to 0).
+    left_upper_arm_collision:
+      body: left_arm_yaw_link
+      type: capsule
+      size: [0.044]
+      fromto: [0.0, 0.0, -0.03, 0.0, 0.0, -0.17]
+    right_upper_arm_collision:
+      body: right_arm_yaw_link
+      type: capsule
+      size: [0.044]
+      fromto: [0.0, 0.0, -0.03, 0.0, 0.0, -0.17]
+    # elbow_yaw_link (the forearm, out along +x): mesh x
+    # [-0.0058, +0.1382], mid-shaft radius 0.0315 around centerline
+    # y 0, z 0.
+    left_forearm_collision:
+      body: left_elbow_yaw_link
+      type: capsule
+      size: [0.0315]
+      fromto: [0.031, 0.0, 0.0, 0.105, 0.0, 0.0]
+    right_forearm_collision:
+      body: right_elbow_yaw_link
+      type: capsule
+      size: [0.0315]
+      fromto: [0.031, 0.0, 0.0, 0.105, 0.0, 0.0]
