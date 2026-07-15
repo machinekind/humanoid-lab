@@ -1,0 +1,18 @@
+# PLAN.md "First experiments" #2 / build step 7: the motor-sizing task.
+# `./run.sh train task=sizing` (or smoke/sizing-report) select this.
+#
+# Sizing is deliberately a thin Joystick subclass (see envs/sizing.py): same
+# env knobs, same obs/command/fall envelope -- no overrides needed here, so
+# this file mirrors configs/task/joystick.yaml's shape but leaves `env`
+# empty. The one behavioral difference (reward.scales.torques/energy at 5x
+# joystick's) lives in code (envs/sizing.py's default_config()), not here,
+# because it's a task-identity property, not a per-run knob.
+#
+# DR is expected off for sizing runs (PLAN.md: "DR off") -- that's
+# configs/config.yaml's domain_rand: false default, not a task.env field.
+
+name: sizing
+
+env: {}
+
+ppo: {}
