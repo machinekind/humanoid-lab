@@ -73,13 +73,13 @@ class HumanoidEnv(mjx_env.MjxEnv):
     task env never depends on a previously-run `run.sh build`.
     """
 
-    def __init__(self, robot_dir, preset_name, config, config_overrides=None):
+    def __init__(self, robot_dir, preset_name, config, config_overrides=None, actuator_overrides=None):
         super().__init__(config, config_overrides)
 
         self._robot_spec: RobotSpec = load_robot_spec(robot_dir)
-        self._preset = load_actuator_preset(robot_dir, preset_name)
+        self._preset = load_actuator_preset(robot_dir, preset_name, actuator_overrides)
 
-        spec = build_spec(robot_dir, preset_name)
+        spec = build_spec(robot_dir, preset_name, actuator_overrides)
         self._mj_model = compile_spec(spec)
         self._mj_model.opt.timestep = self.sim_dt
         self._customize_model(self._mj_model)

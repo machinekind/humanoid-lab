@@ -51,16 +51,20 @@ _ACTUATOR_SENSOR_TYPES = (
 )
 
 
-def build_spec(robot_dir: Path, preset_name: str) -> mujoco.MjSpec:
+def build_spec(
+    robot_dir: Path, preset_name: str, actuator_overrides: dict | None = None
+) -> mujoco.MjSpec:
     """Assemble the mujoco.MjSpec for `robot_dir` under actuator preset `preset_name`.
 
     Applies robot.yaml's model_patches (if any) and strips every source-XML
     actuator and dangling actuator sensor before injecting actuators. See
-    this module's docstring for the full sequence.
+    this module's docstring for the full sequence. `actuator_overrides` is
+    forwarded to load_actuator_preset (see robot/presets.py) so a CLI/
+    experiment override lands in the built spec too.
     """
     robot_dir = Path(robot_dir)
     robot_spec = load_robot_spec(robot_dir)
-    preset = load_actuator_preset(robot_dir, preset_name)
+    preset = load_actuator_preset(robot_dir, preset_name, actuator_overrides)
     params_by_joint = resolve(preset, robot_spec)
     actuator_model = ACTUATOR_MODELS[preset.model]
 

@@ -102,17 +102,20 @@ def make_env_for_run(run: dict):
     hydra = run["hydra_config"]
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
+    actuator_overrides = hydra["actuators"].get("overrides") or {}
     env_overrides = hydra["task"].get("env") or {}
-    env = make_env(task, robot_dir, preset_name, env_overrides)
-    return env, robot_dir, preset_name
+    env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
+    return env, robot_dir, preset_name, actuator_overrides
 
 
-def _joint_limits(robot_dir: Path, preset_name: str, joint_names: list[str]):
+def _joint_limits(
+    robot_dir: Path, preset_name: str, joint_names: list[str], overrides: dict | None = None
+):
     from humanoid_lab.robot.presets import load_actuator_preset, resolve
     from humanoid_lab.robot.spec import load_robot_spec
 
     robot_spec = load_robot_spec(robot_dir)
-    preset = load_actuator_preset(robot_dir, preset_name)
+    preset = load_actuator_preset(robot_dir, preset_name, overrides)
     params_by_joint = resolve(preset, robot_spec)
     effort_limit = np.array(
         [params_by_joint[n].effort_limit for n in joint_names], dtype=np.float64
@@ -165,9 +168,9 @@ def collect(run_dir: Path, episodes: int, steps: int, seed: int, out_path: Path 
     run = _load_run(run_dir)
     ckpt_dir = _find_latest_checkpoint(run, run_dir)
 
-    env, robot_dir, preset_name = make_env_for_run(run)
+    env, robot_dir, preset_name, actuator_overrides = make_env_for_run(run)
     joint_names = list(env.robot_spec.actuated_joints)
-    effort_limit, velocity_limit = _joint_limits(robot_dir, preset_name, joint_names)
+    effort_limit, velocity_limit = _joint_limits(robot_dir, preset_name, joint_names, actuator_overrides)
 
     from humanoid_lab.policy_io import load_policy
 

@@ -70,6 +70,19 @@ def build_ppo_params(overrides, smoke: bool):
     return p
 
 
+def _wandb_group(cfg: DictConfig) -> str | None:
+    group = cfg.wandb.get("group")
+    if group:
+        return str(group)
+    from hydra.core.hydra_config import HydraConfig
+
+    try:
+        choice = HydraConfig.get().runtime.choices.get("experiment")
+    except ValueError:
+        return None  # main() invoked outside a Hydra app (e.g. tests)
+    return None if choice in (None, "null") else choice
+
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     import jax  # noqa: F401  # heavy imports stay inside main so --cfg job is fast
@@ -83,6 +96,7 @@ def main(cfg: DictConfig) -> None:
     task = cfg.task.name
     robot_dir = paths.REPO_ROOT / cfg.robot.dir
     preset_name = cfg.actuators.name
+    actuator_overrides = (OmegaConf.to_container(cfg.actuators, resolve=True) or {}).get("overrides") or {}
     env_overrides = OmegaConf.to_container(cfg.task.env, resolve=True) or {}
 
     # PPO params resolve before the envs because the warp backend sizes its
@@ -108,8 +122,8 @@ def main(cfg: DictConfig) -> None:
     env_overrides.setdefault("sim", {})["num_envs"] = int(
         max(ppo_params.num_envs, ppo_params.get("num_eval_envs", 0))
     )
-    env = make_env(task, robot_dir, preset_name, env_overrides)
-    eval_env = make_env(task, robot_dir, preset_name, env_overrides)
+    env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
+    eval_env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     print(f"actor obs ({len(env.actor_obs_names)} components): {env.actor_obs_names}")
 
     # Episode length follows the env config unless ppo yaml overrides it.
@@ -163,6 +177,7 @@ def main(cfg: DictConfig) -> None:
             wb = wandb.init(
                 project=cfg.wandb.project,
                 name=run_name,
+                group=_wandb_group(cfg),
                 config={
                     "hydra": OmegaConf.to_container(cfg, resolve=True),
                     "ppo": dict(ppo_params),

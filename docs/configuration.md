@@ -29,11 +29,11 @@ below. Override any of them with `group=name`.
 | `actuators` | `configs/actuators/` | `sizing_ideal` | Which named actuator preset to inject. Also available: `encos_datasheet`, `deploy_pd`. |
 | `network` | `configs/network/` | `default` | Policy/value MLP layer sizes, merged into the PPO network factory. |
 | `dr` | `configs/dr/` | `default` | The domain-randomization switch block described below. Only one group, `default`, exists today. |
+| `experiment` | `configs/experiment/` | `null` | An experiment overlay, selected with `experiment=<name>`. Composed last, after `_self_`. See "Experiments" below. |
 
-A `configs/experiment/` group directory exists for `+experiment=<name>`
-overlays. It currently holds no presets, only `.gitkeep`. A preset added
-there needs `+experiment=<name>` on the CLI, since it is not part of the
-`defaults` list.
+The `experiment` group selects a file under `configs/experiment/` by name:
+`experiment=<name>`. See "Experiments" below for what one contains and how
+it composes.
 
 Each robot config is a `robot.dir` pointer plus an optional training-tuning
 overlay:
@@ -92,6 +92,70 @@ RoboParty's own upstream training config, each with a provenance comment.
 It also carries a "not ported" comment block that records upstream values
 with no equivalent switch or term in this repo yet.
 
+## Experiments
+
+An experiment is one training arm recorded as one file.
+`configs/experiment/<name>.yaml` is the complete record of what ran. Run it
+with `./run.sh train experiment=<name>`.
+
+Every experiment pins its robot and task in its own defaults list:
+`defaults: [override /robot: ..., override /task: ..., ...]`. It also pins
+`actuators` when the arm's conclusion depends on the actuator gains. A robot
+overlay such as `configs/robot/roboto_origin.yaml` pins its own reward
+scales. Running an unpinned experiment against a different robot pulls in
+that robot's own reward overlay instead. The result is neither arm.
+`configs/experiment/asimov_gentle_penalties.yaml` pins `robot: asimov_v1`,
+`task: joystick`, and `actuators: sizing_ideal` for this reason:
+
+```yaml
+# configs/experiment/asimov_gentle_penalties.yaml
+# @package _global_
+defaults:
+  - override /robot: asimov_v1
+  - override /task: joystick
+  - override /actuators: sizing_ideal
+
+task:
+  env:
+    reward:
+      scales:
+        orientation: -1.0
+        lin_vel_z: -0.2
+        action_rate: -0.02
+        action_accel: -0.02
+```
+
+The `experiment` group is the last entry in `config.yaml`'s defaults list,
+composed after `_self_`. An experiment overlay wins over `config.yaml`'s own
+keys and over the robot/task/dr overlays. A CLI override still wins over the
+experiment. Full wins order, weakest to strongest: task/dr base, robot
+overlay, `config.yaml`'s own keys, experiment overlay, CLI. `+experiment=<name>`
+errors. Hydra's `+` prefix only adds a key that isn't already in the
+defaults list, and `experiment` already carries a `null` entry there.
+
+An experiment PR only adds files: its own yaml under `configs/experiment/`,
+optionally a new actuator preset, optionally a new reward term. It never
+edits `configs/task/`, `configs/dr/`, `configs/robot/`, or an env's
+`default_config()`. Promoting a winning experiment's values into those
+shared bases is a separate graduation PR.
+
+A new reward term lands in three places: `src/humanoid_lab/rewards/terms.py`,
+the env's `_compute_rewards`, and a `0.0` scale in `default_config()`. The
+`0.0` scale keeps the term inert for every run that doesn't opt in. An
+experiment yaml turns the term on by setting a nonzero value under
+`task.env.reward.scales`.
+
+`wandb.group` defaults to the selected experiment's name, so its A/B arms
+group together in W&B. An explicit `wandb.group`, in the experiment yaml or
+on the CLI, wins over that default.
+
+`tests/test_experiments.py` composes every file under `configs/experiment/`
+in CI. It checks that the file pins robot and task, that its `task.env`
+overlay applies onto the task's `default_config()`, and that its actuator
+preset resolves against the pinned robot with any inline overrides applied.
+A typo'd reward key in the overlay raises there. A broken experiment fails
+CI before it costs GPU time.
+
 ## Top-level keys
 
 | Key | Default | Meaning |
@@ -103,6 +167,7 @@ with no equivalent switch or term in this repo yet.
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
 | `wandb.project` | `humanoid-lab` | W&B project name. |
+| `wandb.group` | `null` | W&B run group. Defaults to the selected experiment's name, or stays `null` if no experiment is selected. An explicit value wins over that default. |
 | `ppo` | `{}` | Global PPO overrides, applied after the task's own `task.ppo` block. CLI `ppo.foo=...` wins over both. |
 
 ## Actuator presets: the name pointer
@@ -131,6 +196,27 @@ raise `NotImplementedError`. A `pd` preset also sets `soft_limit_factor` and
 `action_scale_factor`. See `src/humanoid_lab/robot/presets.py` for the full
 field contract.
 
+`load_actuator_preset` (`src/humanoid_lab/robot/presets.py`) deep-merges
+`cfg.actuators.overrides` onto the loaded preset yaml before validating it.
+train.py, the envs, eval, sizing, and the `build`/`check` CLIs all route
+through this one function, so an override resolves the same way everywhere.
+An experiment yaml sets `actuators.overrides` keys directly:
+
+```yaml
+actuators:
+  overrides:
+    groups:
+      knee:
+        kp: 80
+```
+
+From the CLI, use `+actuators.overrides.groups.<group>.<param>=<value>`. The
+merged dict is schema-checked against the preset's known top-level and
+per-group keys. A typo like `kp_` raises `ValueError` there, before any
+model builds. `run.json` records the resolved `cfg.actuators` block,
+overrides included, so `eval/battery.py` and `sizing/collect.py`
+reconstruct the same model from a finished run.
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone
@@ -154,8 +240,8 @@ Read from `run.sh` as it stands today:
 |---|---|---|
 | `train` | `python -m humanoid_lab.train` | Full Hydra CLI available after it. |
 | `smoke` | `JAX_PLATFORMS=cpu python -m humanoid_lab.train smoke=true wandb.enable=false` | CPU pipeline check. |
-| `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH]`. Writes `robots/<robot>/mjx/<preset>.xml`. |
-| `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. |
+| `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
+| `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
 | `test` | `python -m pytest tests -q` | Runs the test suite. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
@@ -188,6 +274,7 @@ task:
   ppo: {}
 actuators:
   name: sizing_ideal
+  overrides: {}
 network: {}
 dr:
   com_offset: {enable: false, xy: 0.02, z: 0.01}
@@ -196,7 +283,7 @@ robot:
   name: asimov_v1
   dir: robots/asimov_v1
 domain_rand: false
-wandb: {enable: true, project: humanoid-lab}
+wandb: {enable: true, project: humanoid-lab, group: null}
 ```
 
 `task`, `actuators`, `network`, `dr`, and `robot` appear in that order
@@ -217,6 +304,7 @@ task:
   ppo: {}
 actuators:
   name: encos_datasheet
+  overrides: {}
 ```
 
 `configs/task/sizing.yaml`'s own `env:` is empty. `robot: asimov_v1`'s
@@ -249,7 +337,7 @@ any model is built.
 ```bash
 $ ./run.sh smoke --cfg job --resolve
 smoke: true
-wandb: {enable: false, project: humanoid-lab}
+wandb: {enable: false, project: humanoid-lab, group: null}
 ```
 
 Inspect a CLI verb's own flags:
@@ -257,8 +345,10 @@ Inspect a CLI verb's own flags:
 ```bash
 $ ./run.sh build --help
 usage: build_model.py [-h] --robot ROBOT --preset PRESET [--out OUT]
+                      [--set PATH=VALUE]
 
 $ ./run.sh check --help
 usage: check_model.py [-h] --robot ROBOT --preset PRESET [--steps STEPS]
                       [--xml XML] [--skip-mjx] [--max-qvel MAX_QVEL]
+                      [--set PATH=VALUE]
 ```

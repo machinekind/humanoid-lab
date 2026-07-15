@@ -6,6 +6,16 @@
 # roboto_origin learned under, changing nothing else. It is NOT asimov
 # tuning: if this arm wins, port the real weights from asimov-mjlab the
 # way roboto's were ported from RoboParty.
+#
+# robot/task/actuators are pinned so this file is the complete record of
+# the arm: both A/B arms ran asimov_v1 + joystick + sizing_ideal, and a
+# run with a different robot would compose that robot's own reward
+# overlay under these four keys, which is neither arm.
+defaults:
+  - override /robot: asimov_v1
+  - override /task: joystick
+  - override /actuators: sizing_ideal
+
 task:
   env:
     reward:
