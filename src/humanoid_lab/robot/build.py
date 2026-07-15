@@ -1,11 +1,18 @@
 """Pure library functions that assemble a compiled model from robot data.
 
-build_spec loads a robot's robot.yaml and a named actuator preset, injects
-actuators for every actuated joint (in the RobotSpec's canonical order),
-overrides armature/frictionloss per the preset, applies passive-joint
-spring/damper params, and bakes the robot's keyframes into the spec.
-compile_spec just compiles. No CLI here; run.sh's `build` verb (step 4) calls
-these.
+build_spec loads a robot's robot.yaml and a named actuator preset, applies
+robot.yaml's optional model_patches section (compiler <option> overrides,
+then an unconditional strip of every actuator and dangling actuator sensor
+already present in the source XML, then injected sites, injected collision
+geoms, then mesh-collision stripping), injects actuators for every actuated
+joint (in the RobotSpec's canonical order), overrides armature/frictionloss
+per the preset, applies passive-joint spring/damper params, and bakes the
+robot's keyframes into the spec. The actuator/actuator-sensor strip runs for
+every robot whether or not model_patches is present: the preset is always
+the source of truth for actuator params, and injection always names an
+actuator after its joint, so a source XML that ships its own <actuator>
+block would otherwise collide with injection. compile_spec just compiles.
+No CLI here; run.sh's `build` verb (step 4) calls these.
 """
 
 from __future__ import annotations
@@ -17,11 +24,40 @@ import numpy as np
 
 from humanoid_lab.actuators.models import ACTUATOR_MODELS
 from humanoid_lab.robot.presets import load_actuator_preset, resolve
-from humanoid_lab.robot.spec import RobotSpec, load_robot_spec, validate_against_model
+from humanoid_lab.robot.spec import (
+    ModelPatches,
+    RobotSpec,
+    load_robot_spec,
+    validate_against_model,
+)
+
+_SOLVER_BY_NAME = {
+    "pgs": mujoco.mjtSolver.mjSOL_PGS,
+    "cg": mujoco.mjtSolver.mjSOL_CG,
+    "newton": mujoco.mjtSolver.mjSOL_NEWTON,
+}
+
+_GEOM_TYPE_BY_NAME = {
+    "box": mujoco.mjtGeom.mjGEOM_BOX,
+    "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
+    "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
+}
+
+# The three sensor types that reference an actuator by name (sensor.objname).
+_ACTUATOR_SENSOR_TYPES = (
+    mujoco.mjtSensor.mjSENS_ACTUATORPOS,
+    mujoco.mjtSensor.mjSENS_ACTUATORVEL,
+    mujoco.mjtSensor.mjSENS_ACTUATORFRC,
+)
 
 
 def build_spec(robot_dir: Path, preset_name: str) -> mujoco.MjSpec:
-    """Assemble the mujoco.MjSpec for `robot_dir` under actuator preset `preset_name`."""
+    """Assemble the mujoco.MjSpec for `robot_dir` under actuator preset `preset_name`.
+
+    Applies robot.yaml's model_patches (if any) and strips every source-XML
+    actuator and dangling actuator sensor before injecting actuators. See
+    this module's docstring for the full sequence.
+    """
     robot_dir = Path(robot_dir)
     robot_spec = load_robot_spec(robot_dir)
     preset = load_actuator_preset(robot_dir, preset_name)
@@ -29,6 +65,15 @@ def build_spec(robot_dir: Path, preset_name: str) -> mujoco.MjSpec:
     actuator_model = ACTUATOR_MODELS[preset.model]
 
     spec = mujoco.MjSpec.from_file(str(robot_spec.model_xml_path))
+
+    # model_patches order: options, actuator strip, sites, geoms, mesh_collisions.
+    # Sites/geoms must exist before validate_against_model runs below (it
+    # validates foot_sites/foot_geoms).
+    _apply_options_patch(spec, robot_spec.model_patches)
+    _strip_source_actuators(spec, robot_spec)
+    _apply_sites_patch(spec, robot_spec)
+    _apply_geoms_patch(spec, robot_spec)
+    _apply_mesh_collisions_patch(spec, robot_spec.model_patches)
 
     for joint_name in robot_spec.actuated_joints:  # canonical order: the action/obs contract
         params = params_by_joint[joint_name]
@@ -64,6 +109,92 @@ def build_spec(robot_dir: Path, preset_name: str) -> mujoco.MjSpec:
         _add_keyframes(spec, robot_spec)
 
     return spec
+
+
+def _apply_options_patch(spec: mujoco.MjSpec, patches: ModelPatches) -> None:
+    """Override <option> solver/iterations/timestep per model_patches.options.
+
+    A field left unset (None) leaves the source XML's own value untouched.
+    """
+    options = patches.options
+    if options.solver is not None:
+        spec.option.solver = _SOLVER_BY_NAME[options.solver]
+    if options.iterations is not None:
+        spec.option.iterations = options.iterations
+    if options.timestep is not None:
+        spec.option.timestep = options.timestep
+
+
+def _strip_source_actuators(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
+    """Delete every actuator, and every dangling actuator sensor, already in `spec`.
+
+    Runs unconditionally for every robot. The actuator preset is the source
+    of truth for actuator params, and the injection loop below names each
+    actuator after its joint, so a source-XML actuator on the same joint
+    would collide with it. A sensor of type actuatorpos/actuatorvel/
+    actuatorfrc whose objname is in actuated_joints keeps resolving once
+    injection recreates that same-named actuator; any other actuator sensor
+    would dangle and fail spec.compile() with "unrecognized name ... of
+    sensorized object", so it is deleted too. For a source XML with no
+    actuators and no actuator sensors, both loops are no-ops.
+    """
+    for actuator in list(spec.actuators):
+        spec.delete(actuator)
+
+    actuated = set(robot_spec.actuated_joints)
+    for sensor in list(spec.sensors):
+        if sensor.type in _ACTUATOR_SENSOR_TYPES and sensor.objname not in actuated:
+            spec.delete(sensor)
+
+
+def _apply_sites_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
+    """Inject model_patches.sites into their named bodies."""
+    for name, site in robot_spec.model_patches.sites.items():
+        body = spec.body(site.body)
+        if body is None:
+            raise ValueError(
+                f"model_patches.sites['{name}'] references body '{site.body}', which is "
+                f"not in '{robot_spec.model_xml}'"
+            )
+        body.add_site(name=name, pos=site.pos, quat=site.quat)
+
+
+def _apply_geoms_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
+    """Inject model_patches.geoms collision primitives into their named bodies.
+
+    No explicit contype/conaffinity is set on the injected geom: it inherits
+    whichever default class applies to its body in the source XML.
+    """
+    for name, geom in robot_spec.model_patches.geoms.items():
+        body = spec.body(geom.body)
+        if body is None:
+            raise ValueError(
+                f"model_patches.geoms['{name}'] references body '{geom.body}', which is "
+                f"not in '{robot_spec.model_xml}'"
+            )
+        kwargs = dict(
+            name=name, type=_GEOM_TYPE_BY_NAME[geom.type], size=list(geom.size), quat=geom.quat
+        )
+        if geom.pos is not None:
+            kwargs["pos"] = geom.pos
+        if geom.fromto is not None:
+            kwargs["fromto"] = geom.fromto
+        body.add_geom(**kwargs)
+
+
+def _apply_mesh_collisions_patch(spec: mujoco.MjSpec, patches: ModelPatches) -> None:
+    """Zero contype/conaffinity on every mesh geom, if mesh_collisions is "visual".
+
+    For a source XML whose only collision geometry is its full visual
+    meshes, this turns them collision-inert so model_patches.geoms's named
+    primitives become the only collision surface.
+    """
+    if patches.mesh_collisions != "visual":
+        return
+    for geom in spec.geoms:
+        if geom.type == mujoco.mjtGeom.mjGEOM_MESH:
+            geom.contype = 0
+            geom.conaffinity = 0
 
 
 def compile_spec(spec: mujoco.MjSpec) -> mujoco.MjModel:

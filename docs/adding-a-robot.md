@@ -12,6 +12,13 @@ one pinned commit. Do not edit anything under `source/`. Every robot-specific
 change goes into `robot.yaml` or `actuators/*.yaml`, applied at build time
 through `mujoco.MjSpec` injection.
 
+`build_spec` always deletes every actuator already in the source XML, and
+every actuatorpos/actuatorvel/actuatorfrc sensor that does not resolve to an
+actuated joint, before injecting its own actuators. A vendored source XML
+that ships its own `<actuator>` block and actuator sensors needs no special
+handling for this; see "model_patches" below for the other build-time
+patches available for a source XML that isn't otherwise MJX-ready.
+
 Write `robots/<name>/PROVENANCE.md` with:
 
 - the upstream repo URL
@@ -48,6 +55,39 @@ Optional keys:
 | `termination_bodies` | MJCF body names, validated to exist against the compiled model. Fall detection currently uses base height and tilt only, so the joystick and sizing envs do not read this field yet. Validate what you list here anyway. |
 | `obs_layout` | Free-form dict. No code consumes this yet. Leave it `{}` unless a downstream consumer needs it. |
 | `sensors` | A dict with recognized keys `gyro`, `quat`, `linvel`, `acc`, mapping each to an MJCF `<sensor>` name. Envs read the named sensor directly for any key present here, and fall back to a qpos/qvel-derived computation for any key left out. |
+| `model_patches` | Build-time patches for a source XML that isn't MJX-ready as vendored: `<option>` overrides, injected sites, injected collision geoms, and mesh-collision handling. Every sub-key is optional. See "model_patches" below. |
+
+### model_patches
+
+Reach for `model_patches` when the source XML has no sites or named
+collision geoms to point `foot_sites`/`foot_geoms` at, or when its
+`<option>` settings aren't MJX-compatible. Omit the whole section if the
+source XML needs none of this. `build_spec` applies it right after loading
+the source XML, before actuator injection: `options`, then the actuator
+strip described above, then `sites`, then `geoms`, then `mesh_collisions`.
+
+`options` overrides `<option>` values. The allowed keys are `solver`,
+`iterations`, and `timestep`. `solver` is one of `pgs`, `cg`, `newton`. MJX
+does not support PGS. Pick `newton` or `cg` for a source XML that ships
+`solver="PGS"`.
+
+`sites` injects a named site into a body. Each entry needs `body` and
+`pos`. `quat` is optional and defaults to identity.
+
+`geoms` injects a named collision primitive into a body. Each entry needs
+`body`, `type`, and `size`. `type` is one of `box`, `capsule`, `sphere`.
+`pos` and `fromto` are both optional; set at most one, matching MJCF geom
+semantics. `quat` is optional and defaults to identity. An injected geom
+gets no explicit `contype`/`conaffinity`; it inherits whatever default
+class applies to its body in the source XML.
+
+`mesh_collisions: visual` is the only recognized value. It zeroes
+`contype` and `conaffinity` on every mesh geom in the source XML. Use it
+with `geoms` when the source XML's only collision geometry is full meshes
+and you are replacing them with named primitives.
+
+`tests/test_model_patches.py` has a synthetic worked example of every
+sub-key.
 
 ### Measure keyframe height against the compiled model
 
