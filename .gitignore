@@ -11,3 +11,5 @@ robots/*/mjx/
 MUJOCO_LOG.TXT
 train.log
 hpc/local.env
+hpc/local.mk
+logs/
