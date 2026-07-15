@@ -1,0 +1,109 @@
+# Deployable PD preset: verbatim from the upstream Isaac ArticulationCfg
+# (modules/roboparty_train/robolab/robolab/assets/robots/roboparty.py,
+# BSD-3-Clause, at PROVENANCE.md's pinned commit -- not vendored into
+# source/, cited here only). These are the gains RoboParty runs on
+# hardware, one-to-one per joint group.
+#
+# model: pd.
+#
+# soft_limit_factor: 0.9, matching upstream's soft_joint_pos_limit_factor
+#   0.90.
+#
+# action_scale_factor: 0.3, this repo's default (docs/adding-a-robot.md).
+#   Upstream does not use a factor*effort/kp formula at all: it applies a
+#   flat 0.25 rad action scale to every joint. That upstream scheme has no
+#   field in this repo's ActuatorPreset schema, so it is not reproduced --
+#   noted here for anyone diffing against the upstream config.
+#
+# armature: 0.01 for every group. This is upstream's flat placeholder
+#   value, not a measured reflected inertia -- upstream publishes no
+#   per-joint armature table (contrast asimov_v1's ENCOS-derived values).
+#   Kept as-is rather than invented.
+#
+# Not modeled: upstream drives these joints through DelayedPDActuatorCfg,
+#   simulating a 0-2 step actuation delay. This repo's `delayed` actuator
+#   model is registered but raises NotImplementedError (presets.py), so the
+#   delay is not modeled here.
+#
+# No sizing preset is shipped for this robot: asimov's sizing scheme
+#   (actuators/sizing_ideal.yaml) derives kp from measured armatures, and
+#   RPO has none (see above) -- there is nothing for a sizing preset to
+#   derive from.
+
+model: pd
+soft_limit_factor: 0.9
+action_scale_factor: 0.3
+
+groups:
+  thigh_yaw:
+    kp: 100.0
+    kd: 3.3
+    effort_limit: 120.0
+    velocity_limit: 25.0
+    armature: 0.01
+  thigh_roll:
+    kp: 100.0
+    kd: 3.3
+    effort_limit: 120.0
+    velocity_limit: 25.0
+    armature: 0.01
+  thigh_pitch:
+    kp: 100.0
+    kd: 3.3
+    effort_limit: 120.0
+    velocity_limit: 25.0
+    armature: 0.01
+  knee:
+    kp: 150.0
+    kd: 5.0
+    effort_limit: 120.0
+    velocity_limit: 25.0
+    armature: 0.01
+  torso:
+    kp: 150.0
+    kd: 5.0
+    effort_limit: 120.0
+    velocity_limit: 25.0
+    armature: 0.01
+  ankle_pitch:
+    kp: 40.0
+    kd: 2.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  ankle_roll:
+    kp: 40.0
+    kd: 2.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  arm_pitch:
+    kp: 40.0
+    kd: 2.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  arm_roll:
+    kp: 40.0
+    kd: 2.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  arm_yaw:
+    kp: 40.0
+    kd: 2.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  elbow_pitch:
+    kp: 30.0
+    kd: 1.5
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01
+  elbow_yaw:
+    kp: 20.0
+    kd: 1.0
+    effort_limit: 27.0
+    velocity_limit: 8.0
+    armature: 0.01

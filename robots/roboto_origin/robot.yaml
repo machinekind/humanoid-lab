@@ -1,0 +1,216 @@
+# RobotSpec for Roboto Origin (RPO). See PROVENANCE.md for the vendored
+# source (upstream Roboparty/roboto_origin, pinned commit
+# de10e7a624805b79b547abf3eec846618136f52f).
+#
+# Unlike asimov_v1, RPO is fully actuated: all 23 named hinge joints get an
+# actuator, so passive_joints is empty. The source XML (source/mjcf/rpo.xml)
+# ships no foot sites (its only site is the base_link "imu") and no named
+# collision primitives -- every robot-body geom is a full-STL visual mesh --
+# and its solver isn't MJX-compatible, so this file leans on model_patches
+# (see below) to inject feet and fix the solver rather than editing source/
+# (read-only, vendored verbatim).
+
+name: roboto_origin
+model_xml: source/mjcf/rpo.xml
+
+# The 23 actuated joints, in source/mjcf/rpo.xml document order (left leg,
+# right leg, torso, left arm, right arm). This order is the action/obs
+# contract (see build.py); nothing downstream should reorder it.
+actuated_joints:
+  - left_thigh_yaw_joint
+  - left_thigh_roll_joint
+  - left_thigh_pitch_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_thigh_yaw_joint
+  - right_thigh_roll_joint
+  - right_thigh_pitch_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - torso_joint
+  - left_arm_pitch_joint
+  - left_arm_roll_joint
+  - left_arm_yaw_joint
+  - left_elbow_pitch_joint
+  - left_elbow_yaw_joint
+  - right_arm_pitch_joint
+  - right_arm_roll_joint
+  - right_arm_yaw_joint
+  - right_elbow_pitch_joint
+  - right_elbow_yaw_joint
+
+# One group per joint function (mirrors asimov's per-function grouping,
+# rather than per-limb): each actuator preset row applies to a physical
+# joint type used on both sides of the body.
+joint_groups:
+  thigh_yaw: [left_thigh_yaw_joint, right_thigh_yaw_joint]
+  thigh_roll: [left_thigh_roll_joint, right_thigh_roll_joint]
+  thigh_pitch: [left_thigh_pitch_joint, right_thigh_pitch_joint]
+  knee: [left_knee_joint, right_knee_joint]
+  torso: [torso_joint]
+  ankle_pitch: [left_ankle_pitch_joint, right_ankle_pitch_joint]
+  ankle_roll: [left_ankle_roll_joint, right_ankle_roll_joint]
+  arm_pitch: [left_arm_pitch_joint, right_arm_pitch_joint]
+  arm_roll: [left_arm_roll_joint, right_arm_roll_joint]
+  arm_yaw: [left_arm_yaw_joint, right_arm_yaw_joint]
+  elbow_pitch: [left_elbow_pitch_joint, right_elbow_pitch_joint]
+  elbow_yaw: [left_elbow_yaw_joint, right_elbow_yaw_joint]
+
+# Every one of RPO's 23 named joints is actuated (unlike asimov's passive
+# waist/arms); nothing left over for a spring/damper.
+passive_joints: {}
+
+foot_sites: [left_foot, right_foot]
+
+# source/mjcf/rpo.xml has no named foot geoms -- every robot-body geom in
+# the source is a full-STL visual mesh (see model_patches.mesh_collisions
+# below, which makes those meshes collision-inert; the source's own ground
+# plane stays). These
+# six capsules, injected by model_patches.geoms, are the only collision
+# surface for the feet: 3 per foot, spanning the ankle_roll-link sole from
+# heel to toe at three y-offsets. Capsule bottoms are placed to coincide
+# exactly with the mesh sole plane (body-frame z -0.045, measured from the
+# ankle_roll STL); see model_patches.geoms below for the placement math.
+foot_geoms:
+  - left_foot1_collision
+  - left_foot2_collision
+  - left_foot3_collision
+  - right_foot1_collision
+  - right_foot2_collision
+  - right_foot3_collision
+
+# All 11 left/right joint pairs. torso_joint has no counterpart and is
+# excluded, same as asimov's unpaired joints.
+symmetry:
+  left_thigh_yaw_joint: right_thigh_yaw_joint
+  left_thigh_roll_joint: right_thigh_roll_joint
+  left_thigh_pitch_joint: right_thigh_pitch_joint
+  left_knee_joint: right_knee_joint
+  left_ankle_pitch_joint: right_ankle_pitch_joint
+  left_ankle_roll_joint: right_ankle_roll_joint
+  left_arm_pitch_joint: right_arm_pitch_joint
+  left_arm_roll_joint: right_arm_roll_joint
+  left_arm_yaw_joint: right_arm_yaw_joint
+  left_elbow_pitch_joint: right_elbow_pitch_joint
+  left_elbow_yaw_joint: right_elbow_yaw_joint
+
+keyframes:
+  # Pose and base_pos z both come from the upstream Isaac ArticulationCfg
+  # init_state (modules/roboparty_train/robolab/robolab/assets/robots/
+  # roboparty.py at PROVENANCE.md's pinned commit; BSD-3-Clause, not
+  # vendored into source/ -- see PROVENANCE.md). Verified per
+  # docs/adding-a-robot.md's measurement rule on 2026-07-15: compiled
+  # deploy_pd, set qpos to this keyframe, mj_forward, then computed the
+  # exact capsule bottom (min over the two world-frame end-cap centers,
+  # minus radius) of every foot_geoms entry above. At this pose the
+  # foot-capsule bottoms -- which coincide with the mesh sole plane,
+  # body-frame z -0.045 -- sit 0.0031 m above the floor, inside the
+  # 0.0-0.02 m test band, so the upstream base z (0.75) is kept as-is; no
+  # shift needed (contrast asimov_v1's home/knees_bent, which needed one).
+  home:
+    base_pos: [0.0, 0.0, 0.75]
+    joints:
+      left_thigh_pitch_joint: -0.1
+      right_thigh_pitch_joint: -0.1
+      left_knee_joint: 0.3
+      right_knee_joint: 0.3
+      left_ankle_pitch_joint: -0.2
+      right_ankle_pitch_joint: -0.2
+      left_arm_pitch_joint: 0.18
+      right_arm_pitch_joint: 0.18
+      left_arm_roll_joint: 0.06
+      right_arm_roll_joint: -0.06
+      left_elbow_pitch_joint: 0.78
+      right_elbow_pitch_joint: 0.78
+
+# base_link is the free-floating root body; torso_link carries most of the
+# upper-body mass (7.58 kg, per source/mjcf/rpo.xml's torso_link inertial).
+termination_bodies: [base_link, torso_link]
+
+# IMU-site sensors from source/mjcf/rpo.xml's <sensor> block (site="imu" at
+# the base_link origin), named generically so envs never hardcode a robot's
+# sensor names. Envs fall back to a qpos/qvel-derived computation for any
+# key not listed here.
+sensors:
+  gyro: angular-velocity
+  quat: orientation
+  linvel: linear-velocity
+  acc: linear-acceleration
+
+# source/mjcf/rpo.xml isn't MJX-ready as vendored: it ships a PGS solver
+# (MJX doesn't support PGS) and no named collision geometry (every geom is
+# a full-STL visual mesh). Both are fixed here at build time rather than by
+# editing source/. See docs/adding-a-robot.md's model_patches section for
+# the full apply order (options, actuator strip, sites, geoms,
+# mesh_collisions).
+model_patches:
+  # rpo.xml's <option> sets solver="PGS", which MJX cannot run. newton is
+  # picked (cg would also work); iterations (100) and timestep (0.001) are
+  # left as the source XML's own values.
+  options:
+    solver: newton
+
+  # Every geom in the source XML is a full-STL mesh doing double duty as
+  # both visual and collision geometry. mesh_collisions: visual zeroes
+  # contype/conaffinity on all of them, so the only collision surface left
+  # is the six capsules injected below. Fall detection uses base height/
+  # tilt only (termination_bodies above), so no other body needs contact
+  # geometry.
+  mesh_collisions: visual
+
+  # left_foot/right_foot sites, one per foot_sites entry, on the
+  # ankle_roll_link body (the last link before the foot). pos is
+  # body-frame, offset toward the sole center in x (0.025) and down toward
+  # the sole plane in z (-0.033) -- see the geoms comment below for how
+  # -0.033 relates to the measured sole plane.
+  sites:
+    left_foot: {body: left_ankle_roll_link, pos: [0.025, 0.0, -0.033]}
+    right_foot: {body: right_ankle_roll_link, pos: [0.025, 0.0, -0.033]}
+
+  # Six foot capsules (3 per side), replacing the ankle_roll_link visual
+  # mesh as collision geometry. Sole footprint measured from the
+  # left/right_ankle_roll_link STL on 2026-07-15: body-frame x
+  # [-0.054, 0.104], y [-0.029, 0.029], sole plane at z -0.045. Each
+  # capsule: radius 0.012, centerline (fromto) at z -0.033 so the capsule
+  # bottom (centerline z minus radius = -0.033 - 0.012 = -0.045) sits
+  # exactly on the measured sole plane. fromto x endpoints are the
+  # footprint x-range inset by the radius on each end (-0.054 + 0.012 =
+  # -0.042, 0.104 - 0.012 = 0.092), so the capsule's own rounded caps land
+  # exactly on the footprint's heel/toe edges. The three capsules per foot
+  # sit at y = -0.017, 0.0, 0.017 -- inside the measured y footprint
+  # [-0.029, 0.029] -- to spread ground contact across the sole width.
+  # Capsules, not boxes: envs/base.py's _foot_contact reads geom_size[0] as
+  # a radius, which only holds for a capsule.
+  geoms:
+    left_foot1_collision:
+      body: left_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, -0.017, -0.033, 0.092, -0.017, -0.033]
+    left_foot2_collision:
+      body: left_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, 0.0, -0.033, 0.092, 0.0, -0.033]
+    left_foot3_collision:
+      body: left_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, 0.017, -0.033, 0.092, 0.017, -0.033]
+    right_foot1_collision:
+      body: right_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, -0.017, -0.033, 0.092, -0.017, -0.033]
+    right_foot2_collision:
+      body: right_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, 0.0, -0.033, 0.092, 0.0, -0.033]
+    right_foot3_collision:
+      body: right_ankle_roll_link
+      type: capsule
+      size: [0.012]
+      fromto: [-0.042, 0.017, -0.033, 0.092, 0.017, -0.033]
