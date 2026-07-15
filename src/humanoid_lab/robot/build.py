@@ -163,7 +163,10 @@ def _apply_geoms_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
     """Inject model_patches.geoms collision primitives into their named bodies.
 
     No explicit contype/conaffinity is set on the injected geom: it inherits
-    whichever default class applies to its body in the source XML.
+    whichever default class applies to its body in the source XML. Group is
+    forced to 3, the collision-geom convention renderers hide by default;
+    inheriting a visible group draws the primitives over the visual meshes
+    (roboto_origin rendered as its capsules until this was set).
     """
     for name, geom in robot_spec.model_patches.geoms.items():
         body = spec.body(geom.body)
@@ -173,7 +176,11 @@ def _apply_geoms_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
                 f"not in '{robot_spec.model_xml}'"
             )
         kwargs = dict(
-            name=name, type=_GEOM_TYPE_BY_NAME[geom.type], size=list(geom.size), quat=geom.quat
+            name=name,
+            type=_GEOM_TYPE_BY_NAME[geom.type],
+            size=list(geom.size),
+            quat=geom.quat,
+            group=3,
         )
         if geom.pos is not None:
             kwargs["pos"] = geom.pos
