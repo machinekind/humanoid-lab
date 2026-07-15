@@ -1,0 +1,16 @@
+# @package _global_
+# Diagnostic arm for the asimov flat-curve hypothesis (2026-07 HPC A/B):
+# the generic joystick penalties swamp tracking (per-step reward is net
+# negative while asimov dies at ~1 s, so early termination maximizes
+# reward). This experiment cuts the four dominant penalties to the levels
+# roboto_origin learned under, changing nothing else. It is NOT asimov
+# tuning: if this arm wins, port the real weights from asimov-mjlab the
+# way roboto's were ported from RoboParty.
+task:
+  env:
+    reward:
+      scales:
+        orientation: -1.0
+        lin_vel_z: -0.2
+        action_rate: -0.02
+        action_accel: -0.02
