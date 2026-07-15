@@ -13,3 +13,4 @@ train.log
 hpc/local.env
 hpc/local.mk
 logs/
+.DS_Store
