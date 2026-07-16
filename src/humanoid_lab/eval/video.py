@@ -13,6 +13,12 @@ control steps -- both use the exact same command builders the battery
 measures, so a rendered video and its battery.json row describe the same
 trajectory.
 
+`--plot-torque` appends a normalized-torque strip below the render;
+`--plot-joints` appends a joint target-vs-state grid below that; `--joint
+NAME` swaps the grid for a single-joint zoom panel and implies
+--plot-joints. All three are opt-in (off by default -- plain video output
+is the same code path as before); panel rendering lives in eval/plots.py.
+
 MUJOCO_GL: mirrors w01-tek wojtek_rl/eval.py's own handling exactly --
 `egl` is set (via setdefault, so an already-exported MUJOCO_GL wins) only
 on linux, where headless GPU boxes need it; darwin is left on its default
@@ -36,6 +42,7 @@ import mujoco
 import numpy as np
 
 from humanoid_lab.eval.battery import battery_scenarios, load_checkpoint_policy
+from humanoid_lab.eval.plots import joint_grid, joint_zoom, torque_strip
 
 
 def _pick_camera(mj_model: mujoco.MjModel):
@@ -67,6 +74,56 @@ def _pick_camera(mj_model: mujoco.MjModel):
     return cam
 
 
+def _composite_plots(
+    frames, frame_times, env, joint_names, joint, plot_torque, plot_joints,
+    torques, targets, positions,
+):
+    """vstack render `frames` with the requested plot panel(s), one column
+    of matplotlib panels per frame. Returns a new frame list, same length
+    and width as `frames`.
+
+    Guards the degenerate no-samples case (e.g. --steps 0: `frames` has
+    only the initial entry, `torques`/`targets`/`positions` are empty) by
+    skipping panel compositing rather than crashing on an empty-array
+    times[0]/times[-1] lookup inside eval/plots.py's builders.
+    """
+    if not torques:
+        print("no control steps captured; skipping plot panels")
+        return frames
+
+    # Post-step times, matching when each sample in torques/targets/positions
+    # was taken (see render_video's capture site: appended after `state =
+    # step(state, act)` for control step i, i.e. at sim time (i + 1) * dt).
+    signal_times = (np.arange(len(torques)) + 1) * env.dt
+    torques = np.asarray(torques)
+    targets = np.asarray(targets)
+    positions = np.asarray(positions)
+    torque_caps = np.asarray(env.mj_model.actuator_forcerange[:, 1])
+    joint_groups = env.robot_spec.joint_groups
+    width = frames[0].shape[1]
+
+    panel_frame_ats = []
+    if plot_torque:
+        panel_frame_ats.append(
+            torque_strip(signal_times, torques, torque_caps, joint_names, joint_groups, width=width)
+        )
+    if plot_joints:
+        if joint is not None:
+            j = joint_names.index(joint)
+            panel_frame_ats.append(
+                joint_zoom(signal_times, targets[:, j], positions[:, j], joint, width=width)
+            )
+        else:
+            panel_frame_ats.append(
+                joint_grid(signal_times, targets, positions, joint_names, joint_groups, width=width)
+            )
+
+    return [
+        np.vstack([frame] + [frame_at(t) for frame_at in panel_frame_ats])
+        for frame, t in zip(frames, frame_times)
+    ]
+
+
 def render_video(
     run_dir: Path,
     scenario: str = "walk_ramp",
@@ -75,8 +132,21 @@ def render_video(
     seed: int = 0,
     width: int = 640,
     height: int = 480,
+    plot_torque: bool = False,
+    plot_joints: bool = False,
+    joint: str | None = None,
 ) -> Path:
     run, env, _ckpt, inf = load_checkpoint_policy(run_dir)
+
+    # Actuator column order == robot_spec.actuated_joints order (robot/build.py's
+    # injection loop: "for joint_name in robot_spec.actuated_joints", the
+    # "canonical order: the action/obs contract"). eval/plots.py's builders
+    # assume this order for their joint_names argument.
+    joint_names = list(env.robot_spec.actuated_joints)
+    plot_joints = plot_joints or joint is not None  # --joint implies --plot-joints
+    if joint is not None and joint not in joint_names:
+        sys.exit(f"unknown joint {joint!r}; valid joints: {joint_names}")
+
     reset, step = jax.jit(env.reset), jax.jit(env.step)
 
     scenarios = battery_scenarios(env.dt)
@@ -93,9 +163,16 @@ def render_video(
     rng = jax.random.PRNGKey(seed)
     state = reset(rng)
 
+    # Plot data capture is opt-in: per-step np.asarray device transfers below
+    # aren't free, so plain (no-flag) rendering must not pay them.
+    capture = plot_torque or plot_joints
+    qadr = np.asarray(env._qadr) if capture else None
+    torques, targets, positions = [], [], []
+
     mj_model = env.mj_model
     data = mujoco.MjData(mj_model)
     frames = []
+    frame_times = []  # sim time of each entry in `frames`, recorded explicitly
     with mujoco.Renderer(mj_model, height=height, width=width) as renderer:
         # Always capture the initial pose: a scenario that falls at step 0
         # (e.g. an untrained checkpoint on `stand`) must still write a
@@ -104,6 +181,7 @@ def render_video(
         mujoco.mj_forward(mj_model, data)
         renderer.update_scene(data, camera=camera)
         frames.append(renderer.render())
+        frame_times.append(0.0)
 
         for i in range(n_steps):
             cmd = cmd_at(i)
@@ -111,6 +189,18 @@ def render_video(
             rng, act_rng = jax.random.split(rng)
             act, _ = inf(state.obs, act_rng)
             state = step(state, act)
+
+            if capture:
+                # This env has no action-delay machinery (envs/joystick.py's
+                # module docstring: w01-tek's delay/latency/action-filter
+                # machinery is deliberately not ported), and step() passes
+                # the clipped motor_targets straight to mjx_env.step
+                # (joystick.py step(), ~line 290-308) -- so post-step ctrl
+                # IS the policy's clipped PD target for this step. No
+                # info["motor_targets"] plumbing is needed to recover it.
+                torques.append(np.asarray(state.data.actuator_force))
+                targets.append(np.asarray(state.data.ctrl))
+                positions.append(np.asarray(state.data.qpos)[qadr])
 
             if bool(state.done):
                 print(f"fell at step {i}")
@@ -120,6 +210,13 @@ def render_video(
                 mujoco.mj_forward(mj_model, data)
                 renderer.update_scene(data, camera=camera)
                 frames.append(renderer.render())
+                frame_times.append((i + 1) * env.dt)
+
+    if plot_torque or plot_joints:
+        frames = _composite_plots(
+            frames, frame_times, env, joint_names, joint, plot_torque, plot_joints,
+            torques, targets, positions,
+        )
 
     out = out or (run_dir / f"{scenario}.mp4")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -145,9 +242,15 @@ def main():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--plot-torque", action="store_true", help="append a normalized-torque strip below the render")
+    ap.add_argument("--plot-joints", action="store_true", help="append a joint target-vs-state grid below that")
+    ap.add_argument("--joint", default=None, help="single-joint zoom panel instead of the grid (implies --plot-joints)")
     args = ap.parse_args()
 
-    render_video(args.run, args.scenario, args.steps, args.out, args.seed)
+    render_video(
+        args.run, args.scenario, args.steps, args.out, args.seed,
+        plot_torque=args.plot_torque, plot_joints=args.plot_joints, joint=args.joint,
+    )
 
 
 if __name__ == "__main__":
