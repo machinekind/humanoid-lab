@@ -127,7 +127,16 @@ day and makes the TDD loop fast.
     convention itself and `--push` restores the run's own pushes.
 
 **Phase 5. Deploy contract. Land before the first published policy.**
-- [ ] 5.1 A fail-closed deploy contract with a key ledger. [details](docs/port-details.md#51-deploy-contract)
+- [x] 5.1 A fail-closed deploy contract with a key ledger. [details](docs/port-details.md#51-deploy-contract)
+  - The ledger keys are leaf paths (`reward.scales.pose`), not w01-tek's
+    top-level blocks, so a new key inside a classified block still fails
+    the guard. Two classifications carry an argument, both in
+    docs/deploy.md: `gait.freq` is consumed because our actor observes a
+    gait clock the runtime can reproduce, where w01-tek refuses to export a
+    phase-observing policy at all; and `real_pose_ref` is training-only
+    here because `envs/base.py` holds both the ctrl anchor and the obs
+    anchor fixed under it. The pure command draws stay training-only on a
+    checked condition: an armed draw outside the trained box raises.
 - [ ] 5.2 An exporter that validates round-trips before writing artifacts. [details](docs/port-details.md#52-exporter)
 
 **Phase 6. Ops quick wins. No TDD needed.**
@@ -190,11 +199,11 @@ Run this against the full diff at the end of the port.
 - [x] Grid outputs never overwrite the canonical battery.json. `--out` is required for every cell, and a unit test pins that battery.json's content and mtime survive a cell write.
 
 ### Deploy contract
-- [ ] Every env config key is classified as consumed or training-only.
-- [ ] An unclassified key makes export raise. A test proves it.
+- [x] Every env config key is classified as consumed or training-only. Leaf paths, so `reward.scales.pose` is its own entry; `tests/unit/test_deploy_contract.py` walks `default_config()` and also fails on a ledger entry the config no longer has.
+- [x] An unclassified key makes export raise. A test proves it, at the top level and nested.
 - [ ] Both round-trip validations run before any artifact is written to its destination.
 - [ ] The runtime check loads the artifacts it will ship.
-- [ ] Torque caps and tables travel in the policy metadata.
+- [x] Torque caps and tables travel in the policy metadata. `torque_low`/`torque_high` from `actuator_forcerange` and the `gains` block from `effective_gains`, both read off the compiled model.
 - [ ] Deploy docs state facts and give no imperatives.
 
 ### Ops and MJWarp

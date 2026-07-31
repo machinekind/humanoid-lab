@@ -5,6 +5,9 @@ run composes from the config groups under `configs/`. `run.sh train` wraps
 `python -m humanoid_lab.train`. Every Hydra override syntax works after it:
 `group=value`, `key=value`, `+key=value`.
 
+Which of these keys reach a deployed robot is a separate question, answered
+in [deploy.md](deploy.md).
+
 ## Resolve before running
 
 Print the fully composed config and exit, without touching JAX or building
