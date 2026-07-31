@@ -304,10 +304,15 @@ and anchors `pose`, `stand_still` and the reset pose on the result. Every
 actuator on the copy becomes the same stiff position servo — kp 400, kd 20,
 force cap removed, timestep 5e-4, `implicitfast` — held at the keyframe
 targets for two simulated seconds. The pose that comes out does not depend
-on the runtime gains or the actuator model: two gain sets and two actuator
-models settle to bit-identical anchors. Mechanism properties are not
-factored out: a preset that changes joint armature (roboto's presets do)
-moves the two-second settle, measured at about 5e-5 rad there. Compensating the real plant's sag to reach that pose
+on the runtime gains or the actuator model: at a given `soft_limit_factor`,
+two gain sets and two actuator models settle to bit-identical anchors.
+Two things are deliberately not factored out. A preset that changes joint
+armature (roboto's presets do) moves the two-second settle, measured at about
+5e-5 rad there — armature is a property of the mechanism, not a gain. And a
+preset that changes `soft_limit_factor` moves the clip below, and with it the
+anchor: roboto's home pose is inside its 0.9 soft limits and 0.029 rad
+outside its 0.8 ones. The runtime envelope is preset policy, not an actuator
+detail. Compensating the real plant's sag to reach that pose
 is the policy's job. Cost is about 0.2 s of plain CPU MuJoCo, and only when
 the flag is on.
 
@@ -320,12 +325,16 @@ anchor and its pose reference.
 
 Two details are load-bearing:
 
-- The settle targets are clipped to the **runtime target bounds**
-  (`_ctrl_lo`/`_ctrl_hi`, the preset's soft limits), not to the model's raw
-  `ctrlrange`. `step()` clips motor targets to those bounds, so a pose
-  settled past them is one the policy can never command. A `pd` preset's raw
-  ctrlrange is `[0, 0]` besides — those actuators are deliberately
-  `ctrllimited=False`.
+- The settle targets are clipped to the preset's **soft joint limits**
+  (`joint range × soft_limit_factor`, in radians), not to the model's raw
+  `ctrlrange` and not to `_ctrl_lo`/`_ctrl_hi`. `step()` clips a `pd`
+  preset's motor targets to those soft limits, so a pose settled past them is
+  one the policy can never command. A `pd` preset's raw ctrlrange is `[0, 0]`
+  besides — those actuators are deliberately `ctrllimited=False`. And
+  `_ctrl_lo`/`_ctrl_hi` are the soft limits only for a `pd` preset: for an
+  `ideal_torque` one they are the actuator forcerange in N·m, so clipping a
+  radian target against them does nothing at all. Reading the angle envelope
+  directly is what keeps the two models on the same anchor.
 - The settle forces each actuator's `gaintype`/`biastype`/`ctrllimited` as
   well as its gain and bias parameters. This diverges from w01-tek, whose
   actuators are always position servos. An `ideal_torque` preset injects

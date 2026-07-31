@@ -172,6 +172,51 @@ def test_the_settled_anchor_is_identical_under_two_actuator_models():
     )
 
 
+def test_the_two_actuator_models_still_agree_where_the_clip_bites():
+    """The case the test above cannot see. roboto_origin's home pose sits
+    inside its 0.9 soft limits, so the settle clip is a no-op there and both
+    models settle an unclipped pose. At 0.8 four joints fall outside and the
+    clip has teeth -- which is where a clip taken from `_ctrl_lo`/`_ctrl_hi`
+    diverges, because those are joint angles for a `pd` preset and the
+    actuator forcerange in Nm for an `ideal_torque` one, so the same np.clip
+    moves the pd targets and cannot touch the torque ones."""
+    tight = {"soft_limit_factor": 0.8}
+    servo = build(real_pose_ref=True, actuator_overrides=tight)
+    torque = build(real_pose_ref=True, actuator_overrides={**tight, "model": "ideal_torque"})
+
+    # Non-vacuity: the clip really does bite at this factor.
+    assert np.any(np.asarray(servo._settle_ctrl) != np.asarray(servo._default_pose))
+    np.testing.assert_array_equal(
+        np.asarray(torque._settle_ctrl), np.asarray(servo._settle_ctrl)
+    )
+    np.testing.assert_array_equal(
+        np.asarray(torque._pose_anchor), np.asarray(servo._pose_anchor)
+    )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [pytest.param({}, id="pd"), pytest.param({"model": "ideal_torque"}, id="ideal_torque")],
+)
+def test_a_tighter_soft_limit_factor_moves_the_settled_anchor(model):
+    """`soft_limit_factor` is the one config axis the anchor is NOT invariant
+    to, and it moves the anchor for BOTH actuator models. It never reaches
+    the compiled model (both models delete it -- see actuators/models.py), so
+    the settle physics is identical and the clip is the only thing that can
+    move the result: the runtime envelope is preset policy, and a pose
+    settled outside it is one the policy can never command.
+
+    Both roboto_origin presets are `pd`, so the model has to be overridden
+    here rather than picked from PRESETS."""
+    stock = build(real_pose_ref=True, actuator_overrides=model)
+    tight = build(
+        real_pose_ref=True, actuator_overrides={**model, "soft_limit_factor": 0.8}
+    )
+
+    moved = np.abs(np.asarray(tight._pose_anchor) - np.asarray(stock._pose_anchor)).max()
+    assert moved > 1e-3
+
+
 def test_two_presets_settle_to_the_same_pose(anchored_envs):
     """Close, but not bit-identical, and deliberately not asserted as such:
     roboto_origin's two presets set different joint ARMATURE (0.01 against
@@ -188,11 +233,13 @@ def test_two_presets_settle_to_the_same_pose(anchored_envs):
 
 
 @pytest.mark.parametrize("preset", PRESETS)
-def test_the_settle_ctrl_is_the_runtime_target_clip(anchored_envs, preset):
+def test_the_settle_ctrl_is_the_soft_joint_limit_clip(anchored_envs, preset):
+    """In the ANGLE domain, unconditionally. `_ctrl_lo`/`_ctrl_hi` are these
+    same numbers for a `pd` preset and the actuator forcerange in Nm for an
+    `ideal_torque` one, so clipping a radian target against them is a unit
+    error that happens to be invisible on a pd preset."""
     env = anchored_envs[preset]
-    expected = np.clip(
-        np.asarray(env._default_pose), np.asarray(env._ctrl_lo), np.asarray(env._ctrl_hi)
-    )
+    expected = np.clip(np.asarray(env._default_pose), env._soft_lo, env._soft_hi)
     np.testing.assert_array_equal(np.asarray(env._settle_ctrl), expected)
 
 
@@ -208,20 +255,19 @@ def test_the_settle_ctrl_is_not_the_raw_ctrlrange_clip(anchored_envs):
     assert not np.allclose(raw_clip, np.asarray(env._settle_ctrl))
 
 
-def test_the_settle_clips_its_targets_to_the_runtime_bounds():
+def test_the_settle_clips_its_targets_to_the_soft_joint_limits():
     """The clip with teeth. roboto_origin's home pose sits inside its own
     soft limits, so on a stock env the clip is a no-op and the assertion
     above cannot tell a clipped target from an unclipped one. Tightening the
-    runtime upper bound on a built env and calling the settle directly makes
-    the clip bite. The env is thrown away afterwards; `_settle_pose` reads
-    the bounds and returns what it used, so nothing else has to move."""
+    upper bound on a built env and calling the settle directly makes the clip
+    bite well past the 0.029 rad a `soft_limit_factor` of 0.8 buys. The env is
+    thrown away afterwards; `_settle_pose` reads the bounds and returns what
+    it used, so nothing else has to move."""
     env = build()  # off: no settle at construction, nothing to undo
-    env._ctrl_hi = jp.minimum(env._ctrl_hi, 0.05)
+    env._soft_hi = np.minimum(env._soft_hi, 0.05)
     ctrl, _qpos = env._settle_pose()
 
-    expected = np.clip(
-        np.asarray(env._default_pose), np.asarray(env._ctrl_lo), np.asarray(env._ctrl_hi)
-    )
+    expected = np.clip(np.asarray(env._default_pose), env._soft_lo, env._soft_hi)
     np.testing.assert_array_equal(np.asarray(ctrl), expected)
     assert np.any(np.asarray(ctrl) != np.asarray(env._default_pose))
 

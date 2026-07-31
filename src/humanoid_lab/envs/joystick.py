@@ -84,9 +84,10 @@ def default_config() -> config_dict.ConfigDict:
         #
         # On, the env settles a QUASI-RIGID copy of the model once at
         # construction (see HumanoidEnv._settle_pose) and anchors on the
-        # result: a function of the geometry alone, identical for every gain
-        # set and every actuator model. Compensating the real plant's sag to
-        # reach that pose is the policy's job.
+        # result: a function of the geometry and the soft-limit envelope,
+        # identical for every gain set and every actuator model at a given
+        # soft_limit_factor. Compensating the real plant's sag to reach that
+        # pose is the policy's job.
         #
         # The settle must end standing and at rest or construction raises
         # (HumanoidEnv._check_settled). asimov_v1's keyframes do not: held
