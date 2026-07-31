@@ -11,8 +11,11 @@ What the tests pin down:
 - With every probability at zero, and with the keys absent entirely, the
   sampler is bit-identical to the pre-1.6 draw. `test_golden_baseline.py` is
   the wider gate; this is the local one.
-- Each draw folds its own index into `_sample_command`'s own rng, so enabling
-  one draw cannot move another draw's stream.
+- Each draw folds an index of its own, offset out of the base split's domain,
+  into `_sample_command`'s own rng. So no draw can key off a base split key,
+  and enabling one draw moves neither the base sample nor another draw's
+  stream. Both of those are tested at a probability BELOW 1: at p=1 the draw
+  overwrites every row and a stolen key is invisible.
 - Each draw is clean (the axes it does not own are exactly 0) and in range.
 - The zero-command overwrite still runs last, after every pure draw.
 """
@@ -144,23 +147,66 @@ def test_no_draw_key_aliases_a_key_from_the_base_split(env, monkeypatch):
 # -- stream independence ----------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "earlier", ["pure_wz_prob", "pure_vy_prob", "pure_slow_prob", "pure_fast_prob"]
-)
-def test_an_earlier_draw_does_not_perturb_the_back_draw(env, earlier):
-    """Every draw folds its own index into `_sample_command`'s argument, so
-    an enabled draw consumes nothing from any other draw's stream. `back` is
-    the last of the five and overwrites whatever ran before it, so an
-    identical result proves the earlier draw's keys came from somewhere else
-    entirely -- not from the split that feeds `back`."""
-    with block_values(env._config.command, zero_prob=0.0, pure_back_prob=1.0):
-        back_only = samples(env)
-    with block_values(env._config.command, zero_prob=0.0, pure_back_prob=1.0, **{earlier: 1.0}):
-        with_earlier = samples(env)
+def fired(drawn):
+    """Rows a pure draw rewrote. Every draw leaves exactly one nonzero axis
+    (`pure_wz` zeroes the linear part, the rest zero everything but vx),
+    while the base uniform lands on all three -- a continuous draw never
+    returns exactly 0.0. Every test below sets `zero_prob=0.0`, which keeps
+    the standing overwrite (all three axes zero) out of the picture."""
+    return (drawn != 0.0).sum(axis=1) == 1
 
-    np.testing.assert_array_equal(back_only, with_earlier)
-    # Not vacuous: these really are back draws, not the base uniform.
-    assert (back_only[:, 0] < 0.0).all()
+
+@pytest.mark.parametrize("prob_key", PROB_KEYS)
+def test_a_draw_leaves_the_rows_it_did_not_redraw_untouched(env, prob_key):
+    """A draw at p=0.5 rewrites about half the keys and must leave the other
+    half exactly as the all-off sampler drew them. Those surviving rows are
+    the only window onto the base split there is: a draw that took a key out
+    of the base split -- w01-tek's own pattern for pure_wz/pure_vy -- moves
+    every base sample, including the ones it does not overwrite.
+
+    The probability has to be below 1 for this to see anything. At p=1 the
+    draw overwrites every row and there is nothing left to compare."""
+    with block_values(env._config.command, zero_prob=0.0):
+        baseline = samples(env)
+    with block_values(env._config.command, zero_prob=0.0, **{prob_key: 0.5}):
+        drawn = samples(env)
+
+    survived = ~fired(drawn)
+    # Not vacuous in either direction: the draw fired, and it left rows.
+    assert 0 < survived.sum() < len(drawn)
+    np.testing.assert_array_equal(drawn[survived], baseline[survived])
+
+
+def test_two_draws_fire_on_different_rows_and_keep_doing_so_together(env):
+    """`slow` and `back` at p=0.5 each own a stream, so which keys they fire
+    on is decided independently: neither mask is the other's, and enabling
+    both changes neither. Two draws sharing a fold_in index would instead
+    fire on exactly the same keys, and since `back` runs later and overwrites
+    `slow`, the earlier draw would contribute nothing to training at all --
+    silently, because every other test here enables one draw at a time.
+
+    `slow_vx` is positive and `back_vx` negative, so with both on the sign of
+    vx says which draw wrote each row."""
+    with block_values(env._config.command, zero_prob=0.0, pure_slow_prob=0.5):
+        slow_only = samples(env)
+    with block_values(env._config.command, zero_prob=0.0, pure_back_prob=0.5):
+        back_only = samples(env)
+    with block_values(
+        env._config.command, zero_prob=0.0, pure_slow_prob=0.5, pure_back_prob=0.5
+    ):
+        both = samples(env)
+
+    slow_mask, back_mask = fired(slow_only), fired(back_only)
+    # The catch: identical masks are what a shared index produces.
+    assert (slow_mask & ~back_mask).sum() > 0
+    assert (back_mask & ~slow_mask).sum() > 0
+
+    np.testing.assert_array_equal(fired(both), slow_mask | back_mask)
+    # And the rows keep their values: back's wherever back fired, slow's
+    # wherever slow fired and back did not.
+    np.testing.assert_array_equal(both[back_mask], back_only[back_mask])
+    survivors = slow_mask & ~back_mask
+    np.testing.assert_array_equal(both[survivors], slow_only[survivors])
 
 
 # -- each draw is clean and in range ---------------------------------------
