@@ -6,7 +6,7 @@ import pytest
 
 from humanoid_lab.robot.spec import load_robot_spec, validate_against_model
 
-TOY_ROBOT_DIR = Path(__file__).parent / "data" / "toy_robot"
+TOY_ROBOT_DIR = Path(__file__).parent.parent / "data" / "toy_robot"
 
 
 def _toy_model() -> mujoco.MjModel:
