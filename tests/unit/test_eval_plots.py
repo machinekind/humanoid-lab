@@ -12,6 +12,7 @@ matplotlib.use("Agg")
 import numpy as np
 import pytest
 
+from humanoid_lab.eval import plots
 from humanoid_lab.eval.plots import cursor_strip, joint_grid, joint_zoom, torque_strip
 
 # Asimov v1's 12 actuated leg joints and 6 joint_groups (robots/asimov_v1/robot.yaml).
@@ -115,6 +116,48 @@ def test_joint_grid_single_group_squeeze_edge_case():
     frame = frame_at(times[0])
     assert frame.shape == (160, 320, 3)
     assert frame.dtype == np.uint8
+
+
+def _row_ylims(monkeypatch, times, targets, positions, names, groups):
+    """joint_grid's per-axes y-limits, in row-major order.
+
+    `cursor_strip` renders and then closes the figure, so the axes cannot be
+    inspected after joint_grid returns; this spies on the handoff instead of
+    changing either function's contract to make the test possible.
+    """
+    captured = {}
+    real = plots.cursor_strip
+
+    def spy(fig, axes, t, **kwargs):
+        captured["ylims"] = [ax.get_ylim() for ax in axes]
+        return real(fig, axes, t, **kwargs)
+
+    monkeypatch.setattr(plots, "cursor_strip", spy)
+    joint_grid(times, targets, positions, names, groups, width=320, height=320)
+    return captured["ylims"]
+
+
+def test_joint_grid_rows_share_a_y_range_so_asymmetry_is_visible(monkeypatch):
+    """The whole point of the grid: a left knee swinging twice as far as the
+    right has to READ as twice as far. Per-axes autoscaling would rescale
+    each column to fill its own box and the two traces would look the same.
+    """
+    names = ["left_knee_joint", "right_knee_joint", "left_hip_pitch_joint", "right_hip_pitch_joint"]
+    groups = {"knee": names[:2], "hip_pitch": names[2:]}
+    times = _times()
+    signal = np.sin(times * 3.0)
+    # Row 0 is asymmetric (left swings 4x the right); row 1 is symmetric and
+    # an order of magnitude smaller.
+    positions = np.stack([4.0 * signal, signal, 0.1 * signal, 0.1 * signal], axis=-1)
+
+    ylims = _row_ylims(monkeypatch, times, positions, positions, names, groups)
+
+    assert ylims[0] == ylims[1], "the two columns of a group must share their y-range"
+    assert ylims[0][1] >= 4.0, "the shared range has to span the taller of the two traces"
+    # Per ROW, not globally: row 1's 0.1 rad wiggle would be a flat line
+    # inside row 0's range.
+    assert ylims[2] != ylims[0]
+    assert ylims[2] == ylims[3]
 
 
 def test_joint_grid_raises_keyerror_for_ungrouped_joint():

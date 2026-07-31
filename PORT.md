@@ -118,7 +118,13 @@ day and makes the TDD loop fast.
     error is reported but not gated, and the vibration reference is the
     grid's own baseline cell rather than a keeper table this repo does not
     have yet. See docs/configuration.md.
-- [ ] 4.5 Video improvements: per-joint grid, `--plots` selection, push-free rollouts. [details](docs/port-details.md#45-video-qol)
+- [x] 4.5 Video improvements: per-joint grid, `--plots` selection, push-free rollouts. [details](docs/port-details.md#45-video-qol)
+  - The panels landed in PR #3. Panel selection is three boolean flags
+    (`--plot-torque`, `--plot-joints`, `--joint`) rather than w01-tek's
+    `--plots` comma list: with two panels there is no list to parse and no
+    unknown name to reject. Push-free rollouts were already true through
+    the battery's measurement env; `eval/video.py` now states the
+    convention itself and `--push` restores the run's own pushes.
 
 **Phase 5. Deploy contract. Land before the first published policy.**
 - [ ] 5.1 A fail-closed deploy contract with a key ledger. [details](docs/port-details.md#51-deploy-contract)

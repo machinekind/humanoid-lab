@@ -19,6 +19,12 @@ NAME` swaps the grid for a single-joint zoom panel and implies
 --plot-joints. All three are opt-in (off by default -- plain video output
 is the same code path as before); panel rendering lives in eval/plots.py.
 
+`--push` restores the run's own random pushes for the rollout. They are OFF
+by default, matching the battery's measurement convention: a mid-video kick
+reads as a policy failure to anyone watching the clip. The default is stated
+here (see env_overrides_for), not merely inherited from the battery's
+measurement env -- this module owns what its own renders show.
+
 MUJOCO_GL: mirrors w01-tek wojtek_rl/eval.py's own handling exactly --
 `egl` is set (via setdefault, so an already-exported MUJOCO_GL wins) only
 on linux, where headless GPU boxes need it; darwin is left on its default
@@ -41,8 +47,30 @@ import jax
 import mujoco
 import numpy as np
 
-from humanoid_lab.eval.battery import battery_scenarios, load_checkpoint_policy
+from humanoid_lab.eval.battery import (
+    battery_scenarios,
+    load_checkpoint_policy,
+    merged_env_overrides,
+)
 from humanoid_lab.eval.plots import joint_grid, joint_zoom, torque_strip
+
+
+def push_override(push: bool) -> dict:
+    """This module's own push decision, as an env override block.
+
+    Written explicitly in both directions rather than relying on the
+    battery's measurement env happening to disable pushes: what a rendered
+    clip shows is this module's contract with whoever watches it. `--push`
+    sets `enable` only, so the run's own `interval_steps` and `vel` are
+    whatever it trained with.
+    """
+    return {"push": {"enable": bool(push)}}
+
+
+def env_overrides_for(run: dict, push: bool = False) -> dict:
+    """The env overrides a video rollout builds its env with: the battery's
+    measurement set, with this module's push decision merged over it."""
+    return merged_env_overrides(run, push_override(push))
 
 
 def _pick_camera(mj_model: mujoco.MjModel):
@@ -135,8 +163,9 @@ def render_video(
     plot_torque: bool = False,
     plot_joints: bool = False,
     joint: str | None = None,
+    push: bool = False,
 ) -> Path:
-    run, env, _ckpt, inf = load_checkpoint_policy(run_dir)
+    run, env, _ckpt, inf = load_checkpoint_policy(run_dir, push_override(push))
 
     # Actuator column order == robot_spec.actuated_joints order (robot/build.py's
     # injection loop: "for joint_name in robot_spec.actuated_joints", the
@@ -245,11 +274,18 @@ def main():
     ap.add_argument("--plot-torque", action="store_true", help="append a normalized-torque strip below the render")
     ap.add_argument("--plot-joints", action="store_true", help="append a joint target-vs-state grid below that")
     ap.add_argument("--joint", default=None, help="single-joint zoom panel instead of the grid (implies --plot-joints)")
+    ap.add_argument(
+        "--push", action="store_true",
+        help="keep the run's own random pushes for this rollout; the default "
+        "is push-free, matching the battery's measurement convention (a "
+        "mid-video kick reads as a policy failure)",
+    )
     args = ap.parse_args()
 
     render_video(
         args.run, args.scenario, args.steps, args.out, args.seed,
         plot_torque=args.plot_torque, plot_joints=args.plot_joints, joint=args.joint,
+        push=args.push,
     )
 
 
