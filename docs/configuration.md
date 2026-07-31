@@ -837,7 +837,9 @@ from `run.json`.
 
 Every `battery.json` — perturbed or not — now carries a `grid` block naming
 `alpha`, `lag_tau`, `torque_envelope`, and `path` (`native` or
-`explicit_pd`).
+`explicit_pd`). `./run.sh report` renders it as a `plant:` line in the
+header, so an `eval_report.md` always states which plant produced its
+numbers.
 
 ### The baseline cell is the native path
 

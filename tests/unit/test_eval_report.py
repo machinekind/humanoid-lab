@@ -51,6 +51,38 @@ BATTERY = {
 }
 
 
+# The grid block eval/battery.py stamps on every battery.json (port item
+# 4.4). It is not a scenario, and a report rendered from a perturbed cell
+# has to say which plant produced its numbers.
+NATIVE_GRID = {"alpha": 1.0, "lag_tau": 0.0, "torque_envelope": None, "path": "native"}
+PERTURBED_GRID = {
+    "alpha": 1.58, "lag_tau": 0.005, "torque_envelope": [5.0, 15.0], "path": "explicit_pd",
+}
+
+
+def test_the_grid_block_is_not_rendered_as_a_scenario():
+    md = render_markdown({**BATTERY, "grid": NATIVE_GRID})
+    assert "| grid |" not in md
+
+
+def test_an_unperturbed_report_says_so_without_a_grid_section():
+    md = render_markdown({**BATTERY, "grid": NATIVE_GRID})
+    assert "native" in md
+    assert "1.58" not in md
+
+
+def test_a_perturbed_report_names_every_axis_it_was_run_under():
+    md = render_markdown({**BATTERY, "grid": PERTURBED_GRID})
+    assert "1.58" in md
+    assert "explicit_pd" in md
+    assert "5.0" in md and "15.0" in md
+
+
+def test_a_battery_json_predating_the_grid_block_still_renders():
+    md = render_markdown(BATTERY)
+    assert "smoke_test_run" in md
+
+
 def test_render_markdown_contains_scenario_names():
     md = render_markdown(BATTERY)
     for name in ("stand", "walk_ramp", "turn", "strafe", "walk_to_stop"):
