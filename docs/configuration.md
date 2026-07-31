@@ -489,6 +489,25 @@ independent randomization on top of that, gated by its own `enable`.
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
 
+"Independent" is a property of the RNG plumbing, not a wish. The fixed
+distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
+above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
+own — `1 joint_gains, 2 com_offset, 3 dof, 4 foot_friction, 5
+motor_strength`, fixed. The `0x100` offset is the same load-bearing constant
+as the pure command draws use, for the same reason: `fold_in(key, i)` is
+bit-identical to `split(key, n)[i]` for every `i < n`, so a raw table index
+keys off one of the five base keys. Before the offset landed, `com_offset`
+sampled straight off `r3`, the link-mass key, and `foot_friction` sampled
+straight off `r5`, the kd key — measured correlation 1.0 between the COM
+offset and the link-mass scale, and between the first foot's friction scale
+and the kd scale. Two axes were one axis wearing two names.
+
+Fixing that **changed the DR sampling streams**: a run at a given seed now
+draws different worlds than it did before. Nothing published depends on it —
+DR is training-only, and the goldens roll out with DR off.
+`tests/integration/test_randomize.py` pins both the index domain and the
+decorrelation.
+
 ## Early stopping (`early_stop`)
 
 Off by default. When on, the trainer ends a run whose eval reward has stopped
