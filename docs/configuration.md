@@ -284,6 +284,45 @@ own grace window. w01-tek's terrain wrapper does this; this repo has no such
 wrapper yet (PORT.md defers terrain), and `envs/joystick.py` carries the note
 at the reseed site.
 
+## Pure command draws (`task.env.command`)
+
+The command sampler draws `(vx, vy, wz)` from one uniform box. That box
+almost never produces a clean corner: a backward command arrives with random
+lateral and yaw contamination attached, and under `tracking_product` or
+`tracking_relative` a contaminated corner pays about nothing however well the
+robot serves it. The skill is then never profitable to learn, and the policy
+settles on refusing it — w01-tek's `terrain_blind_v2c` held 0.000 m/s under a
+commanded -0.4 backward, and five isolating probes confirmed the refusal was
+learned rather than mechanical.
+
+The five draws below rewrite the base sample into a clean single-axis
+command with the given probability. They apply in the order `wz, vy, slow,
+fast, back`, a later draw overwriting an earlier one, and all of them run
+before `zero_prob`, which stays the sampler's last word: standing still
+overrides every draw.
+
+Each draw is gated on its static probability and keys off
+`jax.random.fold_in(rng, idx)` with an index of its own — `1 wz, 2 vy,
+3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not exist in
+the trace, all five off leave the sampler bit-identical to the pre-1.6 one
+(`tests/integration/test_golden_baseline.py`), and enabling one draw does not
+move another draw's samples
+(`tests/integration/test_pure_command_draws.py`).
+
+Every range is a **starting value to re-derive**, taken from this repo's own
+envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `pure_wz_prob` | `0.0` | Keep the drawn `wz`, zero the linear part: spin-in-place training. |
+| `pure_vy_prob` | `0.0` | Keep the drawn `vy`, zero `vx` and `wz`: pure-strafe training. |
+| `pure_slow_prob` | `0.0` | Redraw `vx` from `slow_vx`, zero `vy` and `wz`: clean slow straight walking, so the gait learns to scale down instead of having one speed. |
+| `slow_vx` | `(0.1, 0.35)` | Range of the slow redraw, m/s. w01-tek's own numbers, which sit inside our `vx` range unchanged. |
+| `pure_fast_prob` | `0.0` | Redraw `vx` from `fast_vx`, zero `vy` and `wz`: clean fast straight walking. |
+| `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. w01-tek deliberately set its own `fast_vx` to `(0.8, 1.2)` — **above** its box — to pull the policy past the speed it deadlocked at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
+| `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal w01-tek actually measured. |
+| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside our negative `vx` range. |
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone

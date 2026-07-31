@@ -116,6 +116,47 @@ def default_config() -> config_dict.ConfigDict:
             # from w01-tek's joystick task as a starting value, untuned for
             # a biped.
             zero_prob=0.15,
+            # Pure command draws (see _sample_command). Each redraws the
+            # base uniform sample into a CLEAN single-axis command with the
+            # given probability, all off by default.
+            #
+            # Why they exist at all: a uniform box over (vx, vy, wz) almost
+            # never draws a clean corner -- a backward command arrives with
+            # random lateral and yaw contamination attached. Under
+            # tracking_product/tracking_relative a contaminated corner pays
+            # ~0 no matter how well the robot serves it, so the skill is
+            # never profitable to learn and the policy settles on refusing
+            # it. w01-tek's terrain_blind_v2c held 0.000 m/s under a
+            # commanded -0.4 backward and five isolating probes confirmed
+            # the refusal was learned, not mechanical.
+            #
+            # Every range below is a STARTING VALUE to re-derive for asimov,
+            # derived here from our own envelope (vx +-0.8, vy +-0.6,
+            # wz +-0.6) rather than carried from w01-tek's quadruped.
+            #
+            # Keep wz, zero the linear part: spin-in-place training.
+            pure_wz_prob=0.0,
+            # Keep vy, zero vx and wz: pure-strafe training.
+            pure_vy_prob=0.0,
+            # Redraw vx from slow_vx, zero vy and wz: clean slow straight
+            # walking, so the gait learns to scale down instead of having
+            # one speed. w01-tek's own slow_vx, which sits inside our vx
+            # range unchanged.
+            pure_slow_prob=0.0,
+            slow_vx=(0.1, 0.35),
+            # Redraw vx from fast_vx, zero vy and wz: clean fast straight
+            # walking. Ours tops out at 0.8, the top of our commanded vx
+            # box. w01-tek deliberately set fast_vx=(0.8, 1.2) ABOVE its own
+            # box to pull the policy past the speed it deadlocked at; our
+            # envelope is capped pending sysid, so commanding past it is a
+            # decision for later, not a default.
+            pure_fast_prob=0.0,
+            fast_vx=(0.5, 0.8),
+            # Redraw vx from back_vx, zero vy and wz: clean backward
+            # walking, the refusal w01-tek actually measured. Sits inside
+            # our negative vx range.
+            pure_back_prob=0.0,
+            back_vx=(-0.8, -0.2),
         ),
         # Carried from w01-tek's joystick task, untuned for asimov's mass/leg
         # length.
@@ -297,6 +338,59 @@ class Joystick(HumanoidEnv):
                 jax.random.uniform(r3, minval=c.wz[0], maxval=c.wz[1]),
             ]
         )
+        # Pure command draws, in order: wz, vy, slow, fast, back. Each
+        # rewrites the base sample into a clean single-axis command with its
+        # own probability, and a later draw overwrites an earlier one. What
+        # they are for is in default_config's command block.
+        #
+        # Two rules make them free while off. Each block is gated on a static
+        # config probability, so `if p:` is a Python branch and a preset with
+        # the prob at 0 does not put the block in the trace at all. Each block
+        # keys off `fold_in(rng, idx)` with an index of its own rather than
+        # taking keys from the split above, so every draw owns an independent
+        # stream: enabling one draw moves no other draw's samples, and
+        # enabling none leaves this sampler bit-identical to the pre-1.6 draw
+        # (tests/integration/test_golden_baseline.py is the gate).
+        #
+        # The index table is fixed: 1 wz, 2 vy, 3 slow, 4 fast, 5 back. 0 is
+        # reserved and 6 up are free for future draws -- w01-tek's `arc` is not
+        # ported, and it does NOT get index 1 if it ever is.
+        #
+        # Deliberate divergence from w01-tek: its pure_wz/pure_vy predate its
+        # own stream discipline and take two keys out of the base split
+        # unconditionally, so switching them off there still shifts every
+        # other sample. Ours are fold_in-gated like its slow/fast/back are.
+        wz_p = c.get("pure_wz_prob", 0.0)
+        if wz_p:
+            # r_b is unused: pure_wz keeps the wz the base draw already made
+            # and only zeroes the linear part. The split still runs so all
+            # five draws have the same shape -- giving wz a dedicated range
+            # later can take r_b without moving r_a's bernoulli stream.
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 1))
+            vel = jp.where(jax.random.bernoulli(r_a, wz_p), vel.at[:2].set(0.0), vel)
+        vy_p = c.get("pure_vy_prob", 0.0)
+        if vy_p:
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 2))  # r_b unused, see above
+            vel = jp.where(
+                jax.random.bernoulli(r_a, vy_p), jp.array([0.0, vel[1], 0.0]), vel
+            )
+        slow_p = c.get("pure_slow_prob", 0.0)
+        if slow_p:
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 3))
+            vx = jax.random.uniform(r_b, minval=c.slow_vx[0], maxval=c.slow_vx[1])
+            vel = jp.where(jax.random.bernoulli(r_a, slow_p), jp.array([vx, 0.0, 0.0]), vel)
+        fast_p = c.get("pure_fast_prob", 0.0)
+        if fast_p:
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 4))
+            vx = jax.random.uniform(r_b, minval=c.fast_vx[0], maxval=c.fast_vx[1])
+            vel = jp.where(jax.random.bernoulli(r_a, fast_p), jp.array([vx, 0.0, 0.0]), vel)
+        back_p = c.get("pure_back_prob", 0.0)
+        if back_p:
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 5))
+            vx = jax.random.uniform(r_b, minval=c.back_vx[0], maxval=c.back_vx[1])
+            vel = jp.where(jax.random.bernoulli(r_a, back_p), jp.array([vx, 0.0, 0.0]), vel)
+
+        # Last word: standing still overrides every draw above.
         zero = jax.random.bernoulli(r4, c.zero_prob)
         return jp.where(zero, jp.zeros(3), vel)
 
