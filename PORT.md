@@ -50,7 +50,7 @@ day and makes the TDD loop fast.
 - [x] 1.5 `no_progress` terminates episodes that ignore their command. [details](docs/port-details.md#15-no_progress)
 - [x] 1.6 Pure command draws sample clean wz, vy, slow, fast, and backward commands. [details](docs/port-details.md#16-pure-command-draws)
 - [x] 1.7 `feet_apex` pays swing peaks and `feet_landing` taxes hard touchdowns. [details](docs/port-details.md#17-feet_apex-and-feet_landing)
-- [ ] 1.8 `orientation_tol_deg` adds a tolerance cone to the tilt penalty. [details](docs/port-details.md#18-orientation_tol_deg)
+- [x] 1.8 `orientation_tol_deg` adds a tolerance cone to the tilt penalty. [details](docs/port-details.md#18-orientation_tol_deg)
 - [ ] 1.9 `real_pose_ref` anchors pose rewards on the settled pose. [details](docs/port-details.md#19-real_pose_ref)
 
 **Phase 2. Trainer and MJWarp runtime. This phase gates the first GPU run.**

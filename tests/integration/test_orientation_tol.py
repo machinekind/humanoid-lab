@@ -147,17 +147,15 @@ def test_a_tilt_outside_the_cone_pays_the_legacy_penalty_less_the_cone(
 
 def test_the_penalty_is_continuous_at_the_cone_edge(legacy_env, cone_env, reset_state):
     """A subtraction, not a switch: the penalty leaves the cone at zero and
-    grows from there, so there is no step for the optimizer to fall off."""
+    picks up the legacy penalty's own slope, `d(sin²θ)/dθ = sin(2θ)`. No
+    step for the optimizer to fall off, and no kink either."""
     edge = orientation_reward(cone_env, tilted(legacy_env, reset_state, TOL_DEG))
-    just_outside = [
-        orientation_reward(cone_env, tilted(legacy_env, reset_state, TOL_DEG + d))
-        for d in (0.1, 0.5, 2.0)
-    ]
-
     assert edge == pytest.approx(0.0, abs=1e-7)
-    assert just_outside == sorted(just_outside)
-    assert just_outside[0] < 1e-3
-    assert just_outside[-1] > 0.0
+
+    slope = np.sin(2 * np.radians(TOL_DEG))
+    for d in (0.1, 0.25, 0.5):
+        outside = orientation_reward(cone_env, tilted(legacy_env, reset_state, TOL_DEG + d))
+        assert outside == pytest.approx(slope * np.radians(d), rel=0.02)
 
 
 def test_the_cone_still_prices_a_nosedive(legacy_env, cone_env, reset_state):
