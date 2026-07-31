@@ -36,7 +36,8 @@ nodes). Per-person paths live in untracked local config.
   per-person paths that batch jobs read; `hpc/local.env.example` is the
   template.
 - `hpc/train.job` is the job and `hpc/_common.sh` the shared setup.
-  `hpc/README.md` covers the details.
+  `hpc/preflight_sizing.job` measures peak GPU memory and steps/s at several
+  env counts before a real launch. `hpc/README.md` covers the details.
 
 Nobody runs `submit` without Marcin's explicit go. This is a standing rule
 carried over from w01-tek.
@@ -48,3 +49,5 @@ carried over from w01-tek.
 - The venv lives on remote storage (`STORE_DIR`), not `$HOME`.
 - steps/s is comparable only between runs at the same seed. Two w01-tek runs
   differing only in seed reported 1,343,166 and 777,859 steps/s.
+- Memory ceilings and throughput do not transfer between node classes. Measure
+  on the hardware the real run will use.
