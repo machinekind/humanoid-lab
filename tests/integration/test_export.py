@@ -159,7 +159,7 @@ def test_a_corrupted_weight_matrix_leaves_nothing_at_the_destination(loaded, tmp
     corrupted = dict(loaded.weights)
     corrupted["hidden_0_kernel"] = corrupted["hidden_0_kernel"] + 0.1
 
-    with pytest.raises(AssertionError, match="numpy forward"):
+    with pytest.raises(export.ExportValidationError, match="numpy forward"):
         export.write_validated(
             loaded.env, loaded.meta, corrupted, out_dir, loaded.inference, loaded.privileged_size
         )
@@ -172,12 +172,32 @@ def test_a_corrupted_normalizer_leaves_nothing_at_the_destination(loaded, tmp_pa
     corrupted = dict(loaded.weights)
     corrupted["norm_std"] = corrupted["norm_std"] * 2.0
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(export.ExportValidationError):
         export.write_validated(
             loaded.env, loaded.meta, corrupted, out_dir, loaded.inference, loaded.privileged_size
         )
 
     assert not out_dir.exists()
+
+
+def test_the_failure_carries_the_measured_error(loaded, tmp_path):
+    """A named exception, not a bare assert: `python -O` strips asserts, and
+    a stripped check would ship unvalidated artifacts. It carries the number
+    it measured and the bound it broke, so a caller can report both."""
+    corrupted = dict(loaded.weights)
+    corrupted["hidden_0_kernel"] = corrupted["hidden_0_kernel"] + 0.1
+
+    with pytest.raises(export.ExportValidationError) as excinfo:
+        export.write_validated(
+            loaded.env, loaded.meta, corrupted, tmp_path / "nope",
+            loaded.inference, loaded.privileged_size,
+        )
+
+    exc = excinfo.value
+    assert exc.tolerance == export.TOLERANCE
+    assert exc.error > export.TOLERANCE
+    assert str(exc.error) in str(exc)
+    assert not isinstance(exc, AssertionError)
 
 
 def test_a_corrupted_anchor_is_caught_by_the_second_validation(loaded, tmp_path):
@@ -186,7 +206,7 @@ def test_a_corrupted_anchor_is_caught_by_the_second_validation(loaded, tmp_path)
     meta = dict(loaded.meta)
     meta["anchor_ctrl"] = [v + 0.05 for v in meta["anchor_ctrl"]]
 
-    with pytest.raises(AssertionError, match="deploy runtime"):
+    with pytest.raises(export.ExportValidationError, match="deploy runtime"):
         export.write_validated(
             loaded.env, meta, loaded.weights, out_dir, loaded.inference, loaded.privileged_size
         )
@@ -201,7 +221,7 @@ def test_a_failed_export_leaves_an_earlier_good_export_in_place(loaded, run_dir,
 
     corrupted = dict(loaded.weights)
     corrupted["hidden_1_kernel"] = corrupted["hidden_1_kernel"] * 1.5
-    with pytest.raises(AssertionError):
+    with pytest.raises(export.ExportValidationError):
         export.write_validated(
             loaded.env, loaded.meta, corrupted, out_dir, loaded.inference, loaded.privileged_size
         )

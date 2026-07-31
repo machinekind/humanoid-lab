@@ -18,6 +18,11 @@ destination:
    observation assembly order, the gait clock, the anchor, the scale and
    the clip bounds all round-trip through the written files.
 
+Either failure raises `ExportValidationError` and writes nothing. The check
+is an explicit raise rather than an assert because `python -O` strips
+asserts, and a stripped check would ship unvalidated artifacts. It is
+written `not error < TOLERANCE` so a NaN error fails it too.
+
 Both compare at `TOLERANCE`, 1e-4. On a joint target in radians that is
 0.006 degrees, three orders below the 0.01 rad encoder noise the policy
 trains under. The residual is float32 reassociation between JAX and
@@ -54,6 +59,23 @@ SAMPLES = 32
 # else fails validation one anyway; refusing here says why.
 SUPPORTED_ACTIVATION = "swish"
 SUPPORTED_DISTRIBUTION = "tanh_normal"
+
+
+class ExportValidationError(Exception):
+    """A round-trip validation exceeded TOLERANCE; nothing was written.
+
+    An exception rather than a bare assert on purpose. `python -O` strips
+    asserts, and a stripped check would let `write_validated` ship
+    unvalidated artifacts -- the exact opposite of what this module exists
+    for. `error` and `tolerance` carry the numbers so a caller can report
+    them without parsing the message.
+    """
+
+    def __init__(self, what: str, error: float, tolerance: float):
+        self.what, self.error, self.tolerance = what, float(error), float(tolerance)
+        super().__init__(
+            f"{what}: max |diff| = {self.error} exceeds tolerance {self.tolerance}"
+        )
 
 
 @dataclass
@@ -252,9 +274,10 @@ def validate_runtime_vs_env(env, out_dir, inference, privileged_size, steps: int
 def write_validated(env, meta, weights, out_dir, inference, privileged_size) -> Path:
     """Validate, then place the artifacts. Nothing is written on a failure."""
     forward_error = validate_numpy_vs_brax(weights, meta, inference, privileged_size)
-    assert forward_error < TOLERANCE, (
-        f"numpy forward vs brax inference: max |diff| = {forward_error}"
-    )
+    if not forward_error < TOLERANCE:
+        raise ExportValidationError(
+            "numpy forward vs brax inference", forward_error, TOLERANCE
+        )
     print(f"validated numpy vs brax inference: max |diff| = {forward_error:.2e}")
 
     out_dir = Path(out_dir)
@@ -264,9 +287,10 @@ def write_validated(env, meta, weights, out_dir, inference, privileged_size) -> 
         (staging / runtime.ARTIFACT_META).write_text(json.dumps(meta, indent=2) + "\n")
 
         runtime_error = validate_runtime_vs_env(env, staging, inference, privileged_size)
-        assert runtime_error < TOLERANCE, (
-            f"deploy runtime vs env reference: max |diff| = {runtime_error}"
-        )
+        if not runtime_error < TOLERANCE:
+            raise ExportValidationError(
+                "deploy runtime vs env reference", runtime_error, TOLERANCE
+            )
         print(f"validated deploy runtime vs env reference: max |diff| = {runtime_error:.2e}")
 
         out_dir.mkdir(parents=True, exist_ok=True)
