@@ -236,6 +236,24 @@ exactly.
 | `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
 | `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which made stand-and-lift the top income under a command in w01-tek's `terrain_blind_v3`: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
 
+## Orientation tolerance cone (`task.env.reward`)
+
+The `orientation` penalty is `sum(gravity_xy²)`, which is `sin²` of the
+base's tilt from vertical. `orientation_tol_deg` puts a tolerance cone around
+upright: the penalty becomes `max(sin²(tilt) - sin²(tol), 0)`, exactly zero
+inside the cone and rising continuously from its edge with the legacy
+penalty's own slope.
+
+Tilt here is measured against **gravity**, not against the local surface. A
+flat-referenced penalty therefore taxes the body pitch that locomotion needs
+— leaning into an acceleration, or climbing — while a real nosedive stays far
+outside any cone worth setting. w01-tek runs 20 degrees and rejected 10 for
+that reason.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `orientation_tol_deg` | `0.0` | Half-angle of the cone, degrees. `sin²` of it is precomputed at construction, so `0` leaves the legacy penalty bit-exact and a live env never re-reads the key — change it by config, not by mutating a built env. |
+
 ## Swing shaping (`task.env.reward`)
 
 Two terms shape what a swing looks like, both at weight 0 by default.

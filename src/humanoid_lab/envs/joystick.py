@@ -262,6 +262,17 @@ def default_config() -> config_dict.ConfigDict:
             # and not the feet_landing penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
+            # Tolerance cone around upright for the orientation penalty,
+            # half-angle in degrees (0 = the legacy penalty, bit-exact). The
+            # penalty is sin^2 of the base's tilt from vertical; with a cone
+            # it becomes max(sin^2(tilt) - sin^2(tol), 0) -- free inside,
+            # rising continuously from the edge. Tilt here is measured
+            # against gravity, not against the local surface, so a
+            # flat-referenced penalty taxes the body pitch that locomotion
+            # needs (leaning into an acceleration) while a real nosedive
+            # stays far outside any cone worth setting. w01-tek runs 20
+            # degrees and rejected 10 for exactly that reason.
+            orientation_tol_deg=0.0,
             # Per-swing apex target for feet_apex, m. The duration-averaged
             # clearance terms tolerate a 1.5-2 cm skim that collects nearly
             # as much as a crisp arc, so the optimizer skims; paying the
@@ -335,6 +346,14 @@ class Joystick(HumanoidEnv):
             self._action_scale = jp.full(self.action_size, float(override))
 
         self._torque_cap = jp.array(self._mj_model.actuator_forcerange[:, 1])
+        # Orientation tolerance cone as sin^2 of its half-angle, so it
+        # subtracts directly from the penalty's own sum(square(gravity_xy))
+        # (see reward.orientation_tol_deg). Resolved here, once, like the
+        # other reward constants: 0.0 is falsy, so the default never enters
+        # _compute_rewards' expression at all.
+        self._orientation_tol = float(
+            np.square(np.sin(np.radians(self._config.reward.get("orientation_tol_deg", 0.0))))
+        )
         # Pose-deviation weight: uniform. w01-tek's abduction/leg-joint split
         # (full weight on the ab/adduction joint, lighter on the other two)
         # doesn't map cleanly onto asimov's 6-joint leg (hip_pitch, hip_roll,
@@ -705,12 +724,19 @@ class Joystick(HumanoidEnv):
         # because stepping is how tracking starts.
         shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
 
+        # sin^2 of the tilt from vertical, less the tolerance cone (see
+        # reward.orientation_tol_deg). The cone is a construct-time float, so
+        # the default 0 leaves the legacy expression exactly as it was.
+        orientation = terms.orientation(gravity[:2])
+        if self._orientation_tol:
+            orientation = jp.maximum(orientation - self._orientation_tol, 0.0)
+
         rewards = {
             "tracking_lin_vel": k_lin,
             "tracking_ang_vel": k_ang,
             "lin_vel_z": terms.lin_vel_z(linvel[2]),
             "ang_vel_xy": terms.ang_vel_xy(gyro[:2]),
-            "orientation": terms.orientation(gravity[:2]),
+            "orientation": orientation,
             "torques": terms.torques(data.actuator_force),
             "torque_rate": terms.torque_rate(data.actuator_force, info["last_torque"]),
             "action_rate": terms.action_rate(action, info["last_action"]),
