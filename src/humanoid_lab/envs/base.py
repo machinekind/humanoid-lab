@@ -246,6 +246,17 @@ class HumanoidEnv(mjx_env.MjxEnv):
     def _foot_site_pos(self, data):
         return data.site_xpos[self._foot_site_ids]
 
+    def _foot_clearance(self, data):
+        """Per-foot height above the floor, sole-referenced.
+
+        foot_sites are named MJCF sites, not the sole surface, so they sit a
+        few mm above the geoms that touch the ground (see
+        `_foot_site_rest_z`). Subtracting the construct-time resting height
+        makes a planted foot read ~0, matching the gait clock's own stance
+        target of 0 and w01-tek's geom-bottom semantic.
+        """
+        return self._foot_site_pos(data)[:, 2] - self._foot_site_rest_z
+
     def _foot_linvel(self, data):
         """Per-foot linear velocity at the foot_sites points (world frame)."""
 

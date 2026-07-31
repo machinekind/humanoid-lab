@@ -234,7 +234,39 @@ exactly.
 | `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role. w01-tek's terrain presets later widened this to `0.7`. |
 | `tracking_far_weight` | `0.0` | Mix a wide exponential into both kernels: `(1-w)*kernel + w*exp(-err²/tracking_far_sigma)`. Applies in the absolute and the relative branch alike, and the far kernel stays absolute in both. `exp(-err²/σ)` is gradient-free a few sigma out, so a capability the policy never explored gets no pull toward the command; the wide kernel keeps a usable gradient at range without moving the optimum or leaving `[0, 1]`. **This term alone creates a standing deadlock**: at a yaw rate error of 0.8 rad/s it pays `0.25*exp(-0.64/2.5)`, about 19% of the maximum angular reward, for standing still, and that gradient is weaker than the penalties a pivot attempt incurs. Turn it on only together with `tracking_product` or `tracking_relative`. |
 | `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
-| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which made stand-and-lift the top income under a command in w01-tek's `terrain_blind_v3`: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time`, plus `feet_apex` when port item 1.7 lands. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
+| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which made stand-and-lift the top income under a command in w01-tek's `terrain_blind_v3`: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
+
+## Swing shaping (`task.env.reward`)
+
+Two terms shape what a swing looks like, both at weight 0 by default.
+
+`feet_apex` pays each completed swing, once, at touchdown, for how close its
+**peak** clearance came to `apex_target`. The env tracks that peak in
+`info["swing_apex"]`: a running maximum while the foot is airborne, read at
+first contact, cleared afterwards. Duration-averaged clearance terms —
+`feet_phase` here, `high_step` in w01-tek — tolerate a long 1.5 to 2 cm skim
+that collects nearly as much as a crisp arc, so the optimizer skims. Pricing
+the peak got w01-tek 3 to 5 cm swings and 30 to 70% better grip. The term is
+in the `shaping_tracking_gate` set.
+
+`feet_landing` is a penalty on downward foot speed weighted by closeness to
+the floor, `sum(min(vz, 0)² * clip(1 - clearance/glide_height, 0, 1))`. It is
+measured **before** contact on purpose: a penalty read at contact under-reads
+impacts, because the solver has already absorbed the hit within the control
+step it becomes visible. The gate makes the gradient read "decelerate as you
+approach" — 1 at the floor, 0 at `glide_height` and above — so stance feet
+score about zero and a swing high above the floor scores zero at any speed.
+The physical reference for touchdown softness is free fall over the band:
+`sqrt(2*9.81*0.03) ≈ 0.77 m/s`. It is **not** in the shaping gate: gating a
+penalty on the tracking kernel would relax it exactly when tracking is
+failing, which is when feet are being slammed into the floor.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
+| `scales.feet_landing` | `0.0` | Weight of the soft-landing penalty (negative when on). `0` = off. |
+| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for asimov's leg** — this is w01-tek's number for a 0.21 m four-bar leg, and our own `gait.swing_height` asks for 0.08 m. |
+| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`; w01-tek's number, same leg. |
 
 ## No-progress termination (`task.env.no_progress`)
 

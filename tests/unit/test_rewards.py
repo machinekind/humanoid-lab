@@ -181,6 +181,81 @@ def test_feet_air_time_cap_bounds_reward():
     assert capped == pytest.approx(0.5 - 0.1)
 
 
+# -- feet_apex / feet_landing (port item 1.7) ------------------------------
+
+
+def test_feet_apex_pays_the_fraction_of_the_target_each_swing_reached():
+    apex = jp.array([0.025, 0.05])
+    first_contact = jp.array([True, True])
+    assert terms.feet_apex(apex, first_contact, apex_target=0.05) == pytest.approx(0.5 + 1.0)
+
+
+def test_feet_apex_clips_at_the_target():
+    """A swing higher than asked for pays the same as one that just reaches
+    the target: the term prices reaching the apex, not maximizing it."""
+    at_target = float(terms.feet_apex(jp.array([0.05]), jp.array([True]), apex_target=0.05))
+    over = float(terms.feet_apex(jp.array([0.20]), jp.array([True]), apex_target=0.05))
+    assert at_target == pytest.approx(1.0)
+    assert over == pytest.approx(1.0)
+
+
+def test_feet_apex_pays_once_per_swing_at_touchdown():
+    """A foot still in the air earns nothing however high it has been. The
+    payout lands on the step its swing ends, and on that foot only."""
+    apex = jp.array([0.05, 0.05])
+    airborne = terms.feet_apex(apex, jp.array([False, False]), apex_target=0.05)
+    one_lands = terms.feet_apex(apex, jp.array([False, True]), apex_target=0.05)
+    assert airborne == pytest.approx(0.0)
+    assert one_lands == pytest.approx(1.0)
+
+
+def test_feet_landing_is_zero_for_a_foot_moving_up():
+    """Only downward speed is priced: a foot pushing off the floor is a
+    swing starting, not an impact."""
+    rising = terms.feet_landing(jp.array([0.8, 0.0]), jp.array([0.0, 0.0]), glide_height=0.03)
+    assert rising == pytest.approx(0.0)
+
+
+def test_feet_landing_is_zero_at_and_above_the_glide_height():
+    """The penalty exists to shape the last few centimetres of a swing; a
+    foot still above the band is free to move at any speed."""
+    fast_down = jp.array([-1.0])
+    assert terms.feet_landing(fast_down, jp.array([0.03]), 0.03) == pytest.approx(0.0)
+    assert terms.feet_landing(fast_down, jp.array([0.10]), 0.03) == pytest.approx(0.0)
+
+
+def test_feet_landing_is_quadratic_in_downward_speed_at_the_floor():
+    slow = float(terms.feet_landing(jp.array([-0.4]), jp.array([0.0]), 0.03))
+    fast = float(terms.feet_landing(jp.array([-0.8]), jp.array([0.0]), 0.03))
+    assert slow == pytest.approx(0.16)
+    assert fast == pytest.approx(4.0 * slow)
+
+
+def test_feet_landing_ramps_linearly_from_the_glide_height_to_the_floor():
+    """The proximity gate is 1 at the floor and 0 at glide_height, linear in
+    between, so the gradient reads "decelerate as you approach"."""
+    at = [
+        float(terms.feet_landing(jp.array([-1.0]), jp.array([c]), 0.03))
+        for c in (0.0, 0.0075, 0.015, 0.0225, 0.03)
+    ]
+    assert at == pytest.approx([1.0, 0.75, 0.5, 0.25, 0.0])
+
+
+def test_feet_landing_sums_over_the_feet():
+    both = terms.feet_landing(jp.array([-1.0, -1.0]), jp.array([0.0, 0.0]), 0.03)
+    assert both == pytest.approx(2.0)
+
+
+def test_feet_landing_prices_the_free_fall_touchdown_reference():
+    """The physical reference for touchdown softness: a foot that free-falls
+    the whole glide band arrives at sqrt(2*9.81*0.03) ~ 0.77 m/s. That speed
+    at the floor is the unit this penalty is calibrated in."""
+    free_fall = float(jp.sqrt(2 * 9.81 * 0.03))
+    assert free_fall == pytest.approx(0.77, abs=0.01)
+    at_touchdown = float(terms.feet_landing(jp.array([-free_fall]), jp.array([0.0]), 0.03))
+    assert at_touchdown == pytest.approx(free_fall**2, rel=1e-5)
+
+
 def test_feet_phase_is_one_at_perfect_tracking():
     clearance = jp.array([0.01, 0.0])
     assert terms.feet_phase(clearance, clearance, phase_sigma=0.002) == pytest.approx(1.0)
@@ -222,6 +297,11 @@ def test_torque_limit_positive_above_cap():
         (
             terms.feet_slip,
             (jp.array([[0.1, 0.0], [0.0, 0.0]]), jp.array([True, False])),
+        ),
+        (terms.feet_apex, (jp.array([0.04, 0.0]), jp.array([True, False]), 0.05)),
+        (
+            terms.feet_landing,
+            (jp.array([-0.4, 0.1]), jp.array([0.01, 0.05]), 0.03),
         ),
         (terms.feet_phase, (jp.array([0.01, 0.0]), jp.array([0.0, 0.0]), 0.002)),
         (
