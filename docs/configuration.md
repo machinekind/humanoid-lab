@@ -279,6 +279,13 @@ The physical reference for touchdown softness is free fall over the band:
 penalty on the tracking kernel would relax it exactly when tracking is
 failing, which is when feet are being slammed into the floor.
 
+"At the floor" and "at `glide_height`" are clearance readings, not physical
+heights: `_foot_clearance` is referenced to the reset keyframe, which floats
+the feet a few mm, so both this band and `apex_target` sit about 5 mm
+(asimov) or 3 mm (roboto) below the physical height they name. The
+measurement and the deferred fix are in
+[docs/lessons/foot-clearance.md](lessons/foot-clearance.md).
+
 | Key | Default | Meaning |
 |---|---:|---|
 | `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |

@@ -322,6 +322,10 @@ def default_config() -> config_dict.ConfigDict:
             # Both numbers are w01-tek's, tuned for a 0.21 m four-bar leg.
             # RE-DERIVE for asimov's leg: our own gait.swing_height asks for
             # 0.08 m of swing, so a 0.05 m apex target is not this robot's.
+            # When re-deriving, read docs/lessons/foot-clearance.md first:
+            # _foot_clearance is referenced to the reset keyframe, which
+            # floats the feet, so both numbers sit about 5 mm (asimov) or
+            # 3 mm (roboto) below the physical height they name.
             apex_target=0.05,
             glide_height=0.03,
             # torque_limit hinge fires above this fraction of each

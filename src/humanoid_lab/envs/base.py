@@ -177,15 +177,20 @@ class HumanoidEnv(mjx_env.MjxEnv):
             )
         self._foot_geom_foot_idx = jp.array(foot_idx)
 
-        # Foot-site resting height above the floor at the reset keyframe
-        # pose. foot_sites are named MJCF sites, not the sole surface
-        # itself, so they sit a few mm above the geoms that actually touch
-        # the ground; a planted foot's raw site z never reaches 0. Computed
-        # once here (mj_forward on the CPU model at construct time, plain
-        # numpy -- never traced) and subtracted from site z wherever gait
-        # clearance is scored, so a planted foot reads ~0 clearance
-        # (w01-tek's own geom-bottom semantic, reproduced without needing a
-        # geom-bottom computation at every step).
+        # Foot-site height at the reset keyframe pose. foot_sites are named
+        # MJCF sites, not the sole surface itself, so they sit a few mm above
+        # the geoms that actually touch the ground; a planted foot's raw site
+        # z never reaches 0. Computed once here (mj_forward on the CPU model
+        # at construct time, plain numpy -- never traced) and subtracted from
+        # site z wherever gait clearance is scored.
+        #
+        # This is the KEYFRAME's site height, not the floor-referenced one.
+        # The keyframe deliberately floats the robot a few mm up (5 mm on
+        # asimov, 3 mm on roboto), so that margin is baked in and a planted
+        # foot reads that much NEGATIVE, not 0 -- see _foot_clearance and
+        # docs/lessons/foot-clearance.md. Deliberately not corrected during
+        # the port: feet_phase is a pre-port term at scale 1.0, so moving
+        # this shifts stock rewards and needs a golden regeneration.
         rest_data = mujoco.MjData(m)
         rest_data.qpos[:] = home_qpos_np
         mujoco.mj_forward(m, rest_data)
@@ -410,13 +415,21 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return data.site_xpos[self._foot_site_ids]
 
     def _foot_clearance(self, data):
-        """Per-foot height above the floor, sole-referenced.
+        """Per-foot site height, referenced to the RESET KEYFRAME's site
+        height.
 
-        foot_sites are named MJCF sites, not the sole surface, so they sit a
-        few mm above the geoms that touch the ground (see
-        `_foot_site_rest_z`). Subtracting the construct-time resting height
-        makes a planted foot read ~0, matching the gait clock's own stance
-        target of 0 and w01-tek's geom-bottom semantic.
+        Not floor-referenced, and not w01-tek's geom-bottom semantic. w01-tek
+        computes `geom_z - FOOT_RADIUS`, which is exactly 0 for a resting
+        sphere at any orientation. Here `_foot_site_rest_z` is measured at
+        the reset keyframe, whose base height deliberately floats the lowest
+        sole a few mm above the floor, so every reading is biased low by that
+        margin: measured 4.92 mm on asimov_v1 and 3.11 mm on roboto_origin.
+
+        A planted foot therefore reads about -5 mm (asimov) or -3 mm
+        (roboto), never 0, and a swing apex reads low by the same offset --
+        which shifts what `feet_phase`'s stance target of 0, `apex_target`
+        and `glide_height` mean in physical metres. The numbers and the
+        deferred fix are in docs/lessons/foot-clearance.md.
         """
         return self._foot_site_pos(data)[:, 2] - self._foot_site_rest_z
 
