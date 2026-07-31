@@ -805,7 +805,9 @@ outlive the settle window.
 Only a position-servo preset makes this a servo error. Under `ideal_torque`,
 `ctrl` is a torque in Nm and the subtraction is dimensionally meaningless.
 `run.json`'s `actuator_gains.model` is what tells a reader which preset
-produced the run.
+produced the run. Every preset shipped today resolves to `pd` — both robots'
+`deploy_pd` and `sizing_ideal`, and asimov's `encos_datasheet` — so the
+caveat is future-proofing, not a live footnote.
 
 ### The `actuator_gains` block (`run.json`)
 
