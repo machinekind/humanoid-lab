@@ -138,6 +138,51 @@ def test_foot_friction_survives_vmap_over_full_model(joystick_env):
     assert jp.all(jp.isfinite(next_state.obs["state"]))
 
 
+@pytest.mark.parametrize(
+    "dr_cfg",
+    [
+        None,
+        {k: {"enable": False} for k in randomize._DEFAULT_DR},
+        {"foot_friction": {"enable": True}},
+        {k: {"enable": True} for k in randomize._DEFAULT_DR},
+    ],
+    ids=["default", "all_disabled", "foot_friction", "all_enabled"],
+)
+def test_in_axes_is_usable_as_vmap_in_axes(mj_model, mjx_model, robot_spec, dr_cfg):
+    """The (model, in_axes) pair make_domain_randomize returns must be
+    accepted by jax.vmap under every DR config, foot_friction included.
+
+    Ported from w01-tek's test_dr_expansion.py. The wrapper that consumes
+    the pair does exactly one thing -- `jax.vmap(step, in_axes=[in_axes, 0])`
+    -- and vmap refuses the pair unless the two line up. Every other test in
+    this file inspects individual leaves of the batched model and would keep
+    passing while the pair was unusable.
+
+    That is the geom_priority class of bug, and it is not hypothetical:
+    `foot_friction.enable=true` also sets `geom_priority`, which mjx stores as
+    a plain numpy array and jax therefore counts as part of the model's
+    treedef rather than as data. Setting it after in_axes had been derived
+    left the two describing different structures and every run with the flag
+    on died the moment the env was wrapped -- fatal on the jax backend,
+    absent on warp, and shipped twice in w01-tek (53d7436, 3eb7444). The fix
+    is in randomize.py and the lesson in docs/lessons/asimov_v1.md; this is
+    the test that keeps them.
+    """
+    randomize_fn = randomize.make_domain_randomize(mj_model, robot_spec, dr_cfg)
+    rng = jax.random.split(jax.random.PRNGKey(4), 8)
+    model_v, in_axes = randomize_fn(mjx_model, rng)
+
+    def read(model, i):
+        del i
+        return model.geom_friction[:, 0].sum() + model.body_mass.sum()
+
+    per_env = jax.vmap(read, in_axes=[in_axes, 0])(model_v, jp.arange(len(rng)))
+
+    assert per_env.shape == (len(rng),)
+    # The batched model really is per-env, not one model broadcast 8 times.
+    assert len(np.unique(np.asarray(per_env))) > 1
+
+
 def test_find_floor_geom_id_finds_asimovs_own_floor(mj_model):
     # asimov's vendored XML ships its own floor plane geom (unlike a robot
     # with no ground plane, which build_model.py's ensure_training_scene
