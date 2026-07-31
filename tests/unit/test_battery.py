@@ -11,6 +11,7 @@ import pytest
 
 from humanoid_lab.eval.battery import (
     _measurement_env_overrides,
+    peak_over,
     antiphase_score,
     battery_scenarios,
     foot_slip,
@@ -260,3 +261,20 @@ def test_every_other_key_of_the_run_s_env_block_survives():
 
     assert overrides["real_pose_ref"] is True
     assert overrides["reward"] == {"scales": {"pose": -1.0}}
+
+
+# -- contact budget peaks ----------------------------------------------------
+
+
+def test_peak_over_scenarios_ignores_the_unmeasured_ones():
+    """One number per budget over the whole battery. On the jax backend the
+    row peak is None at every step, and a None must not read as a zero peak
+    that would then be reported as a measurement."""
+    assert peak_over([3, None, 11, 7]) == 11
+    assert peak_over([None, None]) is None
+    assert peak_over([]) is None
+
+
+def test_peak_over_scenarios_returns_a_plain_int():
+    """It lands in json.dumps via budget_report."""
+    assert type(peak_over([np.int32(4), np.int64(9)])) is int

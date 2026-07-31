@@ -182,3 +182,62 @@ def test_recommend_budget_never_returns_zero_for_a_zero_peak():
     """A regime that measured nothing must not recommend a zero-length buffer;
     warp would then drop every contact."""
     assert sim_budget.recommend_budget(0, headroom=7.0, step=8) == 8
+
+
+# -- observed_peaks: what a caller in a step loop records -------------------
+
+
+def test_observed_peaks_prefers_the_warp_counters():
+    impl = types.SimpleNamespace(
+        nacon=np.int32(9),
+        nefc=np.array([31, 44]),
+        contact=types.SimpleNamespace(dist=np.array([-1.0] * 20)),
+    )
+    assert sim_budget.observed_peaks(_stub_data(impl)) == (9, 44)
+
+
+def test_observed_peaks_counts_contacts_when_there_are_no_counters():
+    """The jax fallback: contacts are countable, rows are not. Reporting a
+    number for the rows here would be reporting the static buffer size."""
+    impl = types.SimpleNamespace(
+        nefc=np.int64(2025),
+        contact=types.SimpleNamespace(dist=np.array([0.4, -0.01, -0.2, 1.0])),
+    )
+    assert sim_budget.observed_peaks(_stub_data(impl)) == (2, None)
+
+
+def test_observed_peaks_is_all_none_with_neither_counters_nor_contacts():
+    assert sim_budget.observed_peaks(_stub_data(types.SimpleNamespace())) == (None, None)
+
+
+# -- budget_report_for_env: the one adapter train.py and battery.py use -----
+
+
+def _stub_env(backend="jax", naconmax_per_env=224, njmax=1120, num_envs=1):
+    sim = types.SimpleNamespace(
+        naconmax_per_env=naconmax_per_env, njmax=njmax, num_envs=num_envs
+    )
+    return types.SimpleNamespace(
+        _backend=backend, _config=types.SimpleNamespace(sim=sim)
+    )
+
+
+def test_budget_report_for_env_reads_the_budgets_off_the_env_config():
+    """Both writers of the block read the same three numbers from the same
+    place, so run.json and battery.json can never disagree about what the run
+    was configured with."""
+    block = sim_budget.budget_report_for_env(_stub_env(num_envs=4096), 40, None)
+    assert block["naconmax_per_env"] == 224
+    assert block["njmax"] == 1120
+    assert block["num_envs"] == 4096
+    assert block["pool"] == 224 * 4096
+    assert block["nacon_max"] == 40
+    assert block["backend"] == "jax"
+
+
+def test_budget_report_for_env_flags_overflow_on_a_warp_env():
+    block = sim_budget.budget_report_for_env(
+        _stub_env(backend="warp", naconmax_per_env=32, njmax=320), 32, 320
+    )
+    assert block["overflow"] is True
+    assert block["rows_overflow"] is True
