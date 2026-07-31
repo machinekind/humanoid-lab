@@ -13,6 +13,11 @@ antiphase clock instead of w01-tek's 4-leg walk/trot blend; that clock lives
 in envs/joystick.py, not here -- this module only scores the resulting
 clearance error.
 
+The two velocity-tracking terms are the one exception to one-function-per-
+component: they split into a squared error, a width, and the exp kernel that
+consumes both, because the env's tracking_relative and tracking_far_weight
+branches need the error and the width separately (see envs/joystick.py).
+
 Every term returns a scalar. Masking by task context (e.g. "* moving", "*
 ~moving") is the caller's job, not this library's: "moving" is a
 joystick-task concept, not a property of the reward math itself.
@@ -23,14 +28,34 @@ from __future__ import annotations
 import jax.numpy as jp
 
 
-def tracking_lin_vel(cmd_xy, linvel_xy, sigma: float):
-    """exp(-err^2/sigma); 1.0 at perfect tracking."""
-    return jp.exp(-jp.sum(jp.square(cmd_xy - linvel_xy)) / sigma)
+def tracking_err_lin(cmd_xy, linvel_xy):
+    """Squared planar velocity tracking error."""
+    return jp.sum(jp.square(cmd_xy - linvel_xy))
 
 
-def tracking_ang_vel(cmd_wz, gyro_z, sigma: float):
-    """exp(-err^2/sigma); 1.0 at perfect tracking."""
-    return jp.exp(-jp.square(cmd_wz - gyro_z) / sigma)
+def tracking_err_ang(cmd_wz, gyro_z):
+    """Squared yaw rate tracking error."""
+    return jp.square(cmd_wz - gyro_z)
+
+
+def tracking_kernel(err_sq, sigma):
+    """exp(-err^2/sigma); 1.0 at perfect tracking. The error and the width
+    are separate arguments because the caller chooses the width: a fixed
+    tracking_sigma for the absolute kernel, tracking_rel_sigma() for the
+    command-relative one."""
+    return jp.exp(-err_sq / sigma)
+
+
+def tracking_rel_sigma(cmd_magnitude, rel_sigma: float, floor: float):
+    """Command-relative kernel width: rel_sigma * max(|cmd|, floor)^2.
+
+    Dividing the squared error by the squared command makes the kernel score
+    the FRACTION of the command tracked, so 80% of target pays the same at
+    any commanded speed. rel_sigma is therefore dimensionless. The floor
+    keeps a small or zero command from sharpening the kernel to a point and
+    dividing by zero.
+    """
+    return rel_sigma * jp.square(jp.maximum(cmd_magnitude, floor))
 
 
 def lin_vel_z(linvel_z):

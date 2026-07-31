@@ -228,6 +228,10 @@ exactly.
 |---|---:|---|
 | `tracking_sigma` | `0.25` | Width of the absolute kernel, in (m/s)² and (rad/s)². |
 | `tracking_product` | `false` | Multiply the two kernels into each other: `k_lin, k_ang = k_lin*k_ang, k_ang*k_lin`. Additive tracking pays the easy half of a command — a robot that ignores a pure-spin command still earns the full `tracking_lin_vel`, since standing still tracks the zero linear command perfectly (w01-tek measured that at about 63% of an ideal spin's payout). With the product, full pay needs the whole command tracked. |
+| `tracking_relative` | `false` | Score the fraction of the command tracked instead of the absolute error: the width becomes `tracking_rel_sigma * max(\|cmd\|, floor)²`. The absolute kernel pays only within about `√tracking_sigma` of the target whatever the target's size, so a fast command's reward cliff is out of exploration's reach — w01-tek's policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under a 1.0 one. |
+| `tracking_rel_sigma` | `0.25` | Dimensionless width of the relative kernel. A w01-tek quadruped starting point: its terrain presets later widened this to `0.5` because the narrow kernel rounded partial tracking to zero. |
+| `tracking_rel_floor_lin` | `0.3` | Floor on the linear relative denominator, m/s. Keeps a near-zero command from sharpening the kernel to a point and dividing by zero. |
+| `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role. w01-tek's terrain presets later widened this to `0.7`. |
 
 ## Domain randomization (`dr`)
 
