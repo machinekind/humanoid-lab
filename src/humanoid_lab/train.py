@@ -47,6 +47,28 @@ def plateau_stop(rewards, min_evals: int, patience: int, min_delta: float) -> bo
     return len(rewards) - 1 - best_i >= patience
 
 
+def record_eval(metrics: dict, num_steps: int, eval_rewards: list, last_eval: dict) -> bool:
+    """Record one progress callback if it is an eval, and say whether it was.
+
+    Only eval calls carry eval/episode_reward. Today brax's evaluator is the
+    progress callback's sole producer, but ppo.log_training_metrics is one
+    free-form override away, and its EpisodeMetricsLogger calls would read as
+    NaN rewards -- NaN never beats the running best, so a few of them would
+    fake a plateau and stop the run. A training call must therefore leave both
+    the reward history and the last-eval record untouched. w01-tek carries the
+    same guard for the same reason.
+
+    The history is appended whether or not early stopping is enabled: it costs
+    a float per eval, and keeping the filter and the recording as one unit is
+    what makes them testable together.
+    """
+    if "eval/episode_reward" not in metrics:
+        return False
+    last_eval["steps"], last_eval["metrics"] = num_steps, metrics
+    eval_rewards.append(float(metrics["eval/episode_reward"]))
+    return True
+
+
 def _apply_ppo_overrides(p, overrides: dict) -> None:
     for k, v in (overrides or {}).items():
         if isinstance(v, dict):
@@ -290,24 +312,19 @@ def main(cfg: DictConfig) -> None:
         )
         if wb is not None:
             wb.log({**metrics, "perf/steps_per_sec": sps}, step=num_steps)
-        # Only eval calls carry eval/episode_reward. Today brax's evaluator
-        # is this callback's sole producer, but ppo.log_training_metrics is
-        # one free-form override away, and its EpisodeMetricsLogger calls
-        # would read as NaN rewards here -- NaN never beats the running
-        # best, so a few of them would fake a plateau and stop the run.
-        # w01-tek carries the same guard for the same reason.
-        if "eval/episode_reward" not in metrics:
+        # Training-metric calls carry no eval reward and record nothing; see
+        # record_eval, which tests/unit/test_early_stop.py exercises directly.
+        if not record_eval(metrics, num_steps, eval_rewards, last_eval):
             return
-        last_eval["steps"], last_eval["metrics"] = num_steps, metrics
-        if es.enable:
-            eval_rewards.append(float(reward))
-            if plateau_stop(eval_rewards, es.min_evals, es.patience, es.min_delta):
-                print(
-                    f"early stop: no reward gain > {es.min_delta} in the last "
-                    f"{es.patience} evals (best {max(eval_rewards):.2f}); "
-                    f"stopping at {num_steps:,} steps"
-                )
-                raise EarlyStop
+        if es.enable and plateau_stop(
+            eval_rewards, es.min_evals, es.patience, es.min_delta
+        ):
+            print(
+                f"early stop: no reward gain > {es.min_delta} in the last "
+                f"{es.patience} evals (best {max(eval_rewards):.2f}); "
+                f"stopping at {num_steps:,} steps"
+            )
+            raise EarlyStop
 
     train_fn = functools.partial(
         ppo.train,

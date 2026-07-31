@@ -1,19 +1,19 @@
-"""plateau_stop: the early-stopping rule, model-free.
+"""plateau_stop and record_eval: the early-stopping rule, model-free.
 
 Port item 2.1 (see docs/port-details.md). Ported from w01-tek's
 training/tests/unit/test_early_stop.py, with the boundary and
 patience-off-by-one cases added.
 
 The decision is a pure function of a list of eval rewards, so the whole rule
-is tested here on synthetic numbers. train.py's progress callback only
-appends to that list and calls this function, so there is nothing left for an
-integration test to cover.
+is tested here on synthetic numbers. What feeds that list is record_eval,
+which drops the progress calls that carry no eval reward -- also a pure
+function of a metrics dict, also tested here.
 """
 
 from hydra import compose, initialize_config_dir
 
 from humanoid_lab import paths
-from humanoid_lab.train import plateau_stop
+from humanoid_lab.train import plateau_stop, record_eval
 
 # The shipped defaults, the numbers a run gets when it only flips `enable`.
 MIN_EVALS = 10
@@ -100,6 +100,48 @@ def test_a_gain_of_exactly_min_delta_is_not_a_new_best():
 def test_a_gain_just_over_min_delta_is_a_new_best():
     rewards = [0.0] * 10 + [MIN_DELTA + 1e-6]
     assert not _plateau(rewards)
+
+
+# -- the eval filter -------------------------------------------------------
+
+
+def _record(metrics, num_steps=1000):
+    rewards, last_eval = [], {"steps": 0, "metrics": {}}
+    was_eval = record_eval(metrics, num_steps, rewards, last_eval)
+    return was_eval, rewards, last_eval
+
+
+def test_a_training_metrics_call_records_nothing():
+    """ppo.log_training_metrics routes EpisodeMetricsLogger calls through the
+    same callback. They carry no eval reward, so a NaN would enter the
+    history -- and NaN never beats the running best, so a handful would fake
+    a plateau and cut the run short."""
+    was_eval, rewards, last_eval = _record({"training/sps": 1.2e6})
+
+    assert was_eval is False
+    assert rewards == []
+    assert last_eval == {"steps": 0, "metrics": {}}
+
+
+def test_an_eval_call_appends_the_reward_and_becomes_the_last_eval():
+    metrics = {"eval/episode_reward": 12.5, "eval/avg_episode_length": 400}
+    was_eval, rewards, last_eval = _record(metrics, num_steps=1000)
+
+    assert was_eval is True
+    assert rewards == [12.5]
+    assert last_eval == {"steps": 1000, "metrics": metrics}
+
+
+def test_a_training_call_does_not_overwrite_an_earlier_eval():
+    """The run summary reports from last_eval. A training call landing after
+    the final eval must not replace the numbers it reports."""
+    rewards, last_eval = [], {"steps": 0, "metrics": {}}
+    record_eval({"eval/episode_reward": 12.5}, 1000, rewards, last_eval)
+    record_eval({"training/sps": 1.2e6}, 1100, rewards, last_eval)
+
+    assert rewards == [12.5]
+    assert last_eval["steps"] == 1000
+    assert last_eval["metrics"] == {"eval/episode_reward": 12.5}
 
 
 # -- the shipped config ----------------------------------------------------
