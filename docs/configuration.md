@@ -490,8 +490,8 @@ ankle-pitch link sits 0.1 mm off in y); roboto_origin's to 5.9e-7 m and
 each side. It costs one bernoulli draw per reset and three gathers per step
 (the action, the actor observation, the privileged one).
 
-**What it is not.** It is not a fix for asymmetric behavior, and no claim
-here should say otherwise. The flag is drawn once at reset, and under brax's
+**What it is not.** It is not a fix for asymmetric behavior. The flag is
+drawn once at reset, and under brax's
 auto-reset (`BraxAutoResetWrapper(full_reset=False)`, the same wrapper the
 no-progress reseed works around) `info` survives every respawn, so in
 practice the flag is fixed per env for the whole run. A fixed flag is
@@ -526,13 +526,24 @@ and torso) probe the subtree centre of mass below the joint instead — a
 child body's own origin is where MuJoCo puts the hinge and does not move at
 all when the joint turns.
 
+The probe runs at the reset **keyframe**, and it also checks that the
+keyframe is its own mirror — it is the anchor the `joint_pos` observation
+subtracts, so a pose that is not mirror-symmetric would break that
+observation's map too. With `real_pose_ref` on, the pose the episode starts
+from is the settled one instead, which inherits the keyframe's symmetry only
+up to the model's own asymmetry worked through the settle: measured on
+roboto_origin (the only robot whose keyframe settles), the keyframe is its
+own mirror exactly and the settled pose to 1.7e-6 rad. The two switches
+compose.
+
 No naming rule would work. asimov_v1 mirrors with `-1` on all twelve leg
 joints, because its left and right pitch hinges carry opposite local y-axes.
 roboto_origin needs `+1` on the thigh pitch, knee and ankle pitch and `-1` on
 the thigh yaw/roll, ankle roll and torso, because its two sides carry
 identical axes — including a compound 60-degree thigh yaw/roll pair. A rule
 fitted to either robot is wrong on the other. Both tables are pinned in
-`tests/integration/test_symmetry.py`, which exists to catch silent drift.
+`tests/integration/test_symmetry_env.py`, which exists to catch silent
+drift.
 
 The observation map is assembled from the env's **resolved** actor and
 privileged lists and validated against the sizes that env's own catalog
