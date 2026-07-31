@@ -53,7 +53,10 @@ def ideal_env():
 
 @pytest.fixture(scope="module")
 def pd_env():
-    return build_env("deploy_pd")
+    # knees_bent, not the default home: asimov_v1's home keyframe commands
+    # every actuated joint to 0.0, which would let an anchor bug pass the
+    # anchor-vs-default_pose checks below on a vector of zeros.
+    return build_env("deploy_pd", reset_keyframe="knees_bent")
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +157,11 @@ def test_the_gait_clock_parameters_travel_with_the_policy(ideal_env, ideal_contr
 
 def test_an_ideal_torque_preset_anchors_on_zero_torque():
     """The anchor is whatever a zero action commands, per actuator model."""
-    env = build_env("sizing_ideal", actuator_overrides={"model": "ideal_torque"})
+    env = build_env(
+        "sizing_ideal",
+        actuator_overrides={"model": "ideal_torque"},
+        reset_keyframe="knees_bent",
+    )
     contract = dc.build_contract(env, run_for(env, "sizing_ideal"), "ckpt")
     assert contract["ctrl_unit"] == "Nm"
     assert np.allclose(contract["anchor_ctrl"], 0.0)
