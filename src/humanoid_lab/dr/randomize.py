@@ -13,12 +13,24 @@ scale) draw from `r1..r5 = jax.random.split(rng, 5)`. Every other field
 draws from a folded-in sub-key so it leaves r1..r5 unchanged. With every
 extra field disabled, the output matches that original 5-field code.
 
-Fold-in index taxonomy (jax.random.fold_in(rng, i)): 1 joint_gains, 2
-com_offset, 3 dof, 4 foot_friction, 5 motor_strength. motor_strength
-decouples forcerange from joint_gains' gain_scale: disabled, forcerange
-keeps riding gain_scale bitwise (a weak-motor world also reads as soft);
-enabled, it draws its own per-actuator sample, so weak and soft are no
-longer the same draw.
+Fold-in index taxonomy (jax.random.fold_in(rng, _DRAW + i)): 1 joint_gains,
+2 com_offset, 3 dof, 4 foot_friction, 5 motor_strength. 0 is reserved and 6
+up are free for future fields. motor_strength decouples forcerange from
+joint_gains' gain_scale: disabled, forcerange keeps riding gain_scale
+bitwise (a weak-motor world also reads as soft); enabled, it draws its own
+per-actuator sample, so weak and soft are no longer the same draw.
+
+_DRAW is why the taxonomy is safe. `fold_in(key, i)` is bit-identical to
+`split(key, n)[i]` for every i < n, so a field folding in its raw table
+index keys off one of `rand()`'s own five base keys: index 2 IS r3, the
+link-mass key, and index 4 IS r5, the kd key. Those two fields sampled
+straight off the folded key, so com_offset was an affine image of the first
+three link-mass scales and the first foot's friction scale was an affine
+image of the kd scale -- correlation 1.0 in both, measured. Two DR axes
+were one axis wearing two names. Offsetting the domain puts every field's
+key out of reach of any split of `rng`, however wide that split later
+grows. envs/joystick.py::_sample_command carries the same offset for the
+same reason. tests/integration/test_randomize.py pins both halves.
 """
 
 from __future__ import annotations
@@ -26,6 +38,11 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import mujoco
+
+# Base of the optional fields' fold_in domain, disjoint from any split of the
+# same key (see the module docstring). Same constant, same reason, as
+# envs/joystick.py's pure command draws.
+_DRAW = 0x100
 
 # Defaults for each dr_cfg field. configs/dr/default.yaml mirrors this shape
 # exactly (tests/test_randomize.py pins the two together); missing keys fall
@@ -122,7 +139,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             body_mass = body_mass.at[root_id].set(model.body_mass[root_id] * base_scale)
 
             if joint_cfg["enable"]:
-                rg, rk = jax.random.split(jax.random.fold_in(rng, 1), 2)
+                rg, rk = jax.random.split(jax.random.fold_in(rng, _DRAW + 1), 2)
                 pct = joint_cfg["gain_pct"]
                 kpct = joint_cfg["kd_pct"]
                 gain_scale = jax.random.uniform(rg, (model.nu,), minval=1 - pct, maxval=1 + pct)
@@ -138,7 +155,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             biasprm = biasprm.at[:, 2].multiply(kd_scale)
 
             if motor_cfg["enable"]:
-                rm = jax.random.fold_in(rng, 5)
+                rm = jax.random.fold_in(rng, _DRAW + 5)
                 mlo, mhi = motor_cfg["range"]
                 motor_scale = jax.random.uniform(rm, (model.nu,), minval=mlo, maxval=mhi)
             else:
@@ -156,7 +173,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             }
 
             if com_cfg["enable"]:
-                rc = jax.random.fold_in(rng, 2)
+                rc = jax.random.fold_in(rng, _DRAW + 2)
                 xy, z = com_cfg["xy"], com_cfg["z"]
                 offset = jax.random.uniform(
                     rc, (3,), minval=jnp.array([-xy, -xy, -z]), maxval=jnp.array([xy, xy, z])
@@ -164,7 +181,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
                 out["body_ipos"] = model.body_ipos.at[root_id].add(offset)
 
             if dof_cfg["enable"]:
-                rd1, rd2, rd3 = jax.random.split(jax.random.fold_in(rng, 3), 3)
+                rd1, rd2, rd3 = jax.random.split(jax.random.fold_in(rng, _DRAW + 3), 3)
                 dlo, dhi = dof_cfg["damping"]
                 alo, ahi = dof_cfg["armature"]
                 flo, fhi = dof_cfg["frictionloss"]
@@ -179,7 +196,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
                 )
 
             if foot_cfg["enable"]:
-                rf = jax.random.fold_in(rng, 4)
+                rf = jax.random.fold_in(rng, _DRAW + 4)
                 flo2, fhi2 = foot_cfg["range"]
                 foot_scale = jax.random.uniform(rf, (foot_ids.shape[0],), minval=flo2, maxval=fhi2)
                 out["geom_friction"] = out["geom_friction"].at[foot_ids, 0].multiply(foot_scale)
