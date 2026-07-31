@@ -86,7 +86,7 @@ class applies to its body in the source XML.
 with `geoms` when the source XML's only collision geometry is full meshes
 and you are replacing them with named primitives.
 
-`tests/test_model_patches.py` has a synthetic worked example of every
+`tests/integration/test_model_patches.py` has a synthetic worked example of every
 sub-key.
 
 ### Measure keyframe height against the compiled model
@@ -105,7 +105,7 @@ your actuator preset injected, set `qpos` to the keyframe, and run
 end-cap centers and subtract its radius. Do not use `geom_rbound`: it
 overestimates badly for a capsule lying flat. Shift `base_pos` z so the
 lowest foot-geom bottom sits about 5 mm above the floor.
-`tests/test_asimov_v1.py`'s `test_keyframe_feet_touch_the_floor` encodes
+`tests/integration/test_asimov_v1.py`'s `test_keyframe_feet_touch_the_floor` encodes
 this as a `0.0 <= lowest <= 0.02` bound. Write the equivalent test for the
 new robot.
 
@@ -134,9 +134,9 @@ MuJoCo, plus a short MJX rollout unless `--skip-mjx` is set. It fails on
 NaN, or if `|qvel|` exceeds `--max-qvel` (default 100 rad/s). Both gates
 must pass before the robot is usable for training.
 
-## 5. Add `tests/test_<name>.py`
+## 5. Add `tests/integration/test_<name>.py`
 
-Mirror `tests/test_asimov_v1.py`. At minimum:
+Mirror `tests/integration/test_asimov_v1.py`. At minimum:
 
 - `load_robot_spec` parses the new `robot.yaml` and `validate_against_model`
   passes against the compiled source XML.

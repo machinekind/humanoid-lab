@@ -7,7 +7,7 @@ from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale, load_actuator_preset, resolve
 from humanoid_lab.robot.spec import load_robot_spec
 
-TOY_ROBOT_DIR = Path(__file__).parent / "data" / "toy_robot"
+TOY_ROBOT_DIR = Path(__file__).parent.parent / "data" / "toy_robot"
 
 
 def _free_joint_qpos_addr(model: mujoco.MjModel) -> int:

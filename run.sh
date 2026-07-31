@@ -8,7 +8,26 @@ case "${1:-}" in
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
-  test)  shift; "$PY" -m pytest tests -q "$@" ;;
+  # The split (port item 0.1, tests/unit/test_suite_split.py guards it):
+  # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
+  # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
+  test)  shift; "$PY" -m pytest tests/unit -q "$@" ;;
+  # JAX_COMPILATION_CACHE_DIR makes the MJX compiles persist across runs, so
+  # a re-run of the slow suite skips the tens of seconds of XLA compilation.
+  # The MIN_COMPILE_TIME_SECS=0 override stores every compile, not just the
+  # ones over jax's default 1 s threshold.
+  test-slow)
+    shift
+    export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
+    export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+    "$PY" -m pytest tests/integration -q "$@"
+    ;;
+  test-all)
+    shift
+    export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
+    export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+    "$PY" -m pytest tests/unit tests/integration -q "$@"
+    ;;
   # Single-purpose verb: just the checkpoint rollout -> runs/<name>/sizing_data.npz.
   # Passthrough args: --run runs/<name> [--episodes N] [--steps N] [--seed N].
   sizing-collect) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.sizing.collect "$@" ;;
@@ -80,7 +99,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--scenario name] [--steps N] [--out path.mp4].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|test|sizing-collect|sizing-report|battery|report|eval} [args]"
+    echo "usage: run.sh {train|smoke|build|check|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval} [args]"
     exit 1
     ;;
 esac
