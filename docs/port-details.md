@@ -200,6 +200,13 @@ asimov flat-curve hypothesis in
 part is deferred with terrain. Leave a comment for whoever builds a curriculum
 wrapper later.
 
+**Correction (landed).** The respawn reseed was NOT deferrable. This brief
+missed `wojtek_rl/env.py:269-272`, which says a flat run turning the cut on
+needs the same reseed in its auto-reset path — and our trainer already had
+one: `wrap_for_brax_training` ends in `BraxAutoResetWrapper(full_reset=False)`,
+which keeps `info` across a respawn. `envs/wrappers.py` carries the reseed,
+applied only when the flag is on.
+
 **TDD tests first.**
 - Off: bit-exact, including the RNG stream.
 - No cut is possible within `grace_sec` of a reset or a command change.

@@ -659,13 +659,18 @@ class Joystick(HumanoidEnv):
             # keeps the hazard at zero for grace_sec while the robot turns
             # the gait around.
             #
-            # This is the only reseed site there is. `info` survives a
-            # respawn, so an auto-reset or curriculum wrapper that restarts an
-            # episode in place must reseed progress_ema itself -- w01-tek's
-            # terrain wrapper does exactly that. Deferred here with terrain
-            # (PORT.md "Deferred"); whoever adds such a wrapper owns it, or
-            # the new episode inherits the dying one's shortfall and dies
-            # inside its own grace window.
+            # This is the only reseed site INSIDE the env. It is not the only
+            # one that has to exist: `info` survives every respawn, because
+            # the trainer's wrap_for_brax_training ends in
+            # BraxAutoResetWrapper(full_reset=False), which restores data and
+            # obs from the cached first state and leaves info alone. A cut
+            # env would otherwise come back with the dead episode's shortfall
+            # and a steps_since_cmd well past grace, and die again inside
+            # what should have been its grace window. envs/wrappers.py's
+            # ProgressReseedWrapper does that reseed, and train.py layers it
+            # on whenever this flag is set -- the same job w01-tek's terrain
+            # respawn wrapper does there. Any other wrapper that restarts an
+            # episode in place owns the same reseed.
             info["progress_ema"] = jp.where(
                 resample, self._cmd_speed(info["command"]), info["progress_ema"]
             )

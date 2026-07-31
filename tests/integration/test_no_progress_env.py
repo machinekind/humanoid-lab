@@ -2,8 +2,9 @@
 
 `envs/progress.py`'s math is unit-tested model-free in
 tests/unit/test_no_progress.py. What is tested here is the wiring: the info
-state and its reseed, the metrics, the arming window measured in real control
-steps, and that the cut lands on `done` without touching the reward.
+state and its two reseeds (command resample and respawn), the metrics, the
+arming window measured in real control steps, and that the cut lands on
+`done` without touching the reward.
 
 `no_progress.enable` is static config read at trace time, so one model serves
 the whole file: the flag block is flipped on the live env and the env is
@@ -26,7 +27,10 @@ import jax
 import jax.numpy as jp
 import pytest
 
+from mujoco_playground import wrapper as playground_wrapper
+
 from humanoid_lab import paths
+from humanoid_lab.envs import wrappers
 from humanoid_lab.envs.joystick import Joystick, default_config
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
@@ -205,6 +209,92 @@ def test_without_a_resample_the_meter_keeps_its_history(env):
         # One EMA step from -5 toward a standing robot's ~0 served progress:
         # alpha = dt/ema_sec = 0.02, so the meter is still deep in the red.
         assert float(stepped.info["progress_ema"]) < -4.0
+
+
+# -- on: the respawn ---------------------------------------------------------
+#
+# The trainer's env is wrapped by mujoco_playground's
+# `wrap_for_brax_training`, which ends in `BraxAutoResetWrapper(full_reset=
+# False)`. That wrapper restores `data` and `obs` from the cached first state
+# on done and returns `state.info` untouched -- its own docstring says "only
+# data and obs are reset, not the environment info". So a cut env respawns
+# carrying the dying episode's meter unless something puts it back.
+
+
+def wrap(env, reseed: bool):
+    """The trainer's wrapping, with or without the reseed layer. One env, one
+    episode: `episode_length` is high enough that the truncation never fires
+    inside these tests."""
+    wrap_fn = wrappers.make_wrap_env_fn(env._config) if reseed else (
+        playground_wrapper.wrap_for_brax_training
+    )
+    return wrap_fn(env, episode_length=10_000, action_repeat=1, randomization_fn=None)
+
+
+def cut_a_wrapped_episode(wrapped, env):
+    """Reset the wrapped env, relabel its single env as one that has been
+    ignoring its command, and step it once into the cut."""
+    state = wrapped.reset(jax.random.split(jax.random.PRNGKey(0), 1))
+    info = dict(state.info)
+    info["command"] = FORWARD[None]
+    info["progress_ema"] = jp.zeros(1)
+    info["steps_since_cmd"] = jp.full(1, 99, dtype=info["steps_since_cmd"].dtype)
+    stepped = wrapped.step(state.replace(info=info), jp.zeros((1, env.action_size)))
+
+    assert float(stepped.done[0]) == 1.0  # the premise: this episode was cut
+    return stepped
+
+
+def test_the_stock_auto_reset_leaves_the_respawn_with_the_dead_meter(env):
+    """What the installed wrapper actually does, pinned. This is the failure
+    the reseed exists for: the respawn is armed on its very first step (a cut
+    can only fire past the grace window, and steps_since_cmd carries over)
+    with a meter deep enough in the red to cut again inside a second."""
+    with block_values(env._config.no_progress, enable=True, p_max=1.0, risk_below=1.0):
+        stepped = cut_a_wrapped_episode(wrap(env, reseed=False), env)
+
+        assert float(stepped.info["progress_ema"][0]) < 0.1
+        assert int(stepped.info["steps_since_cmd"][0]) == 100
+
+
+def test_the_reseed_wrapper_respawns_the_meter_at_ratio_one(env):
+    """The same respawn under the trainer's own wrapping: EMA back at the
+    command's demand and the grace window back on, exactly what a command
+    resample does."""
+    with block_values(env._config.no_progress, enable=True, p_max=1.0, risk_below=1.0):
+        stepped = cut_a_wrapped_episode(wrap(env, reseed=True), env)
+
+        assert float(stepped.info["progress_ema"][0]) == pytest.approx(
+            float(env._cmd_speed(FORWARD))
+        )
+        assert int(stepped.info["steps_since_cmd"][0]) == 0
+
+
+def test_a_live_episode_keeps_its_meter_under_the_reseed_wrapper(env):
+    """The reseed is the respawn's doing. A step that does not end an episode
+    goes through untouched, so the wrapper cannot launder a shortfall."""
+    with block_values(env._config.no_progress, enable=True):
+        wrapped = wrap(env, reseed=True)
+        state = wrapped.reset(jax.random.split(jax.random.PRNGKey(0), 1))
+        info = dict(state.info)
+        info["command"] = FORWARD[None]
+        info["progress_ema"] = jp.full(1, -5.0)
+        info["steps_since_cmd"] = jp.full(1, 40, dtype=info["steps_since_cmd"].dtype)
+        stepped = wrapped.step(state.replace(info=info), jp.zeros((1, env.action_size)))
+
+        assert float(stepped.done[0]) == 0.0
+        assert float(stepped.info["progress_ema"][0]) < -4.0
+        assert int(stepped.info["steps_since_cmd"][0]) == 41
+
+
+def test_the_reseed_layer_is_not_wrapped_around_a_run_with_the_cut_off(env):
+    """Off, the trainer's wrapping is the stock function itself -- the same
+    object, so the training path a golden run takes cannot have moved."""
+    assert env._config.no_progress.enable is False
+    assert (
+        wrappers.make_wrap_env_fn(env._config)
+        is playground_wrapper.wrap_for_brax_training
+    )
 
 
 # -- on: the cut is a termination, not a reward -----------------------------

@@ -403,12 +403,20 @@ and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
 | `risk_below` | `0.5` | The hazard starts below this fraction of the commanded speed. **Re-derive for a biped**, together with `grace_sec`: 50% of demand may be a lot to ask of a humanoid inside the grace window. |
 | `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
 
-A curriculum or auto-reset wrapper that restarts an episode in place must
-reseed `info["progress_ema"]` itself: `info` survives a respawn, so a new
-episode would otherwise inherit the dying one's shortfall and die inside its
-own grace window. w01-tek's terrain wrapper does this; this repo has no such
-wrapper yet (PORT.md defers terrain), and `envs/joystick.py` carries the note
-at the reseed site.
+The meter is also reseeded on every **respawn**, by a wrapper rather than by
+the env. `wrap_for_brax_training`, the trainer's own wrapping, ends in
+`BraxAutoResetWrapper(full_reset=False)`: on done it restores `data` and
+`obs` from the cached first state and returns `state.info` untouched. So
+`info` survives every termination, and a cut env would come back carrying the
+dying episode's shortfall and a `steps_since_cmd` well past `grace_sec` —
+armed on its first step, and dead again within a second. `envs/wrappers.py`'s
+`ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
+`steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
+`no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
+`wrap_for_brax_training` itself, unchanged. w01-tek does this in its terrain
+respawn wrapper, and reseeds only the EMA; zeroing the counter, so the grace
+window comes back too, is a deliberate improvement. Any other wrapper that
+restarts an episode in place owns the same reseed.
 
 ## Pure command draws (`task.env.command`)
 
