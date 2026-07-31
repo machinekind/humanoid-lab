@@ -57,7 +57,7 @@ def reward_flags(env, **flags):
         r.update(saved)
 
 
-def rewards_for(env, reset_state, command, **info_overrides):
+def rewards_for(env, reset_state, command, first_contact=False, **info_overrides):
     """The reward dict at the reset state under `command`."""
     info = dict(reset_state.info)
     info["command"] = jp.asarray(command, dtype=float)
@@ -67,10 +67,24 @@ def rewards_for(env, reset_state, command, **info_overrides):
         reset_state.data,
         info,
         jp.zeros(env.action_size),
-        jp.zeros(n_feet, dtype=bool),
+        jp.full(n_feet, first_contact, dtype=bool),
         jp.zeros(n_feet, dtype=bool),
     )
     return {k: float(v) for k, v in rewards.items()}
+
+
+def landing_rewards_for(env, reset_state, command, **flags):
+    """`rewards_for` with both feet touching down after a 0.5 s swing, so
+    feet_air_time -- the gated shaping term -- is nonzero and known:
+    sum((0.5 - min_air_time) * first_contact) = 2 * 0.4 = 0.8."""
+    with reward_flags(env, **flags):
+        return rewards_for(
+            env,
+            reset_state,
+            command,
+            first_contact=True,
+            feet_air_time=jp.full(env._n_feet, 0.5),
+        )
 
 
 # -- 1.1 tracking_product --------------------------------------------------
@@ -301,6 +315,79 @@ def test_tracking_far_leaves_the_other_terms_untouched(env, reset_state):
         if key.startswith("tracking_"):
             continue
         assert on[key] == off[key], key
+
+
+# -- 1.4 shaping_tracking_gate ---------------------------------------------
+
+# Fast enough that a robot at rest tracks essentially none of it: the
+# absolute kernel is exp(-2.25/0.25) ~ 1.2e-4.
+_UNTRACKED_CMD = (1.5, 0.0, 0.0)
+
+
+def test_shaping_tracking_gate_is_off_by_default(env):
+    assert env._config.reward.shaping_tracking_gate is False
+
+
+def test_the_gate_multiplies_feet_air_time_by_the_linear_kernel(env, reset_state):
+    ungated = landing_rewards_for(env, reset_state, _MIXED_CMD)
+    gated = landing_rewards_for(env, reset_state, _MIXED_CMD, shaping_tracking_gate=True)
+
+    assert ungated["feet_air_time"] == pytest.approx(0.8, rel=1e-3)
+    assert gated["feet_air_time"] == pytest.approx(
+        ungated["feet_air_time"] * ungated["tracking_lin_vel"], rel=1e-5
+    )
+
+
+def test_the_gate_pays_nothing_for_lifting_legs_while_not_tracking(env, reset_state):
+    """The stand-and-lift strategy the gate exists to kill: w01-tek's v3
+    forensics found standing with one leg raised earning about 1.8 reward per
+    step against honest walking's 0.25, because the shaping terms paid on the
+    command alone."""
+    ungated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD)
+    gated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD, shaping_tracking_gate=True)
+
+    assert ungated["feet_air_time"] > 0.5
+    assert gated["feet_air_time"] < 1e-3
+
+
+def test_the_gate_uses_the_post_product_kernel(env, reset_state):
+    """With tracking_product also on, the gate must be the kernel AFTER the
+    product, so shaping follows the whole command and not just its linear
+    half."""
+    product_only = landing_rewards_for(env, reset_state, _MIXED_CMD, tracking_product=True)
+    both = landing_rewards_for(
+        env, reset_state, _MIXED_CMD, tracking_product=True, shaping_tracking_gate=True
+    )
+    pre_product = landing_rewards_for(env, reset_state, _MIXED_CMD)
+
+    assert both["feet_air_time"] == pytest.approx(
+        product_only["feet_air_time"] * product_only["tracking_lin_vel"], rel=1e-5
+    )
+    # The pre-product kernel is the same value squared away: gating on it
+    # would pay exp(-1) instead of exp(-2) of the term.
+    assert both["feet_air_time"] < 0.5 * (
+        pre_product["feet_air_time"] * pre_product["tracking_lin_vel"]
+    )
+
+
+def test_feet_phase_stays_ungated(env, reset_state):
+    """feet_phase is deliberately NOT in the gated set. It is the
+    clock-following gradient, and it has to survive at zero tracking because
+    stepping is how tracking starts."""
+    ungated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD)
+    gated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD, shaping_tracking_gate=True)
+    assert gated["feet_phase"] == ungated["feet_phase"]
+
+
+def test_the_gate_leaves_stand_still_and_the_penalties_untouched(env, reset_state):
+    """Stand-still penalties keep their ~moving mask and are not touched."""
+    for cmd in (_MIXED_CMD, (0.0, 0.0, 0.0)):
+        ungated = landing_rewards_for(env, reset_state, cmd)
+        gated = landing_rewards_for(env, reset_state, cmd, shaping_tracking_gate=True)
+        for key in ungated:
+            if key == "feet_air_time":
+                continue
+            assert gated[key] == ungated[key], (cmd, key)
 
 
 def test_tracking_product_keeps_the_reward_key_order(env, reset_state):

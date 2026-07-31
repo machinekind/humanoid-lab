@@ -185,6 +185,17 @@ def default_config() -> config_dict.ConfigDict:
             # tracking_relative.
             tracking_far_weight=0.0,
             tracking_far_sigma=2.5,
+            # Gate the positive gait-shaping terms by the linear tracking
+            # kernel, post-product when tracking_product is on. Those terms
+            # pay on a commanded env whether or not it translates, which made
+            # stand-and-lift the top income under a command in w01-tek's
+            # terrain_blind_v3 (2026-07-29 post-mortem: standing with one leg
+            # raised earned ~1.8 reward per step against honest walking's
+            # ~0.25). Gated, a stride pays in proportion to how well the
+            # command is being served and standing pays nothing for lifting
+            # legs. Gated set: feet_air_time, plus feet_apex when port item
+            # 1.7 lands. Not feet_phase -- see _compute_rewards.
+            shaping_tracking_gate=False,
             phase_sigma=0.002,
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
@@ -466,6 +477,15 @@ class Joystick(HumanoidEnv):
             # the same product.
             k_lin, k_ang = k_lin * k_ang, k_ang * k_lin
 
+        # Gait-shaping gate (see shaping_tracking_gate in default_config):
+        # the positive gait terms follow the linear tracking kernel, after
+        # the product gate when that is on. Gated set today: feet_air_time.
+        # feet_apex joins it when port item 1.7 lands. feet_phase stays
+        # ungated on purpose -- it is the clock-following gradient, and it
+        # has to survive at zero tracking because stepping is how tracking
+        # starts.
+        shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
+
         rewards = {
             "tracking_lin_vel": k_lin,
             "tracking_ang_vel": k_ang,
@@ -479,7 +499,8 @@ class Joystick(HumanoidEnv):
             "energy": terms.energy(qvel_act, data.actuator_force),
             "pose": terms.pose(qpos_act, self._default_pose, self._pose_weight),
             "feet_air_time": terms.feet_air_time(info["feet_air_time"], first_contact, self._config.gait.air_time_cap)
-            * moving,
+            * moving
+            * shape_gate,
             "feet_slip": terms.feet_slip(foot_vel[:, :2], contact) * moving,
             "feet_phase": terms.feet_phase(foot_clearance, target_clearance, cfg.phase_sigma) * moving,
             "stand_still": terms.stand_still(qpos_act, self._default_pose, qvel_act) * (~moving),

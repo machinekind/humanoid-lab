@@ -146,7 +146,10 @@ generations.
 **What.** Add `reward.shaping_tracking_gate`, default false. When true, the
 positive gait-shaping rewards are multiplied by the linear tracking kernel.
 The gate uses the post-product value when 1.1 is also on. In this repo the
-gated set is `feet_air_time`, `feet_phase`, and `feet_apex` once 1.7 lands.
+gated set is `feet_air_time`, plus `feet_apex` once 1.7 lands. `feet_phase`
+stays ungated, as it does in w01-tek: it is the clock-following gradient, and
+it has to survive at zero tracking because stepping is how tracking starts.
+w01-tek also gates `high_step`, which is quadruped-only and not ported.
 Stand-still penalties keep their command gate and are not touched.
 
 **Why.** w01-tek's v3 forensics found that standing with one leg raised earned
