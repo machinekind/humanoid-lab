@@ -787,6 +787,58 @@ reads low by that offset. `docs/lessons/foot-clearance.md` owns the numbers
 and the deferred fix; nothing in these KPIs is worth calibrating before it
 lands.
 
+### Servo tracking error
+
+| Field | Meaning |
+|---|---|
+| `tracking_err_rms` | RMS of `\|ctrl - qpos\|` over the post-settle window, pooled across steps and actuated joints. |
+| `tracking_err_p95` | 95th percentile of the same. |
+
+`ctrl` is the setpoint the servo was asked to hold, `qpos` the angle the
+joint reached. This is what actuator stiffness work targets, and it is
+invisible to every velocity metric: a policy can hit its commanded body
+velocity with every joint sagging behind its setpoint. The p95 says whether
+the error is spread evenly or lives in a few joints — an RMS over twelve
+joints hides one that has given up. Both are `null` when the row did not
+outlive the settle window.
+
+Only a position-servo preset makes this a servo error. Under `ideal_torque`,
+`ctrl` is a torque in Nm and the subtraction is dimensionally meaningless.
+`run.json`'s `actuator_gains.model` is what tells a reader which preset
+produced the run.
+
+### The `actuator_gains` block (`run.json`)
+
+`run.json` carries two actuator records. `actuators` is what the config asked
+for: `cfg.actuators` verbatim, preset name and `overrides` included.
+`actuator_gains` is what the **built model got**, read back off its actuator
+params after preset loading and after `actuators.overrides` merging.
+
+| Field | Meaning |
+|---|---|
+| `preset` | The preset name, `cfg.actuators.name`. |
+| `model` | The actuator model the preset resolved to: `pd`, `ideal_torque`, … |
+| `joints` | Actuated joints in canonical order. This is also the column order of `kp` and `kd`. |
+| `kp` | Per actuator, `actuator_gainprm[:, 0]`. |
+| `kd` | Per actuator, `-actuator_biasprm[:, 2]`. |
+
+The two blocks differ whenever an override patches a gain: an
+`actuators.overrides` entry never appears in the preset yaml, so a stamp read
+from the yaml would record numbers the run never used.
+
+For a `pd` preset those params **are** the PD gains —
+`actuators/models.py`'s `PositionPD.inject` writes `gainprm = (kp, 0, 0)` and
+`biasprm = (0, -kp, -kd)`. For `ideal_torque` they are not gains at all:
+`gainprm[0]` is `1.0` and there is no bias term, so the block reads `1.0`
+and `0.0`. It is stamped anyway. `model` is what makes the numbers readable,
+and a `run.json` whose shape depended on the actuator model would need
+branching at every reader.
+
+There are no runtime `pd_kp` / `pd_kd` override knobs. The actuator-preset
+axis already covers that: a different stiffness is a different preset, or an
+`actuators.overrides` entry on the group that needs it, and both land in this
+block.
+
 ## Early stopping (`early_stop`)
 
 Off by default. When on, the trainer ends a run whose eval reward has stopped

@@ -151,6 +151,7 @@ def main(cfg: DictConfig) -> None:
     from humanoid_lab.dr.randomize import make_domain_randomize
     from humanoid_lab.envs.wrappers import make_wrap_env_fn
     from humanoid_lab.registry import make_env
+    from humanoid_lab.robot.presets import effective_gains, load_actuator_preset
 
     task = cfg.task.name
     robot_dir = paths.REPO_ROOT / cfg.robot.dir
@@ -184,6 +185,20 @@ def main(cfg: DictConfig) -> None:
     env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     eval_env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     print(f"actor obs ({len(env.actor_obs_names)} components): {env.actor_obs_names}")
+
+    # Gains as the compiled model holds them, for run.json. Read here rather
+    # than from cfg.actuators: the yaml is what was asked for, and
+    # actuators.overrides merges on top of it inside load_actuator_preset.
+    # The preset is re-loaded through that same choke point purely for its
+    # model name, which the mjModel does not carry.
+    gains = effective_gains(
+        env.mj_model.actuator_gainprm,
+        env.mj_model.actuator_biasprm,
+        env.robot_spec.actuated_joints,
+        model=load_actuator_preset(robot_dir, preset_name, actuator_overrides).model,
+        preset=preset_name,
+    )
+    print(f"actuator gains: {gains['model']} preset {gains['preset']}")
 
     contacts = _contact_preflight(env, cfg)
     print(f"contacts: {contacts}")
@@ -342,6 +357,11 @@ def main(cfg: DictConfig) -> None:
                 "ppo_config": ppo_params.to_dict(),
                 "hydra_config": OmegaConf.to_container(cfg, resolve=True),
                 "actuators": OmegaConf.to_container(cfg.actuators, resolve=True),
+                # What the BUILT model got, next to the `actuators` block
+                # above, which is what the config asked for. The two differ
+                # whenever actuators.overrides patches a gain: the override
+                # never appears in the preset yaml (port item 4.3).
+                "actuator_gains": gains,
             },
             indent=2,
             default=str,

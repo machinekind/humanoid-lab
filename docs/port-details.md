@@ -592,6 +592,15 @@ actuator-preset axis already covers that. Do not duplicate it.
 histories. The settle window is excluded. A run.json schema test covers the
 effective-gain fields.
 
+**Landed.** `eval/battery.py::tracking_error` over the record's new `ctrl`
+and `qpos` arrays, reported as `tracking_err_rms` and `tracking_err_p95` per
+scenario. The stamp is `robot/presets.py::effective_gains`, and run.json's
+`actuator_gains` block is that function's return value, so its unit tests
+are the schema test. It is per-actuator rather than w01-tek's single
+`[0,0]` reading: our presets carry per-group gains, and one scalar would
+hide exactly the group a run was tuning. No runtime pd_kp/pd_kd knobs were
+added. See docs/configuration.md.
+
 ---
 
 ## 4.4 Robustness grid

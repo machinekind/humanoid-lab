@@ -172,6 +172,37 @@ def yaw_progress_deg(wz, dt: float, settle_steps: int = SETTLE_STEPS) -> float |
     return float(np.degrees(w.sum() * dt))
 
 
+def tracking_error(ctrl_hist, qpos_hist, settle_steps: int = SETTLE_STEPS) -> dict:
+    """RMS and p95 of |ctrl - qpos| over the post-settle window, rad.
+
+    `ctrl` is the setpoint the servo was asked to hold and `qpos` the angle
+    the joint reached, both (steps, actuated joints) in canonical order. This
+    is the servo error that actuator stiffness work targets, and it is
+    invisible to the velocity-tracking metrics: a policy can hit its
+    commanded body velocity while every joint sags behind its setpoint.
+
+    Both numbers pool over steps and joints. The p95 is what says whether the
+    error is spread evenly or lives in a few joints -- an RMS over twelve
+    joints hides one that has given up.
+
+    Returns {"rms": None, "p95": None} when nothing outlives `settle_steps`.
+
+    Only a position-servo preset makes this a servo error: under
+    `ideal_torque`, ctrl is a torque in Nm and the subtraction is
+    dimensionally meaningless. run.json's `actuator_gains.model` (port item
+    4.3) is what tells a reader which one produced the run.
+    """
+    c = np.asarray(ctrl_hist, dtype=float)[settle_steps:]
+    q = np.asarray(qpos_hist, dtype=float)[settle_steps:]
+    if c.size == 0:
+        return {"rms": None, "p95": None}
+    err = np.abs(c - q)
+    return {
+        "rms": float(np.sqrt((err**2).mean())),
+        "p95": float(np.percentile(err, 95)),
+    }
+
+
 def peak_over(values) -> int | None:
     """Largest of `values`, ignoring the unmeasured ones, or None if none was.
 
@@ -242,6 +273,11 @@ def scenario_result(
     # here because velocity tracking error scores a skimming gait and a
     # stand-and-lift farm as healthy.
     r.update(gait_metrics(rec, settle_steps=SETTLE_STEPS))
+
+    # Servo error (port item 4.3), also raw.
+    track = tracking_error(rec["ctrl"], rec["qpos"], SETTLE_STEPS)
+    r["tracking_err_rms"] = _round_or_none(track["rms"], 4)
+    r["tracking_err_p95"] = _round_or_none(track["p95"], 4)
 
     return r
 
@@ -447,7 +483,7 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     rec = {
         "cmd": [], "vx": [], "vy": [], "wz": [], "height": [],
         "qvel": [], "contact": [], "foot_speed": [], "tau": [],
-        "foot_clear": [], "foot_vz": [],
+        "foot_clear": [], "foot_vz": [], "ctrl": [], "qpos": [],
     }
     nacon_seen, nefc_seen = [], []
     fell_at = None
@@ -483,6 +519,13 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         # keyframe, not the floor.)
         rec["foot_clear"].append(np.asarray(env._foot_clearance(d)))
         rec["foot_vz"].append(foot_vel[:, 2])
+        # Setpoint and angle over the actuated joints, for the servo KPI
+        # (port item 4.3). d.ctrl is nu-long and env._qadr is the same
+        # canonical actuated-joint order (robot/build.py injects actuators in
+        # robot_spec.actuated_joints order), so the two line up column for
+        # column.
+        rec["ctrl"].append(np.asarray(d.ctrl))
+        rec["qpos"].append(np.asarray(d.qpos)[np.asarray(env._qadr)])
 
         # Warp's contact and constraint-row budgets, sampled every step. The
         # rollout is a plain Python loop, so this is a numpy read per step and
