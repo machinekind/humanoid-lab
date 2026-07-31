@@ -185,11 +185,10 @@ _SPIN_RIGHT = {
 _SPIN_BATTERY = {**BATTERY, "spin_left": _SPIN_LEFT, "spin_right": _SPIN_RIGHT}
 
 
-def _spin_section(md: str) -> list[str]:
-    """The lines of the report's `## Spin probes` section."""
+def _section(md: str, heading: str) -> list[str]:
+    """The lines of one `## ...` section of the rendered report."""
     lines = md.splitlines()
-    start = lines.index("## Spin probes")
-    rest = lines[start + 1 :]
+    rest = lines[lines.index(heading) + 1 :]
     end = next((i for i, line in enumerate(rest) if line.startswith("## ")), len(rest))
     return rest[:end]
 
@@ -197,7 +196,7 @@ def _spin_section(md: str) -> list[str]:
 def test_the_spin_section_reports_each_direction_separately():
     """The whole point of the pair: a chirality bug is invisible in an
     average over both directions."""
-    section = _spin_section(render_markdown(_SPIN_BATTERY))
+    section = _section(render_markdown(_SPIN_BATTERY), "## Spin probes")
 
     left = next(line for line in section if line.startswith("| spin_left |"))
     right = next(line for line in section if line.startswith("| spin_right |"))
@@ -206,7 +205,7 @@ def test_the_spin_section_reports_each_direction_separately():
 
 
 def test_the_spin_section_reports_yaw_asked_for_next_to_yaw_delivered():
-    section = _spin_section(render_markdown(_SPIN_BATTERY))
+    section = _section(render_markdown(_SPIN_BATTERY), "## Spin probes")
     header = next(line for line in section if line.startswith("| scenario |"))
 
     assert "yaw_progress_deg" in header and "yaw_cmd_deg" in header
@@ -216,3 +215,51 @@ def test_a_battery_without_spin_rows_renders_no_spin_section():
     """battery.json files written before port item 4.1."""
     md = render_markdown(BATTERY)
     assert "## Spin probes" not in md
+
+
+# -- the gait KPIs (port item 4.2) -------------------------------------------
+
+_WALKED = {
+    **GOOD_ROW,
+    "swings": 14, "swing_apex_med_m": 0.0312, "swing_apex_p90_m": 0.0455,
+    "touchdown_v_med": 0.221, "touchdown_softness_med": 0.283,
+}
+_STOOD = {
+    **GOOD_ROW,
+    "swings": 0, "swing_apex_med_m": None, "swing_apex_p90_m": None,
+    "touchdown_v_med": None, "touchdown_softness_med": None,
+}
+_GAIT_BATTERY = {**BATTERY, "stand": _STOOD, "walk_ramp": _WALKED}
+
+
+def test_the_gait_section_shows_the_apex_and_touchdown_numbers():
+    section = _section(render_markdown(_GAIT_BATTERY), "## Gait KPIs")
+    row = next(line for line in section if line.startswith("| walk_ramp |"))
+
+    assert "0.031" in row  # median apex
+    assert "0.046" in row or "0.045" in row  # p90 apex
+    assert "0.28" in row  # touchdown softness
+
+
+def test_the_gait_section_shows_the_swing_count_behind_each_median():
+    """A median over three swings and one over ninety are not the same
+    reading, and only the count says which one this is."""
+    section = _section(render_markdown(_GAIT_BATTERY), "## Gait KPIs")
+    header = next(line for line in section if line.startswith("| scenario |"))
+    row = next(line for line in section if line.startswith("| walk_ramp |"))
+
+    assert "swings" in header
+    assert "14" in row
+
+
+def test_a_scenario_that_never_swung_renders_dashes_not_zeros():
+    section = _section(render_markdown(_GAIT_BATTERY), "## Gait KPIs")
+    row = next(line for line in section if line.startswith("| stand |"))
+
+    assert "| 0 |" in row  # zero swings, stated
+    assert "0.000" not in row  # but no apex or speed invented for them
+
+
+def test_a_battery_without_gait_kpis_renders_no_gait_section():
+    """battery.json files written before port item 4.2."""
+    assert "## Gait KPIs" not in render_markdown(BATTERY)
