@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 runs/
 wandb/
+wandb-offline/
 outputs/
 robots/*/mjx/
 *.egg-info/
