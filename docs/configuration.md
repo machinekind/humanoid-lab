@@ -236,6 +236,54 @@ exactly.
 | `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
 | `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which made stand-and-lift the top income under a command in w01-tek's `terrain_blind_v3`: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time`, plus `feet_apex` when port item 1.7 lands. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
 
+## No-progress termination (`task.env.no_progress`)
+
+Off by default. When on, an env whose measured progress keeps falling short
+of its command is terminated probabilistically, CaT-style
+([arXiv 2403.18765](https://arxiv.org/abs/2403.18765)). It closes the
+reward-landscape hole where ignoring the command indefinitely is profitable:
+forfeiting the rest of the episode is the whole penalty. **No reward term is
+attached** — `rewards["termination"]` stays fall-only, and enabling this adds
+no key to `reward.scales`.
+
+Per control step, with the command that drove the step:
+
+```
+served  = dot(linvel_xy, cmd_xy)/max(|cmd_xy|, 1e-6) + 0.3*gyro_z*sign(cmd_wz)
+ema    ←  (1 - dt/ema_sec)*ema + (dt/ema_sec)*served
+ratio   = ema / max(demand, 1e-6)          demand = |cmd_xy| + 0.3*|cmd_wz|
+hazard  = p_max * clip((risk_below - ratio)/risk_below, 0, 1)
+cut     ~ bernoulli(hazard)  when armed, else 0
+```
+
+`served` is a projection, not a magnitude, so moving against the command
+reads negative — worse than standing still — and moving across it scores
+zero. The cut arms only when `demand > 0.05` and `steps_since_cmd*dt >=
+grace_sec`. The EMA reseeds to the new demand (ratio 1) on every command
+resample, so a robot is never billed for the previous command's shortfall.
+The math is `src/humanoid_lab/envs/progress.py`; the env wires it in
+`envs/joystick.py`.
+
+Two metrics appear while it is on and exist nowhere otherwise:
+`no_progress_cut` (episode sum, 1 exactly when the episode ended on the cut)
+and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
+`[0, 2]`).
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enable` | `false` | Off changes nothing: no info state, no metrics, and no RNG key is split, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
+| `grace_sec` | `2.0` | No hazard for this long after a reset or a command resample. **Re-derive for a biped.** w01-tek's number, and the one most likely wrong here: turning a two-legged gait around takes longer than turning a 0.21 m four-bar quadruped's. |
+| `ema_sec` | `1.0` | Smoothing horizon of the progress measure, seconds. Long enough that one bad stride does not arm the cut. |
+| `risk_below` | `0.5` | The hazard starts below this fraction of the commanded speed. **Re-derive for a biped**, together with `grace_sec`: 50% of demand may be a lot to ask of a humanoid inside the grace window. |
+| `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
+
+A curriculum or auto-reset wrapper that restarts an episode in place must
+reseed `info["progress_ema"]` itself: `info` survives a respawn, so a new
+episode would otherwise inherit the dying one's shortfall and die inside its
+own grace window. w01-tek's terrain wrapper does this; this repo has no such
+wrapper yet (PORT.md defers terrain), and `envs/joystick.py` carries the note
+at the reseed site.
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone

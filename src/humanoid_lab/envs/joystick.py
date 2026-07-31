@@ -30,6 +30,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
+from humanoid_lab.envs import progress
 from humanoid_lab.envs.base import HumanoidEnv
 from humanoid_lab.rewards import terms
 
@@ -119,6 +120,29 @@ def default_config() -> config_dict.ConfigDict:
         # Carried from w01-tek's joystick task, untuned for asimov's mass/leg
         # length.
         push=config_dict.create(enable=True, interval_steps=200, vel=0.4),
+        # No-progress termination, CaT-style (arXiv 2403.18765): an env whose
+        # measured progress keeps falling short of its command is cut
+        # probabilistically. Forfeiting the rest of the episode is the whole
+        # penalty -- no reward term is attached and rewards["termination"]
+        # stays fall-only. The hazard ramps linearly from 0 where the smoothed
+        # progress reaches risk_below of the commanded speed to p_max per
+        # control step at zero progress, so expected survival at a dead stop
+        # is 1/p_max steps (1 s at the defaults and ctrl_dt=0.02). Zero
+        # commands never arm the cut, and a command change re-arms it only
+        # after grace_sec. The math is in envs/progress.py.
+        #
+        # Every number here is w01-tek's, tuned for a 0.21 m four-bar
+        # quadruped. grace_sec and risk_below are the two to re-derive for a
+        # biped: turning a two-legged gait around takes longer than turning a
+        # four-legged one, so 2 s of grace may be short and 50% of demand may
+        # be a lot to ask inside it.
+        no_progress=config_dict.create(
+            enable=False,
+            grace_sec=2.0,   # no hazard this long after a reset or a resample
+            ema_sec=1.0,     # smoothing horizon of the progress measure
+            risk_below=0.5,  # hazard starts below this fraction of demand
+            p_max=0.02,      # per-step hazard at zero progress
+        ),
         # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
         # (0.636 m) is not this: it's the floating-base placeholder measured
         # so the feet just touch the floor, not the robot's standing height.
@@ -336,12 +360,29 @@ class Joystick(HumanoidEnv):
         # merge below), or brax's training scan chokes on a changing
         # metrics pytree structure across steps.
         metrics = {f"reward/{k}": jp.zeros(()) for k in self._config.reward.scales}
+        if self._config.no_progress.enable:
+            # Optimistic seed: a fresh episode starts at progress ratio 1, so
+            # the hazard can only come from measured shortfall, never from the
+            # seed (see no_progress in default_config). Both metrics are
+            # seeded here for the scan-carry parity the comment above
+            # demands: step() writes them on every step when the cut is on.
+            info["progress_ema"] = self._cmd_speed(command)
+            metrics["no_progress_cut"] = jp.zeros(())
+            metrics["progress_ratio_per_step"] = jp.zeros(())
         obs = self._build_obs(data, info)
         return mjx_env.State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         info = dict(state.info)
-        rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
+        if self._config.no_progress.enable:
+            # The extra key is split off only when the cut is on, so the
+            # default trajectory keeps the stock 4-way split and the whole
+            # RNG stream is unchanged while the feature is off
+            # (tests/integration/test_golden_baseline.py is the gate).
+            rng, r_noise, r_cmd, r_push, r_term = jax.random.split(info["rng"], 5)
+        else:
+            rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
+            r_term = None
         info["rng"] = rng
 
         motor_targets = jp.clip(
@@ -381,9 +422,47 @@ class Joystick(HumanoidEnv):
         info["phase"] = jp.fmod(phase + jp.pi, 2 * jp.pi) - jp.pi
 
         info["steps_since_cmd"] = info["steps_since_cmd"] + 1
+
+        # No-progress cut (see no_progress in default_config): an env that
+        # keeps ignoring its command dies with a probability that grows with
+        # the shortfall. Evaluated here, after the steps_since_cmd increment
+        # and before the resample below, so it scores the command that
+        # actually drove this step. A true termination: it only flips `done`,
+        # it attaches no reward term, and rewards["termination"] stays
+        # fall-only. Losing the rest of the episode is the whole penalty.
+        done = fall
+        if self._config.no_progress.enable:
+            npg = self._config.no_progress
+            cmd = info["command"]
+            demand = self._cmd_speed(cmd)
+            served = progress.served(self._local_linvel(data)[:2], self._gyro(data)[2], cmd)
+            alpha = self.dt / npg.ema_sec
+            info["progress_ema"] = (1.0 - alpha) * info["progress_ema"] + alpha * served
+            progress_ratio = info["progress_ema"] / jp.maximum(demand, 1e-6)
+            hazard = progress.hazard(progress_ratio, npg.risk_below, npg.p_max)
+            armed = progress.armed(demand, info["steps_since_cmd"], self.dt, npg.grace_sec)
+            no_progress_cut = jax.random.bernoulli(r_term, jp.where(armed, hazard, 0.0))
+            done = done | no_progress_cut
+
         resample = info["steps_since_cmd"] >= self._config.command.resample_steps
         info["command"] = jp.where(resample, self._sample_command(r_cmd), info["command"])
         info["steps_since_cmd"] = jp.where(resample, 0, info["steps_since_cmd"])
+        if self._config.no_progress.enable:
+            # A fresh command restarts the meter at ratio 1: the EMA is
+            # reseeded to the new demand, and steps_since_cmd going back to 0
+            # keeps the hazard at zero for grace_sec while the robot turns
+            # the gait around.
+            #
+            # This is the only reseed site there is. `info` survives a
+            # respawn, so an auto-reset or curriculum wrapper that restarts an
+            # episode in place must reseed progress_ema itself -- w01-tek's
+            # terrain wrapper does exactly that. Deferred here with terrain
+            # (PORT.md "Deferred"); whoever adds such a wrapper owns it, or
+            # the new episode inherits the dying one's shortfall and dies
+            # inside its own grace window.
+            info["progress_ema"] = jp.where(
+                resample, self._cmd_speed(info["command"]), info["progress_ema"]
+            )
 
         reward = sum(rewards[k] * self._config.reward.scales[k] for k in rewards)
         reward = jp.clip(reward * self.dt, -100.0, 100.0)
@@ -396,10 +475,17 @@ class Joystick(HumanoidEnv):
             **state.metrics,
             **{f"reward/{k}": v for k, v in rewards.items()},
         }
+        if self._config.no_progress.enable:
+            # No `_per_step` suffix on the first: brax reports its episode
+            # sum, which for this indicator is 1 exactly when the episode
+            # ended on the cut. The ratio does carry the suffix, so brax
+            # reports its mean, and it is clipped so over-delivery on a slow
+            # command cannot hide shortfall elsewhere in the average.
+            metrics["no_progress_cut"] = no_progress_cut.astype(jp.float32)
+            metrics["progress_ratio_per_step"] = jp.clip(progress_ratio, 0.0, 2.0)
 
         obs = self._build_obs(data, info, r_noise)
-        done = fall.astype(jp.float32)
-        return mjx_env.State(data, obs, reward, done, metrics, info)
+        return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
     # -- observations -------------------------------------------------------
     def _obs_catalog(self, data, info):
