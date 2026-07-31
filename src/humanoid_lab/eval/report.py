@@ -40,7 +40,10 @@ _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
 # battery.json keys that are not scenarios. `contacts` is the warp budget
 # block (see sim_budget.budget_report); it gets its own section below.
-_META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
+# `grid` is the robustness grid's plant stamp (port item 4.4); it is
+# rendered in the header, because a report from a perturbed cell has to say
+# which plant produced its numbers.
+_META_KEYS = ("run", "checkpoint", "timestamp", "contacts", "grid")
 
 # The per-direction spin rows (eval/battery.py's battery_scenarios), listed
 # in the order the section renders them.
@@ -95,6 +98,20 @@ def render_markdown(battery: dict) -> str:
         "",
         f"- checkpoint: {battery.get('checkpoint', '?')}",
         f"- generated: {battery.get('timestamp', '?')}",
+    ]
+    grid = battery.get("grid")
+    if grid:
+        # One line, always, perturbed or not. A report that only mentioned
+        # the plant when it was perturbed would leave every other report
+        # silently claiming nothing -- and a battery.json predating this
+        # block would be indistinguishable from an unperturbed one.
+        lines.append(
+            f"- plant: {grid.get('path', '?')} (alpha {grid.get('alpha')}, "
+            f"lag_tau {grid.get('lag_tau')} s, torque_envelope "
+            f"{grid.get('torque_envelope')}) -- see docs/configuration.md's "
+            "\"Robustness grid (eval-only)\""
+        )
+    lines += [
         "",
         "## Battery",
         "",

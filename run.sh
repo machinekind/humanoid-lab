@@ -71,8 +71,21 @@ case "${1:-}" in
     "$PY" -m humanoid_lab.sizing.report "${report_args[@]}"
     ;;
   # PLAN.md build step 10: fixed eval battery -> runs/<name>/battery.json.
-  # Passthrough args: --run runs/<name> [--out path.json].
+  # Passthrough args: --run runs/<name> [--out path.json]
+  # [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0].
+  #
+  # The last three are the robustness grid's eval-only plant perturbations
+  # (port item 4.4, see src/humanoid_lab/eval/grid.py). Every grid cell
+  # passes --out: a perturbed measurement must never overwrite the run's
+  # canonical battery.json. Cell filenames come from eval/grid.py's
+  # cell_name, which is what `grid-report` aggregates, e.g.
+  #   ./run.sh battery --run runs/r --alpha 1.58 --lag-tau 0.005 \
+  #     --out runs/r/grid/battery_a1.58_lag5ms_envnone.json
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
+  # Aggregates runs/<name>/grid/*.json into a markdown table with PASS/FAIL
+  # per cell (port item 4.4). Passthrough args:
+  # --runs runs/<name> [runs/<other> ...] [--out path.md].
+  grid-report) shift; "$PY" -m humanoid_lab.eval.grid_report "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
   # first). If runs/<name>/sizing_data.npz also exists, additionally runs
   # sizing-report's report half -- a separate decoupled invocation (not a
@@ -104,7 +117,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--scenario name] [--steps N] [--out path.mp4].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|grid-report|report|eval} [args]"
     exit 1
     ;;
 esac

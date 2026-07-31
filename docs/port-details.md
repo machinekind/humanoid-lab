@@ -643,6 +643,39 @@ The envelope is flat, then ramps, and exempts braking. Alpha scales the cap
 and the gains together. The explicit-PD path matches native within tolerance
 at small lag. `--out` never touches battery.json.
 
+**Landed.** The mechanisms are `eval/grid.py`, the aggregator
+`eval/grid_report.py`, and four flags on `eval/battery.py`'s existing
+entrypoint (w01-tek's shape: its argparse grew the same four). `run.sh` gets
+a `grid-report` verb. Every `battery.json` now carries a `grid` block naming
+`alpha`, `lag_tau`, `torque_envelope` and `path` (`native` or
+`explicit_pd`).
+
+The honesty requirement is met by documenting the branch rather than hiding
+it: `run_battery` chooses the native rollout for an unperturbed cell, and
+`eval/grid.py`'s docstring, `run_battery`'s docstring,
+docs/configuration.md and every rendered report all say so and name w01-tek's
+contrary `stiff_grid.job` claim as false. The tested property is the
+convergence one: measured **1.0e-6 relative on `tracking_err_rms`**
+(`roboto_origin` / `sizing_ideal`, 80 steps, CPU, `lag_tau = 1e-4`);
+`tests/integration/test_grid_env.py` asserts 1e-4, a hundredfold margin and
+a hundredfold tighter than w01-tek's "under 1%".
+
+Divergences from w01-tek. The substep loop drops its `prev_ctrl` /
+`new_ctrl` / `delay_substeps` switch: this env has no action-delay or
+latency machinery, so there is no mid-period ctrl switch to reproduce. The
+loop refuses an env that still has pushes, the no-progress cut or the mirror
+on, and refuses a non-`pd` preset, rather than silently dropping either —
+it mirrors the MEASUREMENT env's step, and an unmirrored feature would make
+a cell a different experiment from the battery it is compared against. The
+gates keep w01-tek's four constants, marked for re-derivation in the source
+and re-stated in every report; yaw error is reported but not gated (0.20 is
+m/s, and there is no ported rad/s limit); the vibration reference is the
+grid's own baseline cell, not a keeper table this repo does not have; and
+the "stiffest surviving run" summary is not ported, since there is no
+stiffness ladder and `actuator_gains.kp` is per-actuator. `hpc/stiff_grid.
+batch` is not ported either — the sweep is a documented shell loop in
+docs/configuration.md.
+
 ---
 
 ## 4.5 Video QoL
