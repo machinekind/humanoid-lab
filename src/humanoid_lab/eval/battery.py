@@ -55,7 +55,7 @@ from humanoid_lab.eval.gait import gait_metrics
 
 # -- pure metric functions -------------------------------------------------
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
-# needed, so these are unit-tested directly in tests/test_battery.py
+# needed, so these are unit-tested directly in tests/unit/test_battery.py
 # (mirrors sizing/report.py's own pure-reducer pattern).
 
 # The reset transient every metric added by port items 4.1 to 4.3 excludes.

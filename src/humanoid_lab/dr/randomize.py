@@ -45,7 +45,7 @@ import mujoco
 _DRAW = 0x100
 
 # Defaults for each dr_cfg field. configs/dr/default.yaml mirrors this shape
-# exactly (tests/test_randomize.py pins the two together); missing keys fall
+# exactly (tests/integration/test_randomize.py pins the two together); missing keys fall
 # back to these values.
 _DEFAULT_DR = {
     "com_offset": {"enable": False, "xy": 0.02, "z": 0.01},
