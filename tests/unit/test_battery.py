@@ -6,9 +6,13 @@ test_sizing_report.py pattern (pure numpy in, dict/scalar out).
 
 from __future__ import annotations
 
+import json
+import sys
+
 import numpy as np
 import pytest
 
+from humanoid_lab.eval import battery
 from humanoid_lab.eval.battery import (
     SETTLE_STEPS,
     _measurement_env_overrides,
@@ -566,6 +570,112 @@ def test_every_other_key_of_the_run_s_env_block_survives():
 
     assert overrides["real_pose_ref"] is True
     assert overrides["reward"] == {"scales": {"pose": -1.0}}
+
+
+# -- the grid CLI (port item 4.4) --------------------------------------------
+#
+# main() with run_battery stubbed out: the argparse wiring and the write
+# target are pure plumbing, and pinning them costs no rollout. What the
+# perturbations DO to the physics is tests/integration/test_grid_env.py.
+
+
+@pytest.fixture
+def stub_battery(monkeypatch):
+    """Replace run_battery with a recorder, so main() can be driven without
+    a checkpoint. Returns the dict its call kwargs land in."""
+    seen = {}
+
+    def fake_run_battery(run_dir, **kwargs):
+        seen["run_dir"] = run_dir
+        seen.update(kwargs)
+        return {"run": "stub", "checkpoint": "0"}
+
+    monkeypatch.setattr(battery, "run_battery", fake_run_battery)
+    return seen
+
+
+def _main(argv, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["battery", *argv])
+    battery.main()
+
+
+def test_out_writes_the_grid_cell_somewhere_else_and_leaves_battery_json_alone(
+    tmp_path, monkeypatch, stub_battery
+):
+    """The canonical battery.json is the run's headline number table. A grid
+    cell is a perturbed measurement and must never land on top of it."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    canonical = run_dir / "battery.json"
+    canonical.write_text('{"run": "canonical"}')
+    before_mtime = canonical.stat().st_mtime_ns
+
+    cell = run_dir / "grid" / "battery_a1.58_lag5ms_envnone.json"
+    _main(["--run", str(run_dir), "--alpha", "1.58", "--lag-tau", "0.005", "--out", str(cell)],
+          monkeypatch)
+
+    assert cell.exists()
+    assert json.loads(canonical.read_text()) == {"run": "canonical"}
+    assert canonical.stat().st_mtime_ns == before_mtime
+
+
+def test_out_creates_the_grid_directory_it_was_pointed_at(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cell = run_dir / "grid" / "battery_a1_lag0ms_envnone.json"
+
+    _main(["--run", str(run_dir), "--out", str(cell)], monkeypatch)
+
+    assert cell.exists()
+
+
+def test_without_out_the_battery_still_writes_the_canonical_file(
+    tmp_path, monkeypatch, stub_battery
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir)], monkeypatch)
+
+    assert (run_dir / "battery.json").exists()
+
+
+def test_the_defaults_are_the_unperturbed_battery(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir)], monkeypatch)
+
+    assert stub_battery["alpha"] == 1.0
+    assert stub_battery["lag_tau"] == 0.0
+    assert stub_battery["torque_envelope"] is None
+
+
+def test_every_perturbation_flag_reaches_run_battery(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(
+        ["--run", str(run_dir), "--alpha", "1.58", "--lag-tau", "0.01",
+         "--torque-envelope", "5,15", "--out", str(tmp_path / "cell.json")],
+        monkeypatch,
+    )
+
+    assert stub_battery["alpha"] == 1.58
+    assert stub_battery["lag_tau"] == 0.01
+    assert stub_battery["torque_envelope"] == (5.0, 15.0)
+
+
+def test_a_malformed_envelope_is_rejected_before_any_rollout(
+    tmp_path, monkeypatch, stub_battery
+):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with pytest.raises(SystemExit):
+        _main(["--run", str(run_dir), "--torque-envelope", "15,5"], monkeypatch)
+
+    assert stub_battery == {}
 
 
 # -- contact budget peaks ----------------------------------------------------
