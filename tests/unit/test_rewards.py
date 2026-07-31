@@ -80,6 +80,59 @@ def test_tracking_rel_sigma_floors_a_small_command():
     assert float(smaller) == pytest.approx(0.25 * 0.09)
 
 
+# -- far-field blend (port item 1.3) ---------------------------------------
+
+
+def test_far_blend_at_weight_zero_returns_the_kernel():
+    k = terms.tracking_kernel(0.5, sigma=0.25)
+    blended = terms.tracking_far_blend(k, 0.5, weight=0.0, far_sigma=2.5)
+    assert float(blended) == float(k)
+
+
+def test_far_blend_at_weight_one_is_the_far_kernel_alone():
+    k = terms.tracking_kernel(0.5, sigma=0.25)
+    blended = terms.tracking_far_blend(k, 0.5, weight=1.0, far_sigma=2.5)
+    assert float(blended) == pytest.approx(float(jp.exp(-0.5 / 2.5)), rel=1e-6)
+
+
+def test_far_blend_lifts_a_kernel_that_has_gone_flat():
+    """The point of the term: several sigma out the sharp kernel is 0 and has
+    no gradient, and the wide one still does."""
+    err = 2.25
+    k = terms.tracking_kernel(err, sigma=0.25)  # exp(-9), effectively zero
+    blended = terms.tracking_far_blend(k, err, weight=0.25, far_sigma=2.5)
+    assert float(k) < 1e-3
+    assert float(blended) > 0.1
+
+
+def test_far_blend_stays_within_the_unit_interval():
+    for err in (0.0, 0.25, 1.0, 4.0):
+        k = terms.tracking_kernel(err, sigma=0.25)
+        blended = float(terms.tracking_far_blend(k, err, weight=0.25, far_sigma=2.5))
+        assert 0.0 <= blended <= 1.0
+
+
+def test_far_blend_keeps_the_optimum_at_zero_error():
+    """Both kernels peak at zero error, so the blend does too -- the mix-in
+    adds gradient at range without moving where the reward is maximal."""
+    best = float(terms.tracking_far_blend(terms.tracking_kernel(0.0, 0.25), 0.0, 0.25, 2.5))
+    assert best == pytest.approx(1.0)
+    for err in (0.01, 0.25, 1.0):
+        k = terms.tracking_kernel(err, sigma=0.25)
+        assert float(terms.tracking_far_blend(k, err, 0.25, 2.5)) < best
+
+
+def test_far_blend_alone_pays_a_standing_robot_a_fifth_of_the_maximum():
+    """Why tracking_far_weight must never be used without tracking_product or
+    tracking_relative: at a yaw rate error of 0.8 rad/s the far term alone
+    pays 0.25*exp(-0.64/2.5), about 19% of the maximum angular reward, for
+    standing still -- and its gradient is weaker than the penalties a pivot
+    attempt incurs, so standing is a stable deadlock."""
+    err = 0.8**2
+    far_only = float(terms.tracking_far_blend(0.0, err, weight=0.25, far_sigma=2.5))
+    assert far_only == pytest.approx(0.19, abs=0.01)
+
+
 def test_a_zero_command_gives_a_finite_relative_kernel():
     k = terms.tracking_kernel(
         terms.tracking_err_ang(0.0, 0.1),
@@ -152,6 +205,7 @@ def test_torque_limit_positive_above_cap():
         (terms.tracking_err_ang, (0.2, -0.1)),
         (terms.tracking_kernel, (0.05, 0.25)),
         (terms.tracking_rel_sigma, (0.5, 0.25, 0.3)),
+        (terms.tracking_far_blend, (0.5, 0.05, 0.25, 2.5)),
         (terms.lin_vel_z, (0.3,)),
         (terms.ang_vel_xy, (jp.array([0.1, -0.2]),)),
         (terms.orientation, (jp.array([0.05, -0.02]),)),

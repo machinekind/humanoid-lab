@@ -225,6 +225,84 @@ def test_tracking_relative_leaves_the_other_terms_untouched(env, reset_state):
         assert on[key] == off[key], key
 
 
+# -- 1.3 tracking_far ------------------------------------------------------
+
+
+def test_tracking_far_is_off_by_default(env):
+    r = env._config.reward
+    assert r.tracking_far_weight == 0.0
+    assert r.tracking_far_sigma == 2.5
+
+
+def test_tracking_far_is_live_under_absolute_kernels(env, reset_state):
+    spin = (0.0, 0.0, 1.5)
+    bare = rewards_for(env, reset_state, spin)
+    with reward_flags(env, tracking_far_weight=0.25):
+        blended = rewards_for(env, reset_state, spin)
+
+    # bare absolute kernel exp(-2.25/0.25) ~ 1.2e-4, gradient-free; the far
+    # term exp(-2.25/2.5) ~ 0.41 at weight 0.25 lifts it to ~0.10.
+    assert bare["tracking_ang_vel"] < 1e-3
+    assert blended["tracking_ang_vel"] > 0.1
+    assert blended["tracking_ang_vel"] <= 1.0
+
+
+def test_tracking_far_is_live_under_relative_kernels(env, reset_state):
+    """The regression test, ported from w01-tek
+    (training/tests/integration/test_env.py:151, commit 042ada4). The far
+    mix-in must blend into the relative kernels too. It used to apply only in
+    the absolute branch, so terrain_blind_v3 (tracking_relative with
+    tracking_far dropped as inert) lost the far-field gradient that fixed
+    stiff_b's dead spin. A robot at rest under a pure-spin command must score
+    visibly higher tracking_ang_vel with the blend on."""
+    spin = (0.0, 0.0, 1.5)
+    with reward_flags(env, tracking_relative=True):
+        bare = rewards_for(env, reset_state, spin)
+        with reward_flags(env, tracking_far_weight=0.25):
+            blended = rewards_for(env, reset_state, spin)
+
+    # at rest: bare relative kernel ~exp(-1/rel_sigma), far term
+    # ~exp(-2.25/2.5) -- the blend must lift the reward well clear
+    assert blended["tracking_ang_vel"] > 3.0 * bare["tracking_ang_vel"]
+    assert blended["tracking_ang_vel"] <= 1.0
+
+
+def test_tracking_far_blends_the_linear_kernel_too(env, reset_state):
+    fast = (1.5, 0.0, 0.0)
+    bare = rewards_for(env, reset_state, fast)
+    with reward_flags(env, tracking_far_weight=0.25):
+        blended = rewards_for(env, reset_state, fast)
+    assert blended["tracking_lin_vel"] > 3.0 * bare["tracking_lin_vel"]
+
+
+def test_the_far_kernel_stays_absolute_across_the_branches(env, reset_state):
+    """The far kernel reads the raw squared error, never the relative width,
+    so a state far off the command sees the same pull at any commanded speed.
+    Subtracting the (1-w)-weighted bare kernels leaves the same far term in
+    both branches."""
+    spin = (0.0, 0.0, 1.5)
+    far_parts = {}
+    for relative in (False, True):
+        with reward_flags(env, tracking_relative=relative):
+            bare = rewards_for(env, reset_state, spin)["tracking_ang_vel"]
+            with reward_flags(env, tracking_far_weight=0.25):
+                blended = rewards_for(env, reset_state, spin)["tracking_ang_vel"]
+        far_parts[relative] = blended - 0.75 * bare
+
+    assert far_parts[False] == pytest.approx(far_parts[True], rel=1e-3)
+    assert far_parts[False] == pytest.approx(0.25 * float(jp.exp(-2.25 / 2.5)), rel=1e-3)
+
+
+def test_tracking_far_leaves_the_other_terms_untouched(env, reset_state):
+    off = rewards_for(env, reset_state, _MIXED_CMD)
+    with reward_flags(env, tracking_far_weight=0.25):
+        on = rewards_for(env, reset_state, _MIXED_CMD)
+    for key in off:
+        if key.startswith("tracking_"):
+            continue
+        assert on[key] == off[key], key
+
+
 def test_tracking_product_keeps_the_reward_key_order(env, reset_state):
     """The reward sum's float addition order follows dict insertion order, so
     the product must not move or add a key."""
