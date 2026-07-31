@@ -28,8 +28,9 @@ scenarios of the documented wall-clock length:
   spin_right    -- pure spin, wz=-0.5 rad/s held. 6 s.
 
 Robustness grid (port item 4.4): --alpha, --lag-tau and --torque-envelope
-perturb the plant for one measurement, and --out keeps that measurement off
-the canonical battery.json. The mechanisms live in eval/grid.py and the
+perturb the plant for one measurement. Any of them requires --out, so a
+perturbed measurement cannot reach the canonical battery.json even by
+forgetting the flag. The mechanisms live in eval/grid.py and the
 aggregator in eval/grid_report.py; run_battery below holds the one branch
 between the native and the explicit-PD rollout paths, documented there.
 """
@@ -650,15 +651,33 @@ def run_battery(
     return results
 
 
+def armed_grid_flags(alpha, lag_tau, torque_envelope) -> list[str]:
+    """The robustness-grid flags this invocation actually perturbs with.
+
+    Empty for the canonical battery -- the baseline cell is the native path
+    (alpha 1.0, no lag, no envelope), so a run of it is not a grid cell and
+    may write <run>/battery.json. `torque_envelope` is the raw CLI string:
+    presence is what arms it, and a malformed one is rejected separately.
+    """
+    return [
+        name for name, on in (
+            ("--alpha", float(alpha) != 1.0),
+            ("--lag-tau", float(lag_tau) != 0.0),
+            ("--torque-envelope", torque_envelope is not None),
+        ) if on
+    ]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", required=True, type=Path)
     ap.add_argument(
         "--out", default=None, type=Path,
-        help="write here instead of <run>/battery.json. Every robustness-grid "
-        "cell passes this: a perturbed measurement must never land on top of "
-        "the run's canonical number table. eval/grid.py's cell_name is the "
-        "filename eval/grid_report.py aggregates.",
+        help="write here instead of <run>/battery.json. REQUIRED whenever any "
+        "of --alpha/--lag-tau/--torque-envelope perturbs the plant: a "
+        "robustness-grid cell must never land on top of the run's canonical "
+        "number table. eval/grid.py's cell_name is the filename "
+        "eval/grid_report.py aggregates.",
     )
     ap.add_argument(
         "--alpha", type=float, default=1.0,
@@ -681,6 +700,19 @@ def main():
         "static cap. Forces the explicit-PD path even at --lag-tau 0.",
     )
     args = ap.parse_args()
+
+    armed = armed_grid_flags(args.alpha, args.lag_tau, args.torque_envelope)
+    if armed and args.out is None:
+        # Same shape as build_model.py's "--set requires --out": the default
+        # path is the canonical artifact, and a perturbed measurement must
+        # not be able to land on it -- not even by forgetting a flag.
+        ap.error(
+            f"{', '.join(armed)} requires --out: the default <run>/battery.json is "
+            "the run's canonical, unperturbed number table and a robustness-grid "
+            "cell must not overwrite it. eval/grid.py's cell_name is the filename "
+            "eval/grid_report.py aggregates"
+        )
+
     try:
         torque_envelope = grid.parse_torque_envelope(args.torque_envelope)
     except ValueError as exc:

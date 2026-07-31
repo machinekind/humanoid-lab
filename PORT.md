@@ -205,7 +205,7 @@ Run this against the full diff at the end of the port.
 - [ ] Battery JSON changes are additive.
 - [x] The robustness grid's baseline cell is documented as the native path. `eval/grid.py`'s docstring, `run_battery`'s docstring, docs/configuration.md and every rendered grid report say so, and each names w01-tek's contrary claim as false.
 - [x] The explicit-PD path reproduces the native pipeline within a stated tolerance as lag goes to zero. A test proves it. Measured 1.0e-6 relative on `tracking_err_rms`; `tests/integration/test_grid_env.py` asserts 1e-4.
-- [x] Grid outputs never overwrite the canonical battery.json. `--out` is required for every cell, and a unit test pins that battery.json's content and mtime survive a cell write.
+- [x] Grid outputs never overwrite the canonical battery.json. The CLI refuses to run with any of `--alpha`/`--lag-tau`/`--torque-envelope` unless `--out` is given, so a cell cannot reach the default path even by forgetting the flag; `--out` stays optional for the unperturbed battery, which IS the canonical measurement. Unit tests pin the refusal per flag and that battery.json's content and mtime survive a cell write.
 
 ### Deploy contract
 - [x] Every env config key is classified as consumed or training-only. Leaf paths, so `reward.scales.pose` is its own entry; `tests/unit/test_deploy_contract.py` walks `default_config()` and also fails on a ledger entry the config no longer has.
