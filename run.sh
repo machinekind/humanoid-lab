@@ -8,6 +8,11 @@ case "${1:-}" in
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
+  # Warp contact/constraint budget measurement (port item 2.2). Forced onto
+  # CPU like `check`: it is a sizing probe, and the jax backend is where the
+  # active-contact count is readable without a GPU box. Passthrough args:
+  # --robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out path.json].
+  check-contacts) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_contacts "$@" ;;
   # The split (port item 0.1, tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
@@ -99,7 +104,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--scenario name] [--steps N] [--out path.mp4].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval} [args]"
     exit 1
     ;;
 esac

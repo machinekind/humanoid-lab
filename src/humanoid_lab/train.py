@@ -91,6 +91,44 @@ def build_ppo_params(overrides, smoke: bool):
     return p
 
 
+# Contact-budget preflight (port item 2.2). Deliberately smaller than
+# check_contacts' own defaults (200 steps x 5 seeds): this runs in front of
+# every training job, and three seeds is what the fallen sweep's three
+# attitudes need. It is a warning system, not the sizing measurement -- use
+# `./run.sh check-contacts` for that.
+PREFLIGHT_STEPS = 100
+PREFLIGHT_SEEDS = 3
+
+
+def _contact_preflight(env, cfg) -> dict:
+    """The `contacts` block run.json carries, from a probe run before training.
+
+    Why a probe rather than the training loop: brax's PPO loop is one jitted
+    scan, so no Python-side code ever holds an `mjx.Data` while it runs and
+    the live warp counters are unreachable from there. A short probe on the
+    training env itself, on the real backend, measures the same per-world
+    peaks -- and it runs BEFORE the job spends GPU hours, which is the point
+    of a preflight: an undersized buffer is a silent wrong-physics bug, not a
+    crash, so the only cheap moment to catch it is before the run.
+
+    `smoke=true` skips the probe (a smoke run checks the pipeline, and the
+    probe costs more than the training does), and `contact_preflight=false`
+    turns it off. The block is written either way, with null peaks when
+    nothing measured them, so run.json's shape never depends on the switch.
+    """
+    from humanoid_lab import check_contacts, sim_budget
+
+    if cfg.smoke or not cfg.get("contact_preflight", True):
+        return sim_budget.budget_report_for_env(env, None, None)
+    measured = check_contacts.measure_env(env, PREFLIGHT_STEPS, PREFLIGHT_SEEDS)
+    peak = measured["peak"]
+    # nefc is only reported when the backend measured it. check_contacts
+    # derives a row count on jax for its own sizing table; run.json must not
+    # carry a field whose meaning changes with the backend that wrote it.
+    nefc = peak["nefc_max"] if not measured["nefc_derived"] else None
+    return sim_budget.budget_report_for_env(env, peak["nacon_max"], nefc)
+
+
 def _wandb_group(cfg: DictConfig) -> str | None:
     group = cfg.wandb.get("group")
     if group:
@@ -146,6 +184,16 @@ def main(cfg: DictConfig) -> None:
     env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     eval_env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     print(f"actor obs ({len(env.actor_obs_names)} components): {env.actor_obs_names}")
+
+    contacts = _contact_preflight(env, cfg)
+    print(f"contacts: {contacts}")
+    if contacts["overflow"] or contacts["rows_overflow"]:
+        print(
+            "WARNING: the preflight already reached a warp buffer ceiling. Warp drops "
+            "the overflow silently, so this run would be training against dropped "
+            "contacts or unenforced constraint rows. Raise task.env.sim.naconmax_per_env "
+            "/ njmax (see ./run.sh check-contacts) before trusting the result."
+        )
 
     # Episode length follows the env config unless ppo yaml overrides it.
     # Smoke keeps episodes short too: brax's eval unrolls full episodes, so
@@ -286,6 +334,10 @@ def main(cfg: DictConfig) -> None:
                     metrics.get("eval/episode_reward", float("nan"))
                 ),
                 "checkpoint_dir": str(ckpt_dir),
+                # Warp contact/constraint budgets and the preflight's peaks.
+                # Same schema as battery.json's, on every backend, so a GPU
+                # run and a local one diff without branching.
+                "contacts": contacts,
                 "env_config": env._config.to_dict(),
                 "ppo_config": ppo_params.to_dict(),
                 "hydra_config": OmegaConf.to_container(cfg, resolve=True),

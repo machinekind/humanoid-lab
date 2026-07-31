@@ -126,6 +126,7 @@ relates to `configs/actuators/<name>.yaml`.
 ```bash
 ./run.sh build --robot <name> --preset <preset>
 ./run.sh check --robot <name> --preset <preset>
+./run.sh check-contacts --robot <name> --preset <preset>
 ```
 
 `build` compiles `robot.yaml` plus the named preset and writes
@@ -133,6 +134,14 @@ relates to `configs/actuators/<name>.yaml`.
 MuJoCo, plus a short MJX rollout unless `--skip-mjx` is set. It fails on
 NaN, or if `|qvel|` exceeds `--max-qvel` (default 100 rad/s). Both gates
 must pass before the robot is usable for training.
+
+`check-contacts` measures the per-world contact and constraint-row peaks a
+new robot reaches and prints the warp budgets they need. A robot with more
+foot collision geoms than the ones already here can outgrow
+`task.env.sim.naconmax_per_env` / `njmax`, and warp drops the overflow
+silently — see `docs/configuration.md`'s warp contact budgets section. Add
+the new robot to `tests/integration/test_check_contacts.py`'s `ROBOTS` list
+so the guard covers it.
 
 ## 5. Add `tests/integration/test_<name>.py`
 

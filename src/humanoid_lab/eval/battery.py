@@ -38,6 +38,8 @@ import jax.numpy as jp
 import numpy as np
 from ml_collections import config_dict
 
+from humanoid_lab import sim_budget
+
 # -- pure metric functions -------------------------------------------------
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
 # needed, so these are unit-tested directly in tests/test_battery.py
@@ -125,6 +127,19 @@ def antiphase_score(contact_left, contact_right) -> float:
         return 0.5
     corr = float((a * b).sum() / denom)
     return 0.5 * (1.0 - corr)
+
+
+def peak_over(values) -> int | None:
+    """Largest of `values`, ignoring the unmeasured ones, or None if none was.
+
+    The battery's per-step budget readings are None wherever the backend has
+    no counter for them (every step, for the constraint rows on jax). None has
+    to survive as None: reported as 0 it would read as a measured peak of
+    zero, which is the one reading that can never happen while the robot is
+    standing on a floor.
+    """
+    seen = [int(v) for v in values if v is not None]
+    return max(seen) if seen else None
 
 
 def scenario_result(name: str, rec: dict, fell_at: int | None, dt: float, torque_cap) -> dict:
@@ -323,10 +338,11 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     jitted callables across every scenario (mirrors w01-tek
     wojtek_rl/battery.py's rollout()).
 
-    Returns (rec, fell_at): `rec` maps signal name -> np.ndarray over the
-    steps taken (through and including the step that trips `done`, if
-    any); `fell_at` is that step's index, or None if the scenario
-    completed without falling.
+    Returns (rec, fell_at, budget): `rec` maps signal name -> np.ndarray over
+    the steps taken (through and including the step that trips `done`, if
+    any); `fell_at` is that step's index, or None if the scenario completed
+    without falling; `budget` is the (contacts, rows) peak of this scenario,
+    either of which is None where the backend has no counter for it.
     """
     rng = jax.random.PRNGKey(seed)
     state = reset(rng)
@@ -334,6 +350,7 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         "cmd": [], "vx": [], "vy": [], "wz": [], "height": [],
         "qvel": [], "contact": [], "foot_speed": [], "tau": [],
     }
+    nacon_seen, nefc_seen = [], []
     fell_at = None
     for i in range(n_steps):
         cmd = jp.array(cmd_at(i))
@@ -359,10 +376,18 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         rec["foot_speed"].append(foot_speed)
         rec["tau"].append(np.asarray(d.actuator_force))
 
+        # Warp's contact and constraint-row budgets, sampled every step. The
+        # rollout is a plain Python loop, so this is a numpy read per step and
+        # costs nothing worth avoiding.
+        nacon, nefc = sim_budget.observed_peaks(d)
+        nacon_seen.append(nacon)
+        nefc_seen.append(nefc)
+
         if bool(state.done):
             fell_at = i
             break
-    return {k: np.array(v) for k, v in rec.items()}, fell_at
+    budget = (peak_over(nacon_seen), peak_over(nefc_seen))
+    return {k: np.array(v) for k, v in rec.items()}, fell_at, budget
 
 
 def run_battery(run_dir: Path) -> dict:
@@ -376,9 +401,20 @@ def run_battery(run_dir: Path) -> dict:
     torque_cap = np.asarray(env.mj_model.actuator_forcerange[:, 1])
 
     results = {"run": run["run_name"], "checkpoint": ckpt.name}
+    nacon_seen, nefc_seen = [], []
     for name, (cmd_at, n_steps) in battery_scenarios(env.dt).items():
-        rec, fell_at = rollout(env, reset, step, inf, cmd_at, n_steps)
+        rec, fell_at, (nacon, nefc) = rollout(env, reset, step, inf, cmd_at, n_steps)
         results[name] = scenario_result(name, rec, fell_at, env.dt, torque_cap)
+        nacon_seen.append(nacon)
+        nefc_seen.append(nefc)
+
+    # One warp budget block for the whole battery, same schema as run.json's
+    # (sim_budget.budget_report_for_env is the single writer of both). Peaks
+    # are over every scenario: which one touched the ceiling does not change
+    # what the ceiling has to be.
+    results["contacts"] = sim_budget.budget_report_for_env(
+        env, peak_over(nacon_seen), peak_over(nefc_seen)
+    )
     return results
 
 

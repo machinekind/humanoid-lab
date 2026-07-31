@@ -38,7 +38,9 @@ _VEL_ERR_ATTENTION = 0.3  # mean |cmd - achieved| per axis, m/s or rad/s
 _TORQUE_SAT_ATTENTION = 0.05  # fraction of (step, joint) samples over 0.95*cap
 _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
-_META_KEYS = ("run", "checkpoint", "timestamp")
+# battery.json keys that are not scenarios. `contacts` is the warp budget
+# block (see sim_budget.budget_report); it gets its own section below.
+_META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
 
 
 def _fmt(v, nd: int = 3) -> str:
@@ -109,7 +111,41 @@ def render_markdown(battery: dict) -> str:
             f"{_fmt(r.get('antiphase_score'))} |"
         )
 
+    contacts = battery.get("contacts")
+    if contacts:
+        lines += [
+            "",
+            "## Contact budgets",
+            "",
+            f"- backend: {contacts.get('backend', '?')}",
+            f"- contacts: peak {_fmt(contacts.get('nacon_max'))} of "
+            f"{contacts.get('naconmax_per_env', '?')} per env "
+            f"(pool {contacts.get('pool', '?')} over {contacts.get('num_envs', '?')} envs)",
+            f"- constraint rows: peak {_fmt(contacts.get('nefc_max'))} of "
+            f"{contacts.get('njmax', '?')} per world",
+        ]
+        if contacts.get("nacon_max") is None or contacts.get("nefc_max") is None:
+            lines.append(
+                "- a `-` peak was not measured: the jax backend has no live counter "
+                "for it and no budget to overflow"
+            )
+
     lines += ["", "## Attention", ""]
+    if contacts and contacts.get("overflow"):
+        lines.append(
+            f"- **contacts: ATTENTION** -- the contact pool overflowed "
+            f"({contacts.get('nacon_max')} >= naconmax_per_env "
+            f"{contacts.get('naconmax_per_env')}). Warp drops the overflow silently, "
+            "so every number above was measured on a simulation missing contacts. "
+            "Raise the budget and re-run."
+        )
+    if contacts and contacts.get("rows_overflow"):
+        lines.append(
+            f"- **contacts: ATTENTION** -- the constraint rows overflowed "
+            f"({contacts.get('nefc_max')} >= njmax {contacts.get('njmax')}). Rows past "
+            "njmax apply no force, with no warning anywhere. Raise the budget and "
+            "re-run."
+        )
     for name in scenario_names:
         flags = scenario_flags(name, battery[name])
         if flags:

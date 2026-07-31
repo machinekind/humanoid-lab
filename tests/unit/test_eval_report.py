@@ -122,3 +122,51 @@ def test_build_report_missing_battery_json_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         build_report(run_dir)
+
+
+# -- the contacts block ------------------------------------------------------
+
+_CONTACTS = {
+    "backend": "warp",
+    "nacon_max": 31,
+    "naconmax_per_env": 224,
+    "num_envs": 1,
+    "pool": 224,
+    "overflow": False,
+    "nefc_max": 160,
+    "njmax": 1120,
+    "rows_overflow": False,
+}
+
+
+def test_the_contacts_block_is_not_rendered_as_a_scenario():
+    """battery.json carries a `contacts` block alongside the scenarios. It has
+    none of a scenario's fields, so a renderer that mistook it for one would
+    emit a row of dashes and a bogus PASS line for it."""
+    md = render_markdown({**BATTERY, "contacts": _CONTACTS})
+
+    assert "| contacts |" not in md
+    assert "- contacts: PASS" not in md
+
+
+def test_the_contacts_block_is_reported_with_its_budgets():
+    md = render_markdown({**BATTERY, "contacts": _CONTACTS})
+
+    assert "31" in md and "224" in md and "1120" in md
+
+
+def test_an_overflowed_budget_is_flagged():
+    """Warp drops both overflows silently, so the report is the only place a
+    reader can find out that the numbers above it were measured on a
+    simulation missing contacts."""
+    over = {**_CONTACTS, "nacon_max": 224, "overflow": True}
+    md = render_markdown({**BATTERY, "contacts": over})
+
+    assert "ATTENTION" in md
+    assert "naconmax_per_env" in md
+
+
+def test_a_battery_without_a_contacts_block_still_renders():
+    """battery.json files written before the block existed."""
+    md = render_markdown(BATTERY)
+    assert "# Eval report" in md

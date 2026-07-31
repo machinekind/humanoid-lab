@@ -165,6 +165,7 @@ CI before it costs GPU time.
 | `smoke` | `false` | Shrinks PPO to a tiny CPU-sized budget (100k steps, 64 envs) and caps episode length at 200 steps. `run.sh smoke` also forces `JAX_PLATFORMS=cpu` and `wandb.enable=false`. |
 | `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. |
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
+| `contact_preflight` | `true` | Measure the warp contact/constraint peaks on a short probe before training and record them in `run.json`. Skipped automatically under `smoke=true`. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
 | `wandb.project` | `humanoid-lab` | W&B project name. |
 | `wandb.group` | `null` | W&B run group. Defaults to the selected experiment's name, or stays `null` if no experiment is selected. An explicit value wins over that default. |
@@ -508,6 +509,77 @@ DR is training-only, and the goldens roll out with DR off.
 `tests/integration/test_randomize.py` pins both the index domain and the
 decorrelation.
 
+## Warp contact budgets (`task.env.sim`)
+
+Only the warp backend reads these. `envs/backend.py`'s `make_data_fn` passes
+them to `mjx.make_data` on the warp branch and calls `make_data(mjx_model)`
+with no kwargs on the jax branch, so changing either one cannot move a jax
+rollout by a bit.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `sim.backend` | `auto` | `auto` picks warp on a CUDA host and jax elsewhere. `jax` and `warp` pass through. |
+| `sim.naconmax_per_env` | `224` | Contact budget per world. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
+| `sim.njmax` | `1120` | Constraint-row budget per world. Never multiplied by the env count. |
+| `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
+
+Both overflows are silent. Contacts past `naconmax` are dropped; rows past
+`njmax` apply no force, and nothing warns anywhere — no counter reports it and
+no exception is raised, so a run just trains against a robot whose feet half
+pass through the floor.
+
+**Measured 2026-07-31**, `./run.sh check-contacts --robot R --preset P`, 200
+control steps × 5 seeds per regime. Per-world peaks, contacts / constraint
+rows:
+
+| robot / preset | standing | walking | fallen |
+|---|---:|---:|---:|
+| `asimov_v1` / `sizing_ideal` | 32 / 157 | 30 / 149 | 22 / 117 |
+| `asimov_v1` / `deploy_pd` | 31 / 153 | 29 / 145 | 22 / 117 |
+| `roboto_origin` / `sizing_ideal` | 12 / 118 | 9 / 100 | 13 / 124 |
+| `roboto_origin` / `deploy_pd` | 12 / 118 | 12 / 118 | 13 / 124 |
+
+Worst case 32 contacts and 157 rows, both on `asimov_v1`, whose 20 foot geoms
+put up to two contacts each on the floor plane the moment both feet are flat.
+At w01-tek's ~7× headroom that is 224 and 1120. The previous defaults, 32 and
+320, carried from w01-tek's quadruped, put `naconmax_per_env` exactly **on**
+asimov's standing peak.
+
+The fallen regime does not dominate here, unlike w01-tek's. A neutral action
+holds neither robot's home keyframe up under the stock preset gains, so
+"standing" is itself a collapse and its opening steps carry the highest count.
+
+Two facts for the debugging that follows a resize. The pool is a real
+device-memory line item: 224 at 4096 envs is a 917,504-contact allocation, and
+w01-tek ran a 4096-env job out of device memory on a 256 pool. And one MJX step
+is not batch-shape invariant on the jax CPU backend, so a batched-versus-
+sequential parity check has to compare integer outcomes, never floats.
+
+`tests/integration/test_check_contacts.py` fails if new collision geometry
+outgrows the configured budgets.
+
+### The `contacts` block
+
+`run.json` and `battery.json` both carry a `contacts` block with identical
+keys on every backend, so a remote GPU run and a local CPU run diff without
+branching:
+
+| Field | Meaning |
+|---|---|
+| `backend` | `jax` or `warp`, as resolved for that run. |
+| `nacon_max` | Peak contacts in one world, or `null` if nothing measured it. |
+| `nefc_max` | Peak constraint rows in one world. Always `null` on jax: its `_impl.nefc` is a static buffer size, not a count. |
+| `naconmax_per_env`, `njmax`, `num_envs` | The budgets the run was configured with. |
+| `pool` | `naconmax_per_env * num_envs`, the device allocation. |
+| `overflow` | `backend == "warp"` and `nacon_max >= naconmax_per_env`. |
+| `rows_overflow` | `backend == "warp"` and `nefc_max >= njmax`. |
+
+`battery.json`'s peaks come from the battery's own rollouts, sampled every
+step. `run.json`'s come from the `contact_preflight` probe: brax's PPO loop is
+one jitted scan, so no Python-side code holds an `mjx.Data` while training
+runs and the live counters are unreachable from there. The probe measures the
+same per-world peaks on the same backend, before the job spends GPU hours.
+
 ## Early stopping (`early_stop`)
 
 Off by default. When on, the trainer ends a run whose eval reward has stopped
@@ -551,6 +623,7 @@ Read from `run.sh` as it stands today:
 | `smoke` | `JAX_PLATFORMS=cpu python -m humanoid_lab.train smoke=true wandb.enable=false` | CPU pipeline check. |
 | `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
+| `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
 | `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
