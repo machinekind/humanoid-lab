@@ -150,8 +150,15 @@ class HumanoidEnv(mjx_env.MjxEnv):
         joint_range = np.array([m.joint(n).range for n in rs.actuated_joints])
         center = (joint_range[:, 0] + joint_range[:, 1]) / 2.0
         half = (joint_range[:, 1] - joint_range[:, 0]) / 2.0 * self._preset.soft_limit_factor
-        lo = np.where(ctrllimited, ctrlrange[:, 0], center - half)
-        hi = np.where(ctrllimited, ctrlrange[:, 1], center + half)
+        # The soft joint limits themselves, always in RADIANS whatever the
+        # actuator model's ctrl unit is. _ctrl_lo/_ctrl_hi below are them for
+        # a pd preset and the actuator's own force envelope in Nm for an
+        # ideal-torque one, so anything that clips an ANGLE (the settled-pose
+        # anchor) has to read these two rather than those.
+        self._soft_lo = np.asarray(center - half)
+        self._soft_hi = np.asarray(center + half)
+        lo = np.where(ctrllimited, ctrlrange[:, 0], self._soft_lo)
+        hi = np.where(ctrllimited, ctrlrange[:, 1], self._soft_hi)
         self._ctrl_lo = jp.array(lo)
         self._ctrl_hi = jp.array(hi)
 
@@ -170,15 +177,20 @@ class HumanoidEnv(mjx_env.MjxEnv):
             )
         self._foot_geom_foot_idx = jp.array(foot_idx)
 
-        # Foot-site resting height above the floor at the reset keyframe
-        # pose. foot_sites are named MJCF sites, not the sole surface
-        # itself, so they sit a few mm above the geoms that actually touch
-        # the ground; a planted foot's raw site z never reaches 0. Computed
-        # once here (mj_forward on the CPU model at construct time, plain
-        # numpy -- never traced) and subtracted from site z wherever gait
-        # clearance is scored, so a planted foot reads ~0 clearance
-        # (w01-tek's own geom-bottom semantic, reproduced without needing a
-        # geom-bottom computation at every step).
+        # Foot-site height at the reset keyframe pose. foot_sites are named
+        # MJCF sites, not the sole surface itself, so they sit a few mm above
+        # the geoms that actually touch the ground; a planted foot's raw site
+        # z never reaches 0. Computed once here (mj_forward on the CPU model
+        # at construct time, plain numpy -- never traced) and subtracted from
+        # site z wherever gait clearance is scored.
+        #
+        # This is the KEYFRAME's site height, not the floor-referenced one.
+        # The keyframe deliberately floats the robot a few mm up (5 mm on
+        # asimov, 3 mm on roboto), so that margin is baked in and a planted
+        # foot reads that much NEGATIVE, not 0 -- see _foot_clearance and
+        # docs/lessons/foot-clearance.md. Deliberately not corrected during
+        # the port: feet_phase is a pre-port term at scale 1.0, so moving
+        # this shifts stock rewards and needs a golden regeneration.
         rest_data = mujoco.MjData(m)
         rest_data.qpos[:] = home_qpos_np
         mujoco.mj_forward(m, rest_data)
@@ -228,8 +240,9 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
         The copy is deliberately not this run's plant. Every actuator becomes
         the same stiff position servo (kp 400, kd 20) with its force cap
-        removed, so the pose that comes out is a function of the geometry
-        alone and every actuator preset anchors on the same one. kp 400
+        removed, so the pose that comes out is a function of the geometry and
+        the soft-limit envelope alone: every gain set and every actuator
+        model at a given `soft_limit_factor` anchors on the same one. kp 400
         leaves about 5e-3 rad of residual sag, which is the accepted
         tolerance (w01-tek's docstring claims kp 2000 / kd 100; its code, and
         this, use 400 / 20). implicitfast plus a 5e-4 timestep keep that
@@ -252,8 +265,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # target angle, not a servo. Forcing the TYPES makes the settle
         # identical for every actuator model, which is the entire point of
         # the mechanism. ctrllimited goes with them: a torque preset's
-        # ctrlrange is in Nm, and the targets below are radians clipped to
-        # the runtime bounds already.
+        # ctrlrange is in Nm, and the targets below are radians, clipped to
+        # the soft joint limits in their own unit.
         m.actuator_gaintype[:] = mujoco.mjtGain.mjGAIN_FIXED
         m.actuator_biastype[:] = mujoco.mjtBias.mjBIAS_AFFINE
         m.actuator_ctrllimited[:] = 0
@@ -265,16 +278,24 @@ class HumanoidEnv(mjx_env.MjxEnv):
         m.opt.timestep = 5e-4
         m.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
 
-        # Clip with the RUNTIME target bounds, not the raw ctrlrange. step()
-        # clips motor targets to _ctrl_lo/_ctrl_hi (the preset's soft limits
-        # for a pd actuator), so a pose settled past those is one the policy
-        # can never command. w01-tek documents this trap; here it also matters
-        # that a pd preset's raw ctrlrange is [0, 0] -- those actuators are
-        # ctrllimited=False, and clipping to it would command every joint to
-        # zero.
-        ctrl = np.clip(
-            np.asarray(self._default_pose), np.asarray(self._ctrl_lo), np.asarray(self._ctrl_hi)
-        )
+        # Clip with the preset's SOFT JOINT LIMITS, not the raw ctrlrange and
+        # not _ctrl_lo/_ctrl_hi. The targets here are angles: step() clips a
+        # pd preset's motor targets to the soft limits, so a pose settled
+        # past them is one the policy can never command. w01-tek documents
+        # that trap, and its actuators are always position servos so its
+        # ctrlrange serves both jobs. Ours does not. A pd preset's raw
+        # ctrlrange is [0, 0] (ctrllimited=False), and clipping to it would
+        # command every joint to zero; an ideal_torque preset's _ctrl_hi is
+        # its forcerange in Nm, and clipping radians to +-120 does nothing at
+        # all. Reading the angle envelope directly keeps the clip in one unit
+        # for every actuator model.
+        #
+        # So the anchor is invariant across actuator MODELS and gain sets at
+        # a given soft_limit_factor. It is NOT invariant to the factor, and
+        # should not be: a preset that tightens the runtime envelope moves
+        # the pose the policy can hold, which is preset policy, not an
+        # actuator detail.
+        ctrl = np.clip(np.asarray(self._default_pose), self._soft_lo, self._soft_hi)
 
         data = mujoco.MjData(m)
         mujoco.mj_resetData(m, data)
@@ -394,13 +415,21 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return data.site_xpos[self._foot_site_ids]
 
     def _foot_clearance(self, data):
-        """Per-foot height above the floor, sole-referenced.
+        """Per-foot site height, referenced to the RESET KEYFRAME's site
+        height.
 
-        foot_sites are named MJCF sites, not the sole surface, so they sit a
-        few mm above the geoms that touch the ground (see
-        `_foot_site_rest_z`). Subtracting the construct-time resting height
-        makes a planted foot read ~0, matching the gait clock's own stance
-        target of 0 and w01-tek's geom-bottom semantic.
+        Not floor-referenced, and not w01-tek's geom-bottom semantic. w01-tek
+        computes `geom_z - FOOT_RADIUS`, which is exactly 0 for a resting
+        sphere at any orientation. Here `_foot_site_rest_z` is measured at
+        the reset keyframe, whose base height deliberately floats the lowest
+        sole a few mm above the floor, so every reading is biased low by that
+        margin: measured 4.92 mm on asimov_v1 and 3.11 mm on roboto_origin.
+
+        A planted foot therefore reads about -5 mm (asimov) or -3 mm
+        (roboto), never 0, and a swing apex reads low by the same offset --
+        which shifts what `feet_phase`'s stance target of 0, `apex_target`
+        and `glide_height` mean in physical metres. The numbers and the
+        deferred fix are in docs/lessons/foot-clearance.md.
         """
         return self._foot_site_pos(data)[:, 2] - self._foot_site_rest_z
 

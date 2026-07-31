@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from humanoid_lab.eval.battery import (
+    _measurement_env_overrides,
     antiphase_score,
     battery_scenarios,
     foot_slip,
@@ -196,3 +197,66 @@ def test_scenario_step_counts_scale_with_dt():
     n_slow = battery_scenarios(0.04)["stand"][1]
 
     assert n_fast == 2 * n_slow
+
+
+# -- the measurement env overrides -------------------------------------------
+#
+# Pure dict logic over run.json's recorded hydra_config, so it belongs in the
+# fast suite: no env, no model.
+
+
+def _run(env_block: dict) -> dict:
+    return {"hydra_config": {"task": {"env": env_block}}}
+
+
+def test_a_run_trained_with_the_no_progress_cut_measures_with_it_off():
+    """The battery measures; it does not train. A probabilistic termination
+    is not a fall, but rollout() reports every `done` as one, so a run that
+    opted into the cut would have its scenarios scored as falls that never
+    happened."""
+    overrides = _measurement_env_overrides(_run({"no_progress": {"enable": True}}))
+
+    assert overrides["no_progress"]["enable"] is False
+
+
+def test_neutralising_the_cut_keeps_the_run_s_other_no_progress_settings():
+    """Only `enable` is measurement-only. A run's re-derived grace/hazard
+    numbers stay in the rebuilt config, so run.json still reconstructs the
+    env the run trained with in every respect the battery does not need to
+    change."""
+    overrides = _measurement_env_overrides(
+        _run({"no_progress": {"enable": True, "grace_sec": 3.5, "p_max": 0.05}})
+    )
+
+    assert overrides["no_progress"]["grace_sec"] == 3.5
+    assert overrides["no_progress"]["p_max"] == 0.05
+
+
+def test_the_cut_is_neutralised_even_when_the_run_never_mentioned_it():
+    """A run.json from before the switch existed, or one that left it at the
+    default, still gets the explicit off -- the battery's env does not depend
+    on what the recorded config happened to contain."""
+    overrides = _measurement_env_overrides(_run({}))
+
+    assert overrides["no_progress"]["enable"] is False
+
+
+def test_pushes_and_the_command_resample_are_still_neutralised():
+    """The two older measurement-only changes, pinned alongside the new one."""
+    overrides = _measurement_env_overrides(
+        _run({"push": {"enable": True, "interval_range": [5, 10]}, "command": {"resample_steps": 500}})
+    )
+
+    assert overrides["push"]["enable"] is False
+    assert overrides["push"]["interval_range"] == [5, 10]
+    assert overrides["command"]["resample_steps"] == 10_000_000
+
+
+def test_every_other_key_of_the_run_s_env_block_survives():
+    """The rebuild is the run's own env, minus the measurement-only changes."""
+    overrides = _measurement_env_overrides(
+        _run({"real_pose_ref": True, "reward": {"scales": {"pose": -1.0}}})
+    )
+
+    assert overrides["real_pose_ref"] is True
+    assert overrides["reward"] == {"scales": {"pose": -1.0}}

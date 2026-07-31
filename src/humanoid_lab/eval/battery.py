@@ -251,20 +251,35 @@ def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
 
 
 def _measurement_env_overrides(run: dict) -> dict:
-    """The run's own task.env overrides, plus two measurement-only
+    """The run's own task.env overrides, plus three measurement-only
     changes: pushes disabled (they contaminate vibration/slip/stand
     metrics -- robustness is trained, not measured here, same rationale as
-    w01-tek wojtek_rl/battery.py's load_checkpoint_policy) and the
+    w01-tek wojtek_rl/battery.py's load_checkpoint_policy), the
     command auto-resample effectively disabled (envs/joystick.py's
     step() resamples a random command every `command.resample_steps`
     control steps; left at its default that would clobber this battery's
     own scripted command trajectories mid-scenario, since rollout() drives
     the command by mutating state.info["command"] every step rather than
-    through the env's own sampler)."""
+    through the env's own sampler), and the no-progress cut disabled.
+
+    The cut is off for two reasons. A probabilistic termination is not a
+    fall, and rollout() reports every `done` as one (`fell_at`), so a run
+    trained with the cut on would have scenarios scored as falls that never
+    happened -- on exactly the under-delivering checkpoints the battery
+    exists to diagnose. And the battery drives the command from outside the
+    sampler, so neither of the cut's two safety valves works here: the
+    grace window and the EMA reseed both hang off the resample branch that
+    the override above has just disabled, so a scripted command change
+    (walk_ramp's ramp, walk_to_stop's switch) re-arms nothing and the meter
+    keeps a seed taken from the env's own random reset command. A battery
+    that ever wants to MEASURE the cut has to reseed info["progress_ema"]
+    and zero info["steps_since_cmd"] itself whenever cmd_at changes the
+    command."""
     hydra = run.get("hydra_config") or {}
     overrides = dict((hydra.get("task") or {}).get("env") or {})
     overrides["push"] = {**(overrides.get("push") or {}), "enable": False}
     overrides["command"] = {**(overrides.get("command") or {}), "resample_steps": 10_000_000}
+    overrides["no_progress"] = {**(overrides.get("no_progress") or {}), "enable": False}
     return overrides
 
 

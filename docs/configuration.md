@@ -279,6 +279,13 @@ The physical reference for touchdown softness is free fall over the band:
 penalty on the tracking kernel would relax it exactly when tracking is
 failing, which is when feet are being slammed into the floor.
 
+"At the floor" and "at `glide_height`" are clearance readings, not physical
+heights: `_foot_clearance` is referenced to the reset keyframe, which floats
+the feet a few mm, so both this band and `apex_target` sit about 5 mm
+(asimov) or 3 mm (roboto) below the physical height they name. The
+measurement and the deferred fix are in
+[docs/lessons/foot-clearance.md](lessons/foot-clearance.md).
+
 | Key | Default | Meaning |
 |---|---:|---|
 | `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
@@ -304,10 +311,15 @@ and anchors `pose`, `stand_still` and the reset pose on the result. Every
 actuator on the copy becomes the same stiff position servo — kp 400, kd 20,
 force cap removed, timestep 5e-4, `implicitfast` — held at the keyframe
 targets for two simulated seconds. The pose that comes out does not depend
-on the runtime gains or the actuator model: two gain sets and two actuator
-models settle to bit-identical anchors. Mechanism properties are not
-factored out: a preset that changes joint armature (roboto's presets do)
-moves the two-second settle, measured at about 5e-5 rad there. Compensating the real plant's sag to reach that pose
+on the runtime gains or the actuator model: at a given `soft_limit_factor`,
+two gain sets and two actuator models settle to bit-identical anchors.
+Two things are deliberately not factored out. A preset that changes joint
+armature (roboto's presets do) moves the two-second settle, measured at about
+5e-5 rad there — armature is a property of the mechanism, not a gain. And a
+preset that changes `soft_limit_factor` moves the clip below, and with it the
+anchor: roboto's home pose is inside its 0.9 soft limits and 0.029 rad
+outside its 0.8 ones. The runtime envelope is preset policy, not an actuator
+detail. Compensating the real plant's sag to reach that pose
 is the policy's job. Cost is about 0.2 s of plain CPU MuJoCo, and only when
 the flag is on.
 
@@ -320,12 +332,16 @@ anchor and its pose reference.
 
 Two details are load-bearing:
 
-- The settle targets are clipped to the **runtime target bounds**
-  (`_ctrl_lo`/`_ctrl_hi`, the preset's soft limits), not to the model's raw
-  `ctrlrange`. `step()` clips motor targets to those bounds, so a pose
-  settled past them is one the policy can never command. A `pd` preset's raw
-  ctrlrange is `[0, 0]` besides — those actuators are deliberately
-  `ctrllimited=False`.
+- The settle targets are clipped to the preset's **soft joint limits**
+  (`joint range × soft_limit_factor`, in radians), not to the model's raw
+  `ctrlrange` and not to `_ctrl_lo`/`_ctrl_hi`. `step()` clips a `pd`
+  preset's motor targets to those soft limits, so a pose settled past them is
+  one the policy can never command. A `pd` preset's raw ctrlrange is `[0, 0]`
+  besides — those actuators are deliberately `ctrllimited=False`. And
+  `_ctrl_lo`/`_ctrl_hi` are the soft limits only for a `pd` preset: for an
+  `ideal_torque` one they are the actuator forcerange in N·m, so clipping a
+  radian target against them does nothing at all. Reading the angle envelope
+  directly is what keeps the two models on the same anchor.
 - The settle forces each actuator's `gaintype`/`biastype`/`ctrllimited` as
   well as its gain and bias parameters. This diverges from w01-tek, whose
   actuators are always position servos. An `ideal_torque` preset injects
@@ -394,12 +410,20 @@ and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
 | `risk_below` | `0.5` | The hazard starts below this fraction of the commanded speed. **Re-derive for a biped**, together with `grace_sec`: 50% of demand may be a lot to ask of a humanoid inside the grace window. |
 | `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
 
-A curriculum or auto-reset wrapper that restarts an episode in place must
-reseed `info["progress_ema"]` itself: `info` survives a respawn, so a new
-episode would otherwise inherit the dying one's shortfall and die inside its
-own grace window. w01-tek's terrain wrapper does this; this repo has no such
-wrapper yet (PORT.md defers terrain), and `envs/joystick.py` carries the note
-at the reseed site.
+The meter is also reseeded on every **respawn**, by a wrapper rather than by
+the env. `wrap_for_brax_training`, the trainer's own wrapping, ends in
+`BraxAutoResetWrapper(full_reset=False)`: on done it restores `data` and
+`obs` from the cached first state and returns `state.info` untouched. So
+`info` survives every termination, and a cut env would come back carrying the
+dying episode's shortfall and a `steps_since_cmd` well past `grace_sec` —
+armed on its first step, and dead again within a second. `envs/wrappers.py`'s
+`ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
+`steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
+`no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
+`wrap_for_brax_training` itself, unchanged. w01-tek does this in its terrain
+respawn wrapper, and reseeds only the EMA; zeroing the counter, so the grace
+window comes back too, is a deliberate improvement. Any other wrapper that
+restarts an episode in place owns the same reseed.
 
 ## Pure command draws (`task.env.command`)
 
@@ -419,12 +443,18 @@ before `zero_prob`, which stays the sampler's last word: standing still
 overrides every draw.
 
 Each draw is gated on its static probability and keys off
-`jax.random.fold_in(rng, idx)` with an index of its own — `1 wz, 2 vy,
-3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not exist in
-the trace, all five off leave the sampler bit-identical to the pre-1.6 one
-(`tests/integration/test_golden_baseline.py`), and enabling one draw does not
-move another draw's samples
+`jax.random.fold_in(rng, 0x100 + idx)` with an index of its own — `1 wz,
+2 vy, 3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not
+exist in the trace, all five off leave the sampler bit-identical to the
+pre-1.6 one (`tests/integration/test_golden_baseline.py`), and enabling one
+draw does not move another draw's samples
 (`tests/integration/test_pure_command_draws.py`).
+
+The `0x100` offset is load-bearing. `fold_in(key, i)` is bit-identical to
+`split(key, n)[i]` for every `i < n`, so a raw table index would fold in one
+of the sampler's own base split keys — index 1 would *be* the `vy` uniform
+key. The offset puts every draw's key out of reach of any split of `rng`,
+whatever width that split later grows to.
 
 Every range is a **starting value to re-derive**, taken from this repo's own
 envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.

@@ -88,9 +88,9 @@ def main(cfg: DictConfig) -> None:
     import jax  # noqa: F401  # heavy imports stay inside main so --cfg job is fast
     from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.agents.ppo import train as ppo
-    from mujoco_playground import wrapper
 
     from humanoid_lab.dr.randomize import make_domain_randomize
+    from humanoid_lab.envs.wrappers import make_wrap_env_fn
     from humanoid_lab.registry import make_env
 
     task = cfg.task.name
@@ -209,7 +209,10 @@ def main(cfg: DictConfig) -> None:
         **training_params,
         network_factory=network_factory,
         seed=cfg.seed,
-        wrap_env_fn=wrapper.wrap_for_brax_training,
+        # mujoco_playground's own wrapping, except with no_progress on, where
+        # it gains the respawn reseed layer (see envs/wrappers.py). Off, this
+        # IS wrapper.wrap_for_brax_training.
+        wrap_env_fn=make_wrap_env_fn(env._config),
         save_checkpoint_path=str(ckpt_dir),
         restore_checkpoint_path=restore,
         progress_fn=progress,

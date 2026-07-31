@@ -84,9 +84,10 @@ def default_config() -> config_dict.ConfigDict:
         #
         # On, the env settles a QUASI-RIGID copy of the model once at
         # construction (see HumanoidEnv._settle_pose) and anchors on the
-        # result: a function of the geometry alone, identical for every gain
-        # set and every actuator model. Compensating the real plant's sag to
-        # reach that pose is the policy's job.
+        # result: a function of the geometry and the soft-limit envelope,
+        # identical for every gain set and every actuator model at a given
+        # soft_limit_factor. Compensating the real plant's sag to reach that
+        # pose is the policy's job.
         #
         # The settle must end standing and at rest or construction raises
         # (HumanoidEnv._check_settled). asimov_v1's keyframes do not: held
@@ -321,6 +322,10 @@ def default_config() -> config_dict.ConfigDict:
             # Both numbers are w01-tek's, tuned for a 0.21 m four-bar leg.
             # RE-DERIVE for asimov's leg: our own gait.swing_height asks for
             # 0.08 m of swing, so a 0.05 m apex target is not this robot's.
+            # When re-deriving, read docs/lessons/foot-clearance.md first:
+            # _foot_clearance is referenced to the reset keyframe, which
+            # floats the feet, so both numbers sit about 5 mm (asimov) or
+            # 3 mm (roboto) below the physical height they name.
             apex_target=0.05,
             glide_height=0.03,
             # torque_limit hinge fires above this fraction of each
@@ -421,11 +426,22 @@ class Joystick(HumanoidEnv):
         # Two rules make them free while off. Each block is gated on a static
         # config probability, so `if p:` is a Python branch and a preset with
         # the prob at 0 does not put the block in the trace at all. Each block
-        # keys off `fold_in(rng, idx)` with an index of its own rather than
-        # taking keys from the split above, so every draw owns an independent
-        # stream: enabling one draw moves no other draw's samples, and
-        # enabling none leaves this sampler bit-identical to the pre-1.6 draw
-        # (tests/integration/test_golden_baseline.py is the gate).
+        # keys off `fold_in(rng, 0x100 + idx)` with an index of its own rather
+        # than taking keys from the split above, so every draw owns an
+        # independent stream: enabling one draw moves no other draw's samples,
+        # and enabling none leaves this sampler bit-identical to the pre-1.6
+        # draw (tests/integration/test_golden_baseline.py is the gate).
+        #
+        # 0x100 is why that holds. `fold_in(key, i)` is bit-identical to
+        # `split(key, n)[i]` for every i < n, so a draw folding in a small
+        # index would key off one of the base split keys above -- index 1
+        # would BE r2, the vy uniform key. Offsetting the domain puts every
+        # draw's key out of reach of any split of `rng`, however wide that
+        # split later grows. Re-splitting the folded key (which every block
+        # below does) is not enough on its own: a block that sampled straight
+        # off an un-offset folded key would get a selector that is a
+        # deterministic function of another axis's value.
+        # tests/integration/test_pure_command_draws.py pins this.
         #
         # The index table is fixed: 1 wz, 2 vy, 3 slow, 4 fast, 5 back. 0 is
         # reserved and 6 up are free for future draws -- w01-tek's `arc` is not
@@ -441,27 +457,27 @@ class Joystick(HumanoidEnv):
             # and only zeroes the linear part. The split still runs so all
             # five draws have the same shape -- giving wz a dedicated range
             # later can take r_b without moving r_a's bernoulli stream.
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 1))
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 1))
             vel = jp.where(jax.random.bernoulli(r_a, wz_p), vel.at[:2].set(0.0), vel)
         vy_p = c.get("pure_vy_prob", 0.0)
         if vy_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 2))  # r_b unused, see above
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 2))  # r_b unused, see above
             vel = jp.where(
                 jax.random.bernoulli(r_a, vy_p), jp.array([0.0, vel[1], 0.0]), vel
             )
         slow_p = c.get("pure_slow_prob", 0.0)
         if slow_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 3))
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 3))
             vx = jax.random.uniform(r_b, minval=c.slow_vx[0], maxval=c.slow_vx[1])
             vel = jp.where(jax.random.bernoulli(r_a, slow_p), jp.array([vx, 0.0, 0.0]), vel)
         fast_p = c.get("pure_fast_prob", 0.0)
         if fast_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 4))
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 4))
             vx = jax.random.uniform(r_b, minval=c.fast_vx[0], maxval=c.fast_vx[1])
             vel = jp.where(jax.random.bernoulli(r_a, fast_p), jp.array([vx, 0.0, 0.0]), vel)
         back_p = c.get("pure_back_prob", 0.0)
         if back_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 5))
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 5))
             vx = jax.random.uniform(r_b, minval=c.back_vx[0], maxval=c.back_vx[1])
             vel = jp.where(jax.random.bernoulli(r_a, back_p), jp.array([vx, 0.0, 0.0]), vel)
 
@@ -647,13 +663,18 @@ class Joystick(HumanoidEnv):
             # keeps the hazard at zero for grace_sec while the robot turns
             # the gait around.
             #
-            # This is the only reseed site there is. `info` survives a
-            # respawn, so an auto-reset or curriculum wrapper that restarts an
-            # episode in place must reseed progress_ema itself -- w01-tek's
-            # terrain wrapper does exactly that. Deferred here with terrain
-            # (PORT.md "Deferred"); whoever adds such a wrapper owns it, or
-            # the new episode inherits the dying one's shortfall and dies
-            # inside its own grace window.
+            # This is the only reseed site INSIDE the env. It is not the only
+            # one that has to exist: `info` survives every respawn, because
+            # the trainer's wrap_for_brax_training ends in
+            # BraxAutoResetWrapper(full_reset=False), which restores data and
+            # obs from the cached first state and leaves info alone. A cut
+            # env would otherwise come back with the dead episode's shortfall
+            # and a steps_since_cmd well past grace, and die again inside
+            # what should have been its grace window. envs/wrappers.py's
+            # ProgressReseedWrapper does that reseed, and train.py layers it
+            # on whenever this flag is set -- the same job w01-tek's terrain
+            # respawn wrapper does there. Any other wrapper that restarts an
+            # episode in place owns the same reseed.
             info["progress_ema"] = jp.where(
                 resample, self._cmd_speed(info["command"]), info["progress_ema"]
             )
