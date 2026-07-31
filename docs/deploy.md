@@ -93,3 +93,70 @@ The last one is the list in `DEPLOYABLE_OBS`. The IMU gives `gyro` and
 `command`, and the runtime holds `last_action` and `phase` itself. A
 privileged signal on the actor list (`linvel`, `height`, `contacts`,
 `actuator_force`) has no deploy-side source.
+
+## The export
+
+```bash
+./run.sh export --run runs/<name> [--out DIR]
+```
+
+The verb writes two files, by default into `runs/<name>/deploy/`:
+
+- `policy.npz` holds `norm_mean`, `norm_std` and the `hidden_<i>_kernel` and
+  `hidden_<i>_bias` pairs of the actor MLP, as float32 numpy arrays.
+- `policy_meta.json` holds the contract above.
+
+The names are w01-tek's. PLAN.md records that keeper policies publish to a
+private HF repo under <hf-org> with the established flat layout, and names no
+artifact files, so these two carry over from w01-tek. The value network
+stays behind: the critic reads privileged observations the robot does not
+have.
+
+The export runs on CPU. It builds the run's env through `eval/battery.py`'s
+loader, so the robot, preset, actuator overrides and network shape all come
+from `run.json`, and it steps no physics.
+
+### Both validations run before either file is placed
+
+`export/policy.py` stages the artifacts in a temp directory, validates, and
+moves them into the destination afterwards. A failed export leaves the
+destination as it found it, including absent, and an earlier good export
+survives a later failed one.
+
+Validation one compares the numpy forward pass in `export/runtime.py`
+against the jitted brax inference function over 32 random observations.
+
+Validation two loads `DeployPolicy` from the staged artifacts and runs it
+against a reference pipeline computed from the env's own resolved fields,
+over 32 steps of a random sensor stream. The observation assembly order, the
+gait clock, the anchor, the scale and the clip bounds all round-trip. Each
+side carries its own last action and its own clock, so a drift compounds
+over the run instead of cancelling.
+
+Both bound the error at 1e-4. On a joint target in radians that is 0.006
+degrees, three orders below the 0.01 rad encoder noise the policy trains
+under. The residual is float32 reassociation between JAX and numpy. w01-tek
+measured 3.9e-5 on a policy with large weights. Measured here on
+`runs/hpc_smoke_roboto`, a 512-256-128 actor: 4.9e-06 for validation one
+and 8.1e-07 for validation two. Every export prints its own numbers.
+
+### The runtime
+
+`src/humanoid_lab/export/runtime.py` imports numpy and nothing else. A
+robot-side codebase copies the file next to the two artifacts.
+
+```python
+from runtime import DeployPolicy
+
+policy = DeployPolicy.load("deploy/")
+policy.reset()
+ctrl = policy.step(gyro=..., gravity=..., joint_pos=..., joint_vel=..., command=...)
+```
+
+`joint_pos` is the raw encoder reading in `joint_names` order; the runtime
+subtracts `default_pose` itself. `command` is (vx, vy, wz). The return value
+is a ctrl vector in `ctrl_unit`, already clipped.
+
+`step` advances the two pieces of observation state, the previous action and
+the gait clock, after the observation is assembled. That is the order
+`envs/joystick.py` step() uses. `reset` clears both.

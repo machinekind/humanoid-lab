@@ -65,7 +65,7 @@ DEPLOYABLE_OBS = frozenset(
 # resolved state (the compiled model, the ctrl bounds, the anchor).
 CONSUMED_KEYS = frozenset(
     {
-        # Control period. Sets the rate the runtime must call the policy at,
+        # Control period. Sets the rate the runtime calls the policy at,
         # and the gait clock's per-step increment.
         "ctrl_dt",
         # Overrides the preset-derived per-joint action scale, which is half
@@ -94,7 +94,7 @@ CONSUMED_KEYS = frozenset(
 
 # Keys that shape training only: physics stepping, episode structure,
 # exploration noise, curricula, rewards, terminations. Nothing here changes
-# what the robot must do with the exported network.
+# what the robot does with the exported network.
 TRAINING_ONLY_KEYS = frozenset(
     {
         # Physics substep and the warp buffer sizes. The robot has real
@@ -273,8 +273,8 @@ def check_config_covered(env_config) -> None:
 def build_contract(env, run: dict, checkpoint: str = "") -> dict:
     """The `policy_meta.json` dict for a live `Joystick` env.
 
-    `env` must be the run's own env (built with its robot, preset and env
-    config) so its resolved state IS the training-time state. `run` is the
+    `env` is the run's own env, built with its robot, preset and env
+    config, so its resolved state IS the training-time state. `run` is the
     parsed run.json; `checkpoint` the checkpoint directory that ships with
     this contract.
     """

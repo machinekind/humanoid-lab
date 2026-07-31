@@ -137,7 +137,16 @@ day and makes the TDD loop fast.
     here because `envs/base.py` holds both the ctrl anchor and the obs
     anchor fixed under it. The pure command draws stay training-only on a
     checked condition: an armed draw outside the trained box raises.
-- [ ] 5.2 An exporter that validates round-trips before writing artifacts. [details](docs/port-details.md#52-exporter)
+- [x] 5.2 An exporter that validates round-trips before writing artifacts. [details](docs/port-details.md#52-exporter)
+  - The trap is closed by staging both artifacts in a temp directory and
+    moving them into the destination after both validations pass, so a
+    failed export also cannot damage an earlier good one. Measured on
+    `runs/hpc_smoke_roboto`, a 512-256-128 actor: 4.9e-06 numpy against
+    brax and 8.1e-07 runtime against the env reference, both against the
+    1e-4 bound. `export/runtime.py` is numpy-only and imports nothing from
+    this package, and it advances the gait clock the actor observes, which
+    w01-tek's runtime has no version of. Artifact names are w01-tek's:
+    PLAN.md records the <hf-org> flat layout and names no files.
 
 **Phase 6. Ops quick wins. No TDD needed.**
 - [ ] 6.1 Audit the Makefile `--export` lists. [details](docs/port-details.md#61-makefile-export)
@@ -201,10 +210,10 @@ Run this against the full diff at the end of the port.
 ### Deploy contract
 - [x] Every env config key is classified as consumed or training-only. Leaf paths, so `reward.scales.pose` is its own entry; `tests/unit/test_deploy_contract.py` walks `default_config()` and also fails on a ledger entry the config no longer has.
 - [x] An unclassified key makes export raise. A test proves it, at the top level and nested.
-- [ ] Both round-trip validations run before any artifact is written to its destination.
-- [ ] The runtime check loads the artifacts it will ship.
+- [x] Both round-trip validations run before any artifact is written to its destination. They run against a temp directory, and the destination is not even created until both pass. Three tests corrupt an export (a weight matrix, the normalizer, the meta's anchor) and assert the destination is absent afterwards.
+- [x] The runtime check loads the artifacts it will ship. `DeployPolicy.load` reads the staged `policy.npz` and `policy_meta.json`, and the files it read are the ones moved into place.
 - [x] Torque caps and tables travel in the policy metadata. `torque_low`/`torque_high` from `actuator_forcerange` and the `gains` block from `effective_gains`, both read off the compiled model.
-- [ ] Deploy docs state facts and give no imperatives.
+- [x] Deploy docs state facts and give no imperatives. docs/deploy.md, `deploy_contract.py` and `export/` state what is true and what raises.
 
 ### Ops and MJWarp
 - [ ] Contact budgets come from measured peaks on the biped model, including fallen states, with stated headroom.
