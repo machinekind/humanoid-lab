@@ -50,3 +50,23 @@ after `model` has already been batched, changes the treedef out from under
 pytree-prefix mismatch. The error gives no hint that mutation order is the
 real cause. The fix is to set every static field first, before deriving
 `in_axes` or batching anything.
+
+## The contact peak is a standing robot, not a fallen one
+
+w01-tek sized its warp contact budget off a fallen quadruped, on the rule that
+a robot on the ground touches more geometry than one on its feet. Measured on
+asimov_v1 (`./run.sh check-contacts`, 2026-07-31) the order is the other way
+round: 32 contacts standing, 30 walking, 22 fallen.
+
+Two reasons, both structural rather than accidental. asimov_v1 carries 20 foot
+collision geoms — 5 sole capsules and 5 toe capsules per side — and a capsule
+against a plane makes up to two contacts, so both feet flat is up to 40
+contacts before anything else touches. And a neutral action does not hold
+either of this repo's robots up: under the stock preset gains both collapse
+from `home` within about a second, so the "standing" regime's own opening
+steps, with every sole capsule loaded, are where its peak lands.
+
+The number that mattered: the carried-over default was `naconmax_per_env=32`,
+exactly asimov's standing peak. On the warp backend that run would have been
+dropping contacts from its second step, silently, with no counter or exception
+anywhere. Measure the budget on the robot rather than inheriting it.

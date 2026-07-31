@@ -62,7 +62,17 @@ day and makes the TDD loop fast.
 - [x] 2.1 Early stopping ends runs whose eval reward has plateaued. [details](docs/port-details.md#21-early-stopping)
   - The defaults are w01-tek's uncalibrated numbers. Measure our eval noise
     before enabling it on a real run. See docs/configuration.md.
-- [ ] 2.2 MJWarp preflight measures contact budgets and adds the DR vmap composition test. [details](docs/port-details.md#22-mjwarp-preflight)
+- [x] 2.2 MJWarp preflight measures contact budgets and adds the DR vmap composition test. [details](docs/port-details.md#22-mjwarp-preflight)
+  - The measured peak is a STANDING robot, not a fallen one: 32 contacts
+    standing against 22 fallen on asimov_v1, whose 20 foot geoms put up to
+    two contacts each on the plane. The carried-over `naconmax_per_env=32`
+    was sitting exactly on that peak. See docs/lessons/asimov_v1.md.
+  - Landed with a fix the brief did not ask for: `dr/randomize.py`'s
+    optional fields folded raw table indices into their own base split, so
+    `com_offset` was an affine image of the link-mass draw and
+    `foot_friction` of the kd draw, correlation 1.0 in both. Same `0x100`
+    offset as the pure command draws now. DR sampling streams moved; the
+    goldens roll out with DR off and stayed green.
 
 **Phase 3. Symmetry.**
 - [ ] 3.1 Mirror augmentation, plus the rule that eval always runs in the deployment frame. [details](docs/port-details.md#31-symmetry)
