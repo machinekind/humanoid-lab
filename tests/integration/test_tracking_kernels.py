@@ -74,9 +74,11 @@ def rewards_for(env, reset_state, command, first_contact=False, **info_overrides
 
 
 def landing_rewards_for(env, reset_state, command, **flags):
-    """`rewards_for` with both feet touching down after a 0.5 s swing, so
-    feet_air_time -- the gated shaping term -- is nonzero and known:
-    sum((0.5 - min_air_time) * first_contact) = 2 * 0.4 = 0.8."""
+    """`rewards_for` with both feet touching down after a 0.5 s swing that
+    peaked 4 cm up, so both gated shaping terms are nonzero and known:
+    feet_air_time is sum((0.5 - min_air_time) * first_contact) = 2 * 0.4 =
+    0.8, and feet_apex is sum(clip(0.04/apex_target, 0, 1)) = 2 * 0.8 = 1.6.
+    """
     with reward_flags(env, **flags):
         return rewards_for(
             env,
@@ -84,6 +86,7 @@ def landing_rewards_for(env, reset_state, command, **flags):
             command,
             first_contact=True,
             feet_air_time=jp.full(env._n_feet, 0.5),
+            swing_apex=jp.full(env._n_feet, 0.04),
         )
 
 
@@ -338,6 +341,19 @@ def test_the_gate_multiplies_feet_air_time_by_the_linear_kernel(env, reset_state
     )
 
 
+def test_the_gate_multiplies_feet_apex_by_the_linear_kernel(env, reset_state):
+    """feet_apex (port item 1.7) joins the gated set: paying for a tall
+    swing while the command goes unserved is the same stand-and-lift income
+    the gate exists to remove."""
+    ungated = landing_rewards_for(env, reset_state, _MIXED_CMD)
+    gated = landing_rewards_for(env, reset_state, _MIXED_CMD, shaping_tracking_gate=True)
+
+    assert ungated["feet_apex"] == pytest.approx(1.6, rel=1e-3)
+    assert gated["feet_apex"] == pytest.approx(
+        ungated["feet_apex"] * ungated["tracking_lin_vel"], rel=1e-5
+    )
+
+
 def test_the_gate_pays_nothing_for_lifting_legs_while_not_tracking(env, reset_state):
     """The stand-and-lift strategy the gate exists to kill: w01-tek's v3
     forensics found standing with one leg raised earning about 1.8 reward per
@@ -360,14 +376,13 @@ def test_the_gate_uses_the_post_product_kernel(env, reset_state):
     )
     pre_product = landing_rewards_for(env, reset_state, _MIXED_CMD)
 
-    assert both["feet_air_time"] == pytest.approx(
-        product_only["feet_air_time"] * product_only["tracking_lin_vel"], rel=1e-5
-    )
-    # The pre-product kernel is the same value squared away: gating on it
-    # would pay exp(-1) instead of exp(-2) of the term.
-    assert both["feet_air_time"] < 0.5 * (
-        pre_product["feet_air_time"] * pre_product["tracking_lin_vel"]
-    )
+    for key in ("feet_air_time", "feet_apex"):
+        assert both[key] == pytest.approx(
+            product_only[key] * product_only["tracking_lin_vel"], rel=1e-5
+        ), key
+        # The pre-product kernel is the same value squared away: gating on it
+        # would pay exp(-1) instead of exp(-2) of the term.
+        assert both[key] < 0.5 * (pre_product[key] * pre_product["tracking_lin_vel"]), key
 
 
 def test_feet_phase_stays_ungated(env, reset_state):
@@ -380,12 +395,15 @@ def test_feet_phase_stays_ungated(env, reset_state):
 
 
 def test_the_gate_leaves_stand_still_and_the_penalties_untouched(env, reset_state):
-    """Stand-still penalties keep their ~moving mask and are not touched."""
+    """Stand-still penalties keep their ~moving mask and are not touched.
+    The gated set is exactly feet_air_time and feet_apex; everything else,
+    feet_landing included, scores the same gated or not."""
+    gated_set = {"feet_air_time", "feet_apex"}
     for cmd in (_MIXED_CMD, (0.0, 0.0, 0.0)):
         ungated = landing_rewards_for(env, reset_state, cmd)
         gated = landing_rewards_for(env, reset_state, cmd, shaping_tracking_gate=True)
         for key in ungated:
-            if key == "feet_air_time":
+            if key in gated_set:
                 continue
             assert gated[key] == ungated[key], (cmd, key)
 
