@@ -149,10 +149,10 @@ day and makes the TDD loop fast.
     PLAN.md records the <hf-org> flat layout and names no files.
 
 **Phase 6. Ops quick wins. No TDD needed.**
-- [ ] 6.1 Audit the Makefile `--export` lists. [details](docs/port-details.md#61-makefile-export)
-- [ ] 6.2 Harden the batch templates. [details](docs/port-details.md#62-batch-hardening)
-- [ ] 6.3 Add the `hpc.sh` wrapper. [details](docs/port-details.md#63-hpch)
-- [ ] 6.4 Add a GPU preflight sizing job. Optional. [details](docs/port-details.md#64-preflight-sizing)
+- [x] 6.1 Audit the Makefile `--export` lists. [details](docs/port-details.md#61-makefile-export)
+- [x] 6.2 Harden the batch templates. [details](docs/port-details.md#62-batch-hardening)
+- [x] 6.3 Add the `hpc.sh` wrapper. [details](docs/port-details.md#63-hpch)
+- [x] 6.4 Add a GPU preflight sizing job. Optional. [details](docs/port-details.md#64-preflight-sizing)
 
 **Deferred.** The terrain system waits until a flat keeper exists.
 [details](docs/port-details.md#deferred-terrain)
@@ -162,47 +162,47 @@ day and makes the TDD loop fast.
 Run this against the full diff at the end of the port.
 
 ### Off-switch integrity
-- [ ] Every new mechanism is off by default in every existing config.
-- [ ] With all new features off, an env rollout is bit-exact against the pre-port commit. `tests/integration/test_golden_baseline.py` proves it, for four robot/preset pairs over 260 steps.
-- [ ] Disabled features consume no RNG keys. Every new `jax.random.split` or `fold_in` sits behind its feature flag.
-- [ ] The resolved config of every pre-existing experiment yaml is unchanged.
+- [x] Every new mechanism is off by default in every existing config.
+- [x] With all new features off, an env rollout is bit-exact against the pre-port commit. `tests/integration/test_golden_baseline.py` proves it, for four robot/preset pairs over 260 steps.
+- [x] Disabled features consume no RNG keys. Every new `jax.random.split` or `fold_in` sits behind its feature flag.
+- [x] The resolved config of every pre-existing experiment yaml is unchanged.
 
 ### TDD evidence
-- [ ] Every mechanism's test landed before or with its implementation.
-- [ ] Unit tests build no model, create no env, and touch no device. The guard test enforces this. The unit suite runs in seconds.
-- [ ] Integration tests cover each mechanism through a real env step.
+- [x] Every mechanism's test landed before or with its implementation.
+- [x] Unit tests build no model, create no env, and touch no device. The guard test enforces this. The unit suite runs in seconds.
+- [x] Integration tests cover each mechanism through a real env step.
 
 ### Reward mechanics
-- [ ] `tracking_product` reassigns both kernels from the pre-product values.
-- [ ] The `tracking_far` blend applies in the absolute branch and in the relative branch. The ported regression test proves it.
-- [ ] `shaping_tracking_gate` uses the post-product kernel. Stand-still penalties stay gated on the command.
-- [ ] `no_progress` arms only when demand exceeds the threshold and the grace period has elapsed.
-- [ ] `no_progress` reseeds its EMA on every command resample.
-- [ ] `no_progress` is a true termination with no reward term attached.
-- [ ] Battery, eval, and video reconstruction force `no_progress.enable=false`. A cut is not a fall, and the battery drives the command from outside the sampler.
-- [ ] Motion against the command scores negative progress. A test proves it.
-- [ ] `real_pose_ref` settles against the runtime target bounds and raises on a settle that did not end standing still. There is no height command here, so w01-tek's strictly-increasing-prefix guard over its height table degenerates to that one check.
-- [ ] The settled anchor is identical under two different gain sets. A test proves it.
-- [ ] The legacy anchor path still works and remains the default.
-- [ ] `orientation_tol_deg=0` reproduces the legacy penalty bit-exact.
-- [ ] `feet_apex` pays once per swing at first contact and resets its tracker on contact.
-- [ ] Each pure command draw has its own `fold_in` index. Enabling one draw leaves the other draws' samples unchanged. A test proves it.
-- [ ] The zero-command overwrite still runs last.
+- [x] `tracking_product` reassigns both kernels from the pre-product values.
+- [x] The `tracking_far` blend applies in the absolute branch and in the relative branch. The ported regression test proves it.
+- [x] `shaping_tracking_gate` uses the post-product kernel. Stand-still penalties stay gated on the command.
+- [x] `no_progress` arms only when demand exceeds the threshold and the grace period has elapsed.
+- [x] `no_progress` reseeds its EMA on every command resample.
+- [x] `no_progress` is a true termination with no reward term attached.
+- [x] Battery, eval, and video reconstruction force `no_progress.enable=false`. A cut is not a fall, and the battery drives the command from outside the sampler.
+- [x] Motion against the command scores negative progress. A test proves it.
+- [x] `real_pose_ref` settles against the runtime target bounds and raises on a settle that did not end standing still. There is no height command here, so w01-tek's strictly-increasing-prefix guard over its height table degenerates to that one check.
+- [x] The settled anchor is identical under two different gain sets. A test proves it.
+- [x] The legacy anchor path still works and remains the default.
+- [x] `orientation_tol_deg=0` reproduces the legacy penalty bit-exact.
+- [x] `feet_apex` pays once per swing at first contact and resets its tracker on contact.
+- [x] Each pure command draw has its own `fold_in` index. Enabling one draw leaves the other draws' samples unchanged. A test proves it.
+- [x] The zero-command overwrite still runs last.
 
 ### Symmetry
-- [ ] The mirror map derives from `robot.yaml`'s symmetry map.
-- [ ] The env validates the mirror map against its actual observation layout at construction.
-- [ ] Actions are un-mirrored before physics. Physics, rewards, and termination run in the real frame.
-- [ ] Battery, eval, and video reconstruction force `symmetry.enable=false`.
-- [ ] The invisibility test is ported. No doc claims the mirror fixes asymmetric behavior.
+- [x] The mirror map derives from `robot.yaml`'s symmetry map.
+- [x] The env validates the mirror map against its actual observation layout at construction.
+- [x] Actions are un-mirrored before physics. Physics, rewards, and termination run in the real frame.
+- [x] Battery, eval, and video reconstruction force `symmetry.enable=false`.
+- [x] The invisibility test is ported. No doc claims the mirror fixes asymmetric behavior.
 
 ### Eval integrity
-- [ ] Gait KPIs are raw metrics. No existing score, gate, or JSON field changes meaning.
-- [ ] Continuous metrics average only over runs that measured something. Sample counts are visible in the output.
-- [ ] Every new KPI excludes the reset transient with a settle window.
-- [ ] Every velocity in a new metric is body-frame.
-- [ ] Spin probes report each direction separately.
-- [ ] Battery JSON changes are additive.
+- [x] Gait KPIs are raw metrics. No existing score, gate, or JSON field changes meaning.
+- [x] Continuous metrics average only over runs that measured something. Sample counts are visible in the output.
+- [x] Every new KPI excludes the reset transient with a settle window.
+- [x] Every velocity in a new metric is body-frame.
+- [x] Spin probes report each direction separately.
+- [x] Battery JSON changes are additive.
 - [x] The robustness grid's baseline cell is documented as the native path. `eval/grid.py`'s docstring, `run_battery`'s docstring, docs/configuration.md and every rendered grid report say so, and each names w01-tek's contrary claim as false.
 - [x] The explicit-PD path reproduces the native pipeline within a stated tolerance as lag goes to zero. A test proves it. Measured 1.0e-6 relative on `tracking_err_rms`; `tests/integration/test_grid_env.py` asserts 1e-4.
 - [x] Grid outputs never overwrite the canonical battery.json. The CLI refuses to run with any of `--alpha`/`--lag-tau`/`--torque-envelope` unless `--out` is given, so a cell cannot reach the default path even by forgetting the flag; `--out` stays optional for the unperturbed battery, which IS the canonical measurement. Unit tests pin the refusal per flag and that battery.json's content and mtime survive a cell write.
@@ -216,19 +216,19 @@ Run this against the full diff at the end of the port.
 - [x] Deploy docs state facts and give no imperatives. docs/deploy.md, `deploy_contract.py` and `export/` state what is true and what raises.
 
 ### Ops and MJWarp
-- [ ] Contact budgets come from measured peaks on the biped model, including fallen states, with stated headroom.
-- [ ] Jobs record their `nacon` and `nefc` peaks and flag overflow. njmax overflow is silent, so nothing waits for a warning.
-- [ ] A composition test calls `jax.vmap` with the DR wrapper's contract.
-- [ ] Every static model field is patched before `in_axes` derivation.
-- [ ] The Makefile builds `--export` lists with a comma variable.
-- [ ] Every env var a batch script consumes appears in the export list. An audit checks this.
-- [ ] `run_main` wrappers capture and return the real exit code.
-- [ ] Cache and log directories are probed for writability and fall back to TMPDIR.
+- [x] Contact budgets come from measured peaks on the biped model, including fallen states, with stated headroom.
+- [x] Jobs record their `nacon` and `nefc` peaks and flag overflow. njmax overflow is silent, so nothing waits for a warning.
+- [x] A composition test calls `jax.vmap` with the DR wrapper's contract.
+- [x] Every static model field is patched before `in_axes` derivation.
+- [x] The Makefile builds `--export` lists with a comma variable.
+- [x] Every env var a batch script consumes appears in the export list. An audit checks this.
+- [x] `run_main` wrappers capture and return the real exit code.
+- [x] Cache and log directories are probed for writability and fall back to TMPDIR.
 
 ### Hygiene
-- [ ] Every comment states the numbers the code uses. w01-tek's settle docstring said kp 2000 while the code used 400.
-- [ ] configuration.md documents every new config key.
-- [ ] No doc table is stale. Count the files each table claims to list.
-- [ ] run.json records each mechanism's enable state and any effective values a reader needs to reproduce the run.
-- [ ] Commit messages are plain statements. Each commit is self-contained.
-- [ ] docs/lessons/ records anything non-obvious learned during the port.
+- [x] Every comment states the numbers the code uses. w01-tek's settle docstring said kp 2000 while the code used 400.
+- [x] configuration.md documents every new config key.
+- [x] No doc table is stale. Count the files each table claims to list.
+- [x] run.json records each mechanism's enable state and any effective values a reader needs to reproduce the run.
+- [x] Commit messages are plain statements. Each commit is self-contained.
+- [x] docs/lessons/ records anything non-obvious learned during the port.
