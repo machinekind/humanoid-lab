@@ -175,14 +175,13 @@ def test_every_block_of_the_assembled_actor_map_lands_at_its_own_offset():
     phase = np.array([50.0, 51.0, 52.0, 53.0])
     m = apply(perm, sign, np.concatenate([gyro, gravity, jpos, jvel, last, command, phase]))
 
-    assert m.shape == (30,)
+    assert m.shape == (31,)  # 3+3+6+6+6+3+4
     np.testing.assert_allclose(m[0:3], [-1.0, 2.0, -3.0])
     np.testing.assert_allclose(m[3:6], [4.0, -5.0, 6.0])
     for base, block in ((6, jpos), (12, jvel), (18, last)):
         np.testing.assert_allclose(m[base : base + 6], apply(JPERM, JSIGN, block))
     np.testing.assert_allclose(m[24:27], [40.0, -41.0, -42.0])
-    np.testing.assert_allclose(m[27:30], [51.0, 50.0, 53.0])
-    np.testing.assert_allclose(m[30:], [])
+    np.testing.assert_allclose(m[27:31], [51.0, 50.0, 53.0, 52.0])
 
 
 def test_an_obs_component_with_no_mirror_entry_raises():
