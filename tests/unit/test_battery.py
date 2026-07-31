@@ -242,6 +242,33 @@ def test_the_cut_is_neutralised_even_when_the_run_never_mentioned_it():
     assert overrides["no_progress"]["enable"] is False
 
 
+def test_a_run_trained_with_the_mirror_augmentation_measures_with_it_off():
+    """The deployment-frame rule (port item 3.1). Mirror augmentation is a
+    training-only stochastic augmentation: it flips half the envs into a
+    left-right mirrored view of the world. A measurement has to describe the
+    frame the robot will actually be deployed in, and a battery that drew the
+    coin the other way would report a policy's spin_left as its spin_right."""
+    overrides = _measurement_env_overrides(
+        _run({"symmetry": {"enable": True, "mirror_prob": 0.5}})
+    )
+
+    assert overrides["symmetry"]["enable"] is False
+
+
+def test_neutralising_the_mirror_keeps_the_run_s_other_symmetry_settings():
+    """Only `enable` is measurement-only, same as the no-progress cut."""
+    overrides = _measurement_env_overrides(_run({"symmetry": {"mirror_prob": 0.25}}))
+
+    assert overrides["symmetry"]["mirror_prob"] == 0.25
+    assert overrides["symmetry"]["enable"] is False
+
+
+def test_the_mirror_is_neutralised_even_when_the_run_never_mentioned_it():
+    overrides = _measurement_env_overrides(_run({}))
+
+    assert overrides["symmetry"]["enable"] is False
+
+
 def test_pushes_and_the_command_resample_are_still_neutralised():
     """The two older measurement-only changes, pinned alongside the new one."""
     overrides = _measurement_env_overrides(

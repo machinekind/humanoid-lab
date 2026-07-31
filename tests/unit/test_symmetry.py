@@ -232,6 +232,69 @@ def test_the_actor_noise_scales_are_invariant_under_the_obs_mirror():
     np.testing.assert_array_equal(scales[perm], scales)
 
 
+# -- the deployment-frame rule -----------------------------------------------
+
+
+def test_the_deployment_frame_forces_the_mirror_off():
+    overrides = symmetry.deployment_frame_overrides({"symmetry": {"enable": True}})
+
+    assert overrides["symmetry"]["enable"] is False
+
+
+def test_the_deployment_frame_keeps_every_other_recorded_setting():
+    """Only `enable` is measurement-only: the rebuilt env is still the run's
+    own in every respect the measurement does not need to change."""
+    overrides = symmetry.deployment_frame_overrides(
+        {"symmetry": {"enable": True, "mirror_prob": 0.25}, "real_pose_ref": True}
+    )
+
+    assert overrides["symmetry"]["mirror_prob"] == 0.25
+    assert overrides["real_pose_ref"] is True
+
+
+def test_the_deployment_frame_forces_the_mirror_off_for_a_run_that_never_mentioned_it():
+    """A run.json recorded before the switch existed still gets the explicit
+    off: the measurement env does not depend on what happened to be saved."""
+    assert symmetry.deployment_frame_overrides({})["symmetry"]["enable"] is False
+
+
+def test_the_deployment_frame_does_not_mutate_the_run_s_own_dict():
+    recorded = {"symmetry": {"enable": True}}
+    symmetry.deployment_frame_overrides(recorded)
+
+    assert recorded["symmetry"]["enable"] is True
+
+
+def test_the_sizing_collector_rebuilds_its_env_in_the_deployment_frame(monkeypatch):
+    """sizing/collect.py rolls a checkpoint out to size motors, so it is a
+    measurement too -- one whose whole output is per-JOINT torque and speed,
+    which a mirrored rollout would report on the wrong side of the robot.
+    Unlike the battery it keeps the run's pushes and command sampling: it
+    wants the distribution the trained gait really produces."""
+    from humanoid_lab import registry
+    from humanoid_lab.sizing import collect
+
+    seen = {}
+
+    def recorder(task, robot_dir, preset_name, env_overrides, actuator_overrides):
+        seen.update(env_overrides)
+        return "env"
+
+    monkeypatch.setattr(registry, "make" + "_env", recorder)
+    run = {
+        "task": "sizing",
+        "hydra_config": {
+            "robot": {"dir": "robots/asimov_v1"},
+            "actuators": {"name": "sizing_ideal"},
+            "task": {"env": {"symmetry": {"enable": True}, "push": {"enable": True}}},
+        },
+    }
+    collect.make_env_for_run(run)
+
+    assert seen["symmetry"]["enable"] is False
+    assert seen["push"]["enable"] is True
+
+
 # -- what the augmentation can and cannot train ------------------------------
 
 
