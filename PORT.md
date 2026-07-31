@@ -37,7 +37,10 @@ day and makes the TDD loop fast.
 ## The list
 
 **Phase 0. Test infrastructure.**
-- [ ] 0.1 Split the tests into a fast unit suite and a slow integration suite, enforced by a guard test. [details](docs/port-details.md#01-test-split)
+- [x] 0.1 Split the tests into a fast unit suite and a slow integration suite, enforced by a guard test. [details](docs/port-details.md#01-test-split)
+  - Landed with the pre-port goldens the off-switch gate below needs:
+    `tests/integration/test_golden_baseline.py` against
+    `tests/data/golden/*.npz`, recorded before any mechanism.
 
 **Phase 1. Reward and command mechanics.**
 - [ ] 1.1 `tracking_product` multiplies the linear and angular tracking kernels. [details](docs/port-details.md#11-tracking_product)
@@ -83,7 +86,7 @@ Run this against the full diff at the end of the port.
 
 ### Off-switch integrity
 - [ ] Every new mechanism is off by default in every existing config.
-- [ ] With all new features off, an env rollout is bit-exact against the pre-port commit. A test proves it.
+- [ ] With all new features off, an env rollout is bit-exact against the pre-port commit. `tests/integration/test_golden_baseline.py` proves it, for four robot/preset pairs over 260 steps.
 - [ ] Disabled features consume no RNG keys. Every new `jax.random.split` or `fold_in` sits behind its feature flag.
 - [ ] The resolved config of every pre-existing experiment yaml is unchanged.
 
