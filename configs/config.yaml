@@ -41,6 +41,19 @@ domain_rand: false
 actuators:
   overrides: {}
 
+# Ends a run whose eval reward has plateaued. Brax checkpoints at every
+# eval, so the newest checkpoint is the early-stopped policy and nothing is
+# lost by stopping. Calibrate min_delta ABOVE the eval noise before trusting
+# this: w01-tek's eval noise was +-1.5 reward, so min_delta=0.5 let noise
+# reset the patience clock and they raised it to 1.0 (and patience to 8 for
+# overnight runs). Measure our own eval noise -- repeat evals of one
+# checkpoint -- before enabling.
+early_stop:
+  enable: false
+  min_evals: 10 # no verdict before this many evals, however flat they are
+  patience: 6 # consecutive evals with no new best that end the run
+  min_delta: 0.5 # a new best must beat the running best by MORE than this
+
 wandb:
   enable: true
   project: humanoid-lab

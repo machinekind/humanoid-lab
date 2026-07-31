@@ -26,6 +26,27 @@ from omegaconf import DictConfig, OmegaConf
 from humanoid_lab import paths
 
 
+class EarlyStop(Exception):
+    """Raised inside the progress callback to abort a plateaued run."""
+
+
+def plateau_stop(rewards, min_evals: int, patience: int, min_delta: float) -> bool:
+    """True when `rewards` (eval rewards, oldest first) has plateaued.
+
+    A reward counts as a new best only when it beats the running best by
+    more than `min_delta` (eval noise must not reset the clock). Plateau =
+    `patience` consecutive evals without such a new best, checked only once
+    `max(min_evals, patience + 1)` evals exist.
+    """
+    if len(rewards) < max(min_evals, patience + 1):
+        return False
+    best, best_i = float("-inf"), 0
+    for i, r in enumerate(rewards):
+        if r > best + min_delta:
+            best, best_i = r, i
+    return len(rewards) - 1 - best_i >= patience
+
+
 def _apply_ppo_overrides(p, overrides: dict) -> None:
     for k, v in (overrides or {}).items():
         if isinstance(v, dict):
@@ -188,6 +209,9 @@ def main(cfg: DictConfig) -> None:
             print(f"wandb disabled: {e}")
 
     t_last = [time.time(), 0]
+    es = cfg.early_stop
+    eval_rewards: list[float] = []
+    last_eval = {"steps": 0, "metrics": {}}
 
     def progress(num_steps: int, metrics: dict) -> None:
         now = time.time()
@@ -203,6 +227,21 @@ def main(cfg: DictConfig) -> None:
         )
         if wb is not None:
             wb.log({**metrics, "perf/steps_per_sec": sps}, step=num_steps)
+        # Brax's evaluator is the only producer of this callback here, so
+        # every call is an eval. (w01-tek's version has to skip the
+        # EpisodeMetricsLogger's training-only calls; that logger runs under
+        # ppo.log_training_metrics, which this repo never sets. Anyone who
+        # sets it owes this callback the same eval/episode_reward guard.)
+        last_eval["steps"], last_eval["metrics"] = num_steps, metrics
+        if es.enable:
+            eval_rewards.append(float(reward))
+            if plateau_stop(eval_rewards, es.min_evals, es.patience, es.min_delta):
+                print(
+                    f"early stop: no reward gain > {es.min_delta} in the last "
+                    f"{es.patience} evals (best {max(eval_rewards):.2f}); "
+                    f"stopping at {num_steps:,} steps"
+                )
+                raise EarlyStop
 
     train_fn = functools.partial(
         ppo.train,
@@ -217,9 +256,18 @@ def main(cfg: DictConfig) -> None:
         restore_checkpoint_path=restore,
         progress_fn=progress,
     )
-    make_inference_fn, params, metrics = train_fn(
-        environment=env, eval_env=eval_env
-    )
+    early_stopped = False
+    try:
+        make_inference_fn, params, metrics = train_fn(
+            environment=env, eval_env=eval_env
+        )
+    except EarlyStop:
+        # Brax saves a checkpoint at every eval, so the newest checkpoint in
+        # ckpt_dir IS the early-stopped policy -- nothing is lost by cutting
+        # the run here. train_fn never returned, so report from the last
+        # completed eval instead of brax's return values.
+        early_stopped = True
+        metrics = last_eval["metrics"]
 
     (run_dir / "run.json").write_text(
         json.dumps(
@@ -227,6 +275,10 @@ def main(cfg: DictConfig) -> None:
                 "run_name": run_name,
                 "task": task,
                 "num_timesteps": int(ppo_params.num_timesteps),
+                "early_stopped": early_stopped,
+                # The last eval's step count. On a normal run that is the
+                # final eval, so this equals the budget brax actually ran.
+                "stopped_at_steps": int(last_eval["steps"]),
                 "final_reward": float(
                     metrics.get("eval/episode_reward", float("nan"))
                 ),

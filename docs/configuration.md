@@ -169,6 +169,10 @@ CI before it costs GPU time.
 | `wandb.project` | `humanoid-lab` | W&B project name. |
 | `wandb.group` | `null` | W&B run group. Defaults to the selected experiment's name, or stays `null` if no experiment is selected. An explicit value wins over that default. |
 | `ppo` | `{}` | Global PPO overrides, applied after the task's own `task.ppo` block. CLI `ppo.foo=...` wins over both. |
+| `early_stop.enable` | `false` | End the run once the eval reward has plateaued. See [Early stopping](#early-stopping-early_stop). |
+| `early_stop.min_evals` | `10` | No stop verdict before this many evals exist. |
+| `early_stop.patience` | `6` | Consecutive evals with no new best that end the run. |
+| `early_stop.min_delta` | `0.5` | A new best must beat the running best by more than this. **Calibrate above the eval noise.** |
 
 ## Actuator presets: the name pointer
 
@@ -484,6 +488,39 @@ independent randomization on top of that, gated by its own `enable`.
 | `dr.dof` | `damping`, `armature`, `frictionloss` (multiplicative) | `[0.9, 1.1]` each |
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
+
+## Early stopping (`early_stop`)
+
+Off by default. When on, the trainer ends a run whose eval reward has stopped
+climbing. The rule is `plateau_stop` in `src/humanoid_lab/train.py`, a pure
+function of the eval rewards seen so far:
+
+- A reward is a new best only when it beats the running best by **more** than
+  `min_delta`. A gain of exactly `min_delta` does not count.
+- A plateau is `patience` consecutive evals with no new best.
+- The rule returns no verdict until `max(min_evals, patience + 1)` evals
+  exist.
+
+The progress callback appends each eval reward to a list and raises
+`EarlyStop` when the rule fires. `main()` catches it around the `ppo.train`
+call. Brax writes a checkpoint at every eval, so the newest checkpoint in
+`runs/<name>/checkpoints` is the early-stopped policy, and the reported
+metrics come from the last completed eval.
+
+`run.json` carries two fields whether or not the feature is on:
+`early_stopped` (bool) and `stopped_at_steps` (the last eval's step count,
+which on a completed run is the final eval's).
+
+Patience counts evals, not steps, so `ppo.num_evals` sets how much training
+each unit of patience buys. At the default 100M-step budget with brax's
+`num_evals`, one eval is several million steps.
+
+**Calibrate `min_delta` above the eval noise before trusting it.** w01-tek's
+eval noise was about ±1.5 reward, so `min_delta=0.5` let noise reset the
+patience clock, and they raised it to 1.0. They also raised `patience` to 8
+for overnight runs. The defaults here are w01-tek's starting numbers and have
+not been calibrated against our eval noise. Measure that noise first by
+evaluating one checkpoint repeatedly.
 
 ## `run.sh` verbs
 

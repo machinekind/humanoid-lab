@@ -59,7 +59,9 @@ day and makes the TDD loop fast.
     only applies to `roboto_origin`. See docs/configuration.md.
 
 **Phase 2. Trainer and MJWarp runtime. This phase gates the first GPU run.**
-- [ ] 2.1 Early stopping ends runs whose eval reward has plateaued. [details](docs/port-details.md#21-early-stopping)
+- [x] 2.1 Early stopping ends runs whose eval reward has plateaued. [details](docs/port-details.md#21-early-stopping)
+  - The defaults are w01-tek's uncalibrated numbers. Measure our eval noise
+    before enabling it on a real run. See docs/configuration.md.
 - [ ] 2.2 MJWarp preflight measures contact budgets and adds the DR vmap composition test. [details](docs/port-details.md#22-mjwarp-preflight)
 
 **Phase 3. Symmetry.**
