@@ -270,7 +270,8 @@ def test_reset_starts_at_the_settled_pose(settled_env):
     settled = np.asarray(settled_env._reset_qpos)
     adr = settled_env._base_qadr
 
-    np.testing.assert_array_equal(qpos[np.asarray(settled_env._qadr)], settled[np.asarray(settled_env._qadr)])
+    qadr = np.asarray(settled_env._qadr)
+    np.testing.assert_array_equal(qpos[qadr], settled[qadr])
     np.testing.assert_array_equal(qpos[adr : adr + 3], settled[adr : adr + 3])
     np.testing.assert_allclose(qpos[adr + 3 : adr + 7], settled[adr + 3 : adr + 7], atol=1e-6)
 
