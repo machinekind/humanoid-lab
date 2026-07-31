@@ -42,6 +42,7 @@ from ml_collections import config_dict
 
 from humanoid_lab import sim_budget
 from humanoid_lab.envs import symmetry
+from humanoid_lab.eval.gait import gait_metrics
 
 # -- pure metric functions -------------------------------------------------
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
@@ -236,6 +237,11 @@ def scenario_result(
         r["antiphase_score"] = round(
             antiphase_score(rec["contact"][:, 0], rec["contact"][:, 1]), 3
         )
+
+    # Gait KPIs (port item 4.2). Raw metrics, folded into nothing: they are
+    # here because velocity tracking error scores a skimming gait and a
+    # stand-and-lift farm as healthy.
+    r.update(gait_metrics(rec, settle_steps=SETTLE_STEPS))
 
     return r
 
@@ -441,6 +447,7 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     rec = {
         "cmd": [], "vx": [], "vy": [], "wz": [], "height": [],
         "qvel": [], "contact": [], "foot_speed": [], "tau": [],
+        "foot_clear": [], "foot_vz": [],
     }
     nacon_seen, nefc_seen = [], []
     fell_at = None
@@ -467,6 +474,15 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         rec["contact"].append(contact)
         rec["foot_speed"].append(foot_speed)
         rec["tau"].append(np.asarray(d.actuator_force))
+        # Per-foot clearance and vertical velocity, for the gait KPIs (port
+        # item 4.2). foot_vel is already in hand for foot_speed above, so
+        # its z channel costs nothing extra. Both are WORLD frame: clearance
+        # is a height above the ground and touchdown speed is how hard the
+        # foot hits it, and the ground does not rotate with the robot. (See
+        # eval/gait.py on what _foot_clearance is referenced to -- the reset
+        # keyframe, not the floor.)
+        rec["foot_clear"].append(np.asarray(env._foot_clearance(d)))
+        rec["foot_vz"].append(foot_vel[:, 2])
 
         # Warp's contact and constraint-row budgets, sampled every step. The
         # rollout is a plain Python loop, so this is a numpy read per step and

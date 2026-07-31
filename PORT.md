@@ -97,7 +97,12 @@ day and makes the TDD loop fast.
     every row already records. w01-tek's second, DR-patched probe world is
     deferred until foot-friction DR is on in a keeper run. See
     docs/configuration.md.
-- [ ] 4.2 Gait KPIs report swing apex and touchdown softness. [details](docs/port-details.md#42-gait-kpis)
+- [x] 4.2 Gait KPIs report swing apex and touchdown softness. [details](docs/port-details.md#42-gait-kpis)
+  - The battery record did not carry per-foot clearance or vertical
+    velocity; both are now recorded, off the foot velocity `foot_speed`
+    already computed. Every apex reads low by the keyframe offset in
+    docs/lessons/foot-clearance.md, so the numbers are comparable across
+    checkpoints but are not yet physical heights.
 - [ ] 4.3 `tracking_error` reports servo error, and run.json records effective gains. [details](docs/port-details.md#43-tracking_error)
 - [ ] 4.4 A robustness grid sweeps Kt error, torque lag, and a torque-speed envelope. [details](docs/port-details.md#44-robustness-grid)
 - [ ] 4.5 Video improvements: per-joint grid, `--plots` selection, push-free rollouts. [details](docs/port-details.md#45-video-qol)

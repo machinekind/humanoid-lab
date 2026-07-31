@@ -560,6 +560,15 @@ to `scenario_result` additively.
 velocity arrays with known swings. Cover the two-step and truncation filters.
 A pure free-fall touchdown has softness near 1.0.
 
+**Landed** in `src/humanoid_lab/eval/gait.py`. The rollout record gained
+`foot_clear` and `foot_vz`; it already computed the foot velocity for
+`foot_speed`, so the z channel cost nothing. Three deltas from w01-tek's
+version, all in docs/configuration.md: `settle_steps` is an explicit
+argument rather than a whole-record scan, a swing already airborne at the
+first measured step is dropped like an end-truncated one (the settle trim
+can cut an apex off), and a record with no scorable swing returns
+`swings: 0` with null medians instead of an empty dict.
+
 ---
 
 ## 4.3 tracking_error

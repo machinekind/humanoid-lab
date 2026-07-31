@@ -298,6 +298,8 @@ def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
         "qvel": np.zeros((n, 4)),
         "contact": np.ones((n, 2), dtype=bool),
         "foot_speed": np.zeros((n, 2)),
+        "foot_clear": np.zeros((n, 2)),
+        "foot_vz": np.zeros((n, 2)),
         "tau": np.zeros((n, 4)),
     }
 
@@ -357,6 +359,43 @@ def test_the_existing_scenario_fields_keep_their_meaning():
         "torque_sat_frac", "mech_power_mean", "antiphase_score",
     ):
         assert key in r
+
+
+# -- scenario_result's gait KPIs (port item 4.2) -----------------------------
+
+
+def test_scenario_result_carries_the_gait_kpis():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    rec["foot_clear"][SETTLE_STEPS + 10 : SETTLE_STEPS + 16, 0] = 0.04
+    rec["foot_vz"][SETTLE_STEPS + 15, 0] = -0.2
+
+    r = scenario_result("walk_ramp", rec, None, _DT, np.zeros(4), n)
+
+    assert r["swings"] == 1
+    assert r["swing_apex_med_m"] == pytest.approx(0.04)
+    assert r["swing_apex_p90_m"] == pytest.approx(0.04)
+    assert r["touchdown_v_med"] == pytest.approx(0.2)
+    assert r["touchdown_softness_med"] is not None
+
+
+def test_scenario_result_excludes_the_reset_transient_from_the_gait_kpis():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    rec["foot_clear"][5:20, 0] = 0.09  # a big lift inside the settle window
+
+    r = scenario_result("stand", rec, None, _DT, np.zeros(4), n)
+
+    assert r["swings"] == 0
+    assert r["swing_apex_med_m"] is None
+
+
+def test_a_scenario_that_never_lifted_a_foot_reports_zero_swings():
+    n = SETTLE_STEPS + 100
+    r = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert r["swings"] == 0
+    assert r["touchdown_softness_med"] is None
 
 
 # -- the measurement env overrides -------------------------------------------
