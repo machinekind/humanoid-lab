@@ -25,7 +25,7 @@ Ported from w01-tek's wojtek_rl/symmetry.py with two deliberate changes.
 Everything below is plain numpy over names and shapes, so the algebra half
 is unit-testable with no model (tests/unit/test_symmetry.py) and the
 derivation half runs once per env at construction, never inside a trace
-(tests/integration/test_symmetry.py).
+(tests/integration/test_symmetry_env.py).
 """
 
 from __future__ import annotations
@@ -48,11 +48,12 @@ PROBE_DELTA = 0.05
 # of residual, so the 1e-4 m fit budget accepts a robot whose two sides
 # differ by about 2 mm and rejects anything worse. asimov_v1's vendored CAD
 # export is asymmetric by 1.0e-4 m (a right ankle-pitch link offset 0.1 mm in
-# y), which lands at 5.0e-6 m of fit residual -- twenty times inside the
-# budget. roboto_origin measures 5.9e-7 m static, 3.0e-8 m of fit. The
-# discrimination floor of 100 is w01-tek's; the worst measured margin on
-# either robot is 770 (asimov_v1's hip yaw, whose probe point sits close to
-# its own axis).
+# y) and its worst fit residual is 5.0e-6 m, twenty times inside the budget;
+# roboto_origin measures 5.9e-7 m static and 1.8e-6 m of fit. The
+# discrimination floor of 100 is w01-tek's. The worst margin measured on
+# either robot is 290, on roboto_origin's centerline torso yaw, whose probe
+# point (the subtree centre of mass below it) sits close to its own axis;
+# asimov_v1's tightest is 770, at the hip yaw, for the same reason.
 MAX_FIT_RESIDUAL = 1e-4
 MIN_DISCRIMINATION = 100.0
 
@@ -159,7 +160,7 @@ def derive(model, spec, qpos, *, symmetry_map=None, delta: float = PROBE_DELTA) 
 
     chains = _foot_chains(model, spec, joints)
     foot_perm = _foot_pairing(spec, chains, perm)
-    sign, residuals = _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta)
+    sign = _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta)
 
     # The probe pose has to be its own mirror, or "the mirrored world" is not
     # this world seen in a mirror. It is also the joint_pos observation's own
@@ -174,7 +175,6 @@ def derive(model, spec, qpos, *, symmetry_map=None, delta: float = PROBE_DELTA) 
             f"{(sign * mirrored_anchor)[int(off.argmax())]}. The reset keyframe has to be a "
             "mirror-symmetric pose before the augmentation can run"
         )
-    _ = residuals
     return MirrorTables(perm, sign, foot_perm)
 
 
@@ -272,7 +272,6 @@ def _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta):
         )
 
     signs = np.ones(len(joints), dtype=np.float32)
-    residuals = {}
     for i, partner in enumerate(perm):
         partner = int(partner)
         if partner < i:
@@ -289,7 +288,6 @@ def _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta):
             fits[candidate] = float(np.abs((other() - rest_other) - target).max())
         best = min(fits, key=fits.get)
         worst = max(fits, key=fits.get)
-        residuals[joints[i]] = fits
         decisive = fits[worst] >= MIN_DISCRIMINATION * max(fits[best], 1e-15)
         if fits[best] > MAX_FIT_RESIDUAL or not decisive:
             raise SymmetryError(
@@ -304,7 +302,7 @@ def _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta):
             )
         signs[i] = best
         signs[partner] = best
-    return signs, residuals
+    return signs
 
 
 # -- per-component observation maps ------------------------------------------

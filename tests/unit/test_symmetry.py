@@ -3,7 +3,7 @@
 Everything here builds its maps from synthetic (perm, sign) tables, so no
 model, no env and no device is involved -- the joint SIGNS of a real robot
 are derived numerically from its compiled model, which is
-tests/integration/test_symmetry.py's job.
+tests/integration/test_symmetry_env.py's job.
 
 Ported from w01-tek's training/tests/unit/test_symmetry.py, with two
 differences. Ours is a biped (2 feet, 6 joints a side) against w01-tek's
@@ -162,7 +162,7 @@ def test_the_assembled_obs_mirror_is_an_involution(names):
 
 
 def test_every_block_of_the_assembled_actor_map_lands_at_its_own_offset():
-    """Hand-written expectations for the whole 30-dim actor vector, so a
+    """Hand-written expectations for the whole 31-dim actor vector, so a
     component reorder or a size change cannot slip past the involution
     property above."""
     perm, sign = symmetry.obs_mirror(ACTOR, SIZES, maps())
@@ -334,7 +334,7 @@ def test_fixed_flag_world_mirror_is_invisible_to_the_policy():
     rng = np.random.default_rng(1)
 
     # Linear stand-in plant, made mirror-equivariant by symmetrization -- the
-    # property tests/integration/test_symmetry.py verifies for the real env.
+    # property tests/integration/test_symmetry_env.py verifies for the real env.
     a0 = rng.normal(size=(n, n)) / (2 * n)
     b0 = rng.normal(size=(n, nu)) / (2 * n)
     plant_a = (a0 + mo @ a0 @ mo) / 2.0
