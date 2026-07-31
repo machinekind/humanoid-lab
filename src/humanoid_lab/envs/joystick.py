@@ -267,6 +267,30 @@ def default_config() -> config_dict.ConfigDict:
             risk_below=0.5,  # hazard starts below this fraction of demand
             p_max=0.02,      # per-step hazard at zero progress
         ),
+        # Mirror augmentation (port item 3.1). At reset each env draws a
+        # coin; the ones that come up heads see every observation mirrored
+        # left-to-right and have their action un-mirrored before the physics,
+        # so the world they actually live in is the ordinary one.
+        #
+        # What it buys: it cancels the simulator's own lateral bias -- engine
+        # contact ordering, and residual model asymmetry like asimov_v1's
+        # 0.1 mm right-ankle offset -- at near-zero cost.
+        #
+        # What it does NOT buy: symmetric BEHAVIOR. The flag is fixed for the
+        # whole episode (and, under brax's auto-reset, for the whole run), so
+        # a mirrored env's policy-frame stream is identical to a plain env's
+        # and PPO gets no gradient toward pi(mirror s) = mirror pi(s). w01-tek
+        # proved that the hard way: its terrain_blind_v3 trained with this on
+        # and provably correct maps and still could not turn one way. Its
+        # asymmetric turning was fixed by the reward mechanics of items 1.1
+        # to 1.6. tests/unit/test_symmetry.py pins the algebra; the escalation
+        # if asymmetry ever survives a healthy reward landscape is a
+        # mirror-equivariant network, documented in docs/configuration.md and
+        # deliberately not built.
+        #
+        # Measurement never runs with this on: eval/battery.py forces it off
+        # (the deployment-frame rule).
+        symmetry=config_dict.create(enable=False, mirror_prob=0.5),
         # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
         # (0.636 m) is not this: it's the floating-base placeholder measured
         # so the feet just touch the floor, not the robot's standing height.
@@ -564,7 +588,16 @@ class Joystick(HumanoidEnv):
 
     # -- reset / step -------------------------------------------------------
     def reset(self, rng: jax.Array) -> mjx_env.State:
-        rng, r_cmd, r_pose = jax.random.split(rng, 3)
+        sym = self._config.symmetry
+        if sym.enable:
+            # The extra key is split off only when the augmentation is on, so
+            # the default trajectory keeps the stock 3-way split and the whole
+            # RNG stream is unchanged while the feature is off
+            # (tests/integration/test_golden_baseline.py is the gate).
+            rng, r_cmd, r_pose, r_mirror = jax.random.split(rng, 4)
+        else:
+            rng, r_cmd, r_pose = jax.random.split(rng, 3)
+            r_mirror = None
         command = self._sample_command(r_cmd)
 
         # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) on
@@ -602,6 +635,14 @@ class Joystick(HumanoidEnv):
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
         }
+        if sym.enable:
+            # Drawn once, here. Under brax's auto-reset (BraxAutoResetWrapper
+            # with full_reset=False, the same wrapper the no-progress reseed
+            # works around) `info` survives a respawn, so this flag is in
+            # practice fixed per env for the whole run. That is acceptable for
+            # bias insurance and matches w01-tek; it is also exactly why the
+            # augmentation cannot teach symmetric behavior (see default_config).
+            info["mirror"] = jax.random.bernoulli(r_mirror, sym.mirror_prob)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
@@ -616,7 +657,7 @@ class Joystick(HumanoidEnv):
             info["progress_ema"] = self._cmd_speed(command)
             metrics["no_progress_cut"] = jp.zeros(())
             metrics["progress_ratio_per_step"] = jp.zeros(())
-        obs = self._build_obs(data, info)
+        obs = self._get_obs(data, info)
         return mjx_env.State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -631,6 +672,18 @@ class Joystick(HumanoidEnv):
             rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
             r_term = None
         info["rng"] = rng
+
+        # Mirror augmentation: this episode's policy acted on mirrored
+        # observations, so its action is in the mirrored frame. Map it back
+        # FIRST -- everything below (physics, rewards, termination, info) runs
+        # in the real frame, and `info["last_action"]` is stored there too.
+        # `_get_obs` mirrors the outgoing observations, which maps that
+        # real-frame last_action back to the action the policy actually
+        # emitted, the mirror being an involution.
+        if self._config.symmetry.enable:
+            action = jp.where(
+                info["mirror"], self._act_sign * action[self._act_perm], action
+            )
 
         motor_targets = jp.clip(
             self._actuator_model.ctrl_from_action(action, self._default_pose, self._action_scale),
@@ -750,7 +803,7 @@ class Joystick(HumanoidEnv):
             metrics["no_progress_cut"] = no_progress_cut.astype(jp.float32)
             metrics["progress_ratio_per_step"] = jp.clip(progress_ratio, 0.0, 2.0)
 
-        obs = self._build_obs(data, info, r_noise)
+        obs = self._get_obs(data, info, r_noise)
         return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
     # -- observations -------------------------------------------------------
@@ -760,6 +813,11 @@ class Joystick(HumanoidEnv):
         leg_phase = self._leg_phases(info)
         catalog["phase"] = jp.concatenate([jp.cos(leg_phase), jp.sin(leg_phase)])
         return catalog
+
+    def _mirror_probe_info(self):
+        """This task's own `info` inputs to the catalog: the command and the
+        gait clock (see _obs_catalog). Shapes only -- the values are zeros."""
+        return {**super()._mirror_probe_info(), "command": jp.zeros(3), "phase": jp.zeros(())}
 
     # -- rewards --------------------------------------------------------------
     def _compute_rewards(self, data, info, action, first_contact, contact):

@@ -30,6 +30,8 @@ derivation half runs once per env at construction, never inside a trace
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import mujoco
 import numpy as np
 
@@ -53,6 +55,19 @@ PROBE_DELTA = 0.05
 # its own axis).
 MAX_FIT_RESIDUAL = 1e-4
 MIN_DISCRIMINATION = 100.0
+
+
+class MirrorTables(NamedTuple):
+    """The three permutations an env needs, all in canonical order.
+
+    joint_perm/joint_sign mirror a vector in robot_spec.actuated_joints
+    order (an action, a joint angle, a joint velocity, a joint torque);
+    foot_perm mirrors a per-foot vector in robot_spec.foot_sites order.
+    """
+
+    joint_perm: np.ndarray
+    joint_sign: np.ndarray
+    foot_perm: np.ndarray
 
 
 class SymmetryError(ValueError):
@@ -104,6 +119,192 @@ def joint_permutation(actuated_joints, symmetry_map) -> np.ndarray:
             "'torso_joint: torso_joint'); symmetry.enable cannot be used until they all have one"
         )
     return np.array([index[partner[n]] for n in actuated_joints], dtype=np.int32)
+
+
+# -- deriving the tables from a compiled model -------------------------------
+
+
+def derive(model, spec, qpos, *, symmetry_map=None, delta: float = PROBE_DELTA) -> MirrorTables:
+    """Measure the mirror tables on `model` at the pose `qpos`.
+
+    `spec` is the robot's RobotSpec; `symmetry_map` overrides its own
+    left -> right map (tests use it to check that a wrong pairing is
+    rejected). Plain MuJoCo on the CPU model, run once at construction,
+    never traced -- about 3 mj_forward calls per joint pair.
+
+    The signs are NOT read off the joint axes. Given the pairing, each pair
+    is probed: perturb the left joint by `delta` from `qpos`, take its foot
+    site's displacement in the base frame, mirror it about the robot's
+    xz-plane, and ask which sign of the right joint reproduces it. The
+    winner has to fit (MAX_FIT_RESIDUAL) and to beat the loser
+    (MIN_DISCRIMINATION), so the probe doubles as validation that the robot
+    really is mirror-symmetric under this pairing -- which is deliberate:
+    the augmentation is only meaningful on a model that is.
+
+    Displacements, not positions: asimov_v1's vendored model is asymmetric
+    by 1.0e-4 m (0.1 mm of y offset on the right ankle-pitch link), and a
+    raw position comparison would put every one of its residuals on that
+    floor and tell the two candidate signs apart by a factor of 24 instead
+    of a factor of 10^4. Subtracting the unperturbed pose removes the static
+    error to first order and leaves the probe measuring what it is about,
+    which is how the joint moves.
+    """
+    joints = list(spec.actuated_joints)
+    perm = joint_permutation(joints, spec.symmetry if symmetry_map is None else symmetry_map)
+    qpos = np.asarray(qpos, dtype=np.float64)
+
+    qadr = np.array([model.joint(n).qposadr[0] for n in joints])
+    anchor = qpos[qadr]
+    mirrored_anchor = anchor[perm]
+
+    chains = _foot_chains(model, spec, joints)
+    foot_perm = _foot_pairing(spec, chains, perm)
+    sign, residuals = _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta)
+
+    # The probe pose has to be its own mirror, or "the mirrored world" is not
+    # this world seen in a mirror. It is also the joint_pos observation's own
+    # anchor (envs/base.py subtracts _default_pose), so a pose that is not
+    # mirror-symmetric would break that observation's map too.
+    off = np.abs(sign * mirrored_anchor - anchor)
+    if off.max() > 1e-9:
+        bad = joints[int(off.argmax())]
+        raise SymmetryError(
+            f"the probe pose of robot '{spec.name}' is not its own mirror: joint '{bad}' reads "
+            f"{anchor[int(off.argmax())]} where the mirror of its partner reads "
+            f"{(sign * mirrored_anchor)[int(off.argmax())]}. The reset keyframe has to be a "
+            "mirror-symmetric pose before the augmentation can run"
+        )
+    _ = residuals
+    return MirrorTables(perm, sign, foot_perm)
+
+
+def _foot_chains(model, spec, joints) -> list[frozenset]:
+    """Per foot site, the set of actuated joints on its body's ancestry.
+
+    Structural: walks the kinematic tree from each foot site's body to the
+    world body. No name parsing anywhere -- 'left' and 'right' are naming
+    conventions, and one of our two robots numbers its foot geoms in the
+    opposite order on the two sides.
+    """
+    index = {int(model.joint(n).id): i for i, n in enumerate(joints)}
+    chains = []
+    for site in spec.foot_sites:
+        body = int(model.site_bodyid[model.site(site).id])
+        found = set()
+        while body != 0:
+            start = int(model.body_jntadr[body])
+            for j in range(start, start + int(model.body_jntnum[body])):
+                if j in index:
+                    found.add(index[j])
+            body = int(model.body_parentid[body])
+        chains.append(frozenset(found))
+    return chains
+
+
+def _foot_pairing(spec, chains, perm) -> np.ndarray:
+    """Which foot is which foot's mirror, from the chains alone.
+
+    Two feet are partners when their joint chains map onto each other under
+    the joint pairing.
+    """
+    pairing = []
+    for i, chain in enumerate(chains):
+        mirrored = frozenset(int(perm[j]) for j in chain)
+        matches = [k for k, other in enumerate(chains) if other == mirrored]
+        if len(matches) != 1:
+            raise SymmetryError(
+                f"foot '{spec.foot_sites[i]}' of robot '{spec.name}' has no unique mirror partner: "
+                f"its joint chain maps onto {[spec.foot_sites[k] for k in matches] or 'no foot'}. "
+                "robot.yaml's foot_sites and symmetry map disagree about which feet pair up"
+            )
+        pairing.append(matches[0])
+    foot_perm = np.array(pairing, dtype=np.int32)
+    if foot_perm[foot_perm].tolist() != list(range(len(chains))):
+        raise SymmetryError(
+            f"the foot pairing derived for robot '{spec.name}' is not an involution: {pairing}"
+        )
+    return foot_perm
+
+
+def _derive_signs(model, spec, joints, perm, chains, foot_perm, qpos, delta):
+    """Per joint, the sign its angle takes in the mirrored world."""
+    data = mujoco.MjData(model)
+    free = [i for i in range(model.njnt) if model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE]
+    if len(free) != 1:
+        raise SymmetryError(f"expected exactly one free joint on '{spec.name}', found {len(free)}")
+    base_body = int(model.jnt_bodyid[free[0]])
+    site_ids = [int(model.site(n).id) for n in spec.foot_sites]
+    qadr = [int(model.joint(n).qposadr[0]) for n in joints]
+
+    def forward(joint_index=None, perturb=0.0):
+        data.qpos[:] = qpos
+        data.qvel[:] = 0.0
+        if joint_index is not None:
+            data.qpos[qadr[joint_index]] += perturb
+        mujoco.mj_forward(model, data)
+
+    def in_base(point):
+        rot = data.xmat[base_body].reshape(3, 3)
+        return rot.T @ (point - data.xpos[base_body])
+
+    def probe_point(joint_index):
+        """A physical point the joint moves, and its mirror partner's.
+
+        A foot site when the joint is on exactly one foot chain: the foot is
+        the end of the chain, so every leg joint swings it. Otherwise the
+        subtree centre of mass below the joint -- NOT the child body's own
+        origin, which is where MuJoCo puts the hinge and therefore does not
+        move at all when the joint turns (measured: 0.0 m for every one of
+        roboto_origin's six unpaired-to-a-foot arm and torso joints).
+        """
+        feet = [f for f, chain in enumerate(chains) if joint_index in chain]
+        partner_feet = [f for f, chain in enumerate(chains) if int(perm[joint_index]) in chain]
+        if len(feet) == 1 and len(partner_feet) == 1 and int(foot_perm[feet[0]]) == partner_feet[0]:
+            return (
+                lambda: in_base(data.site_xpos[site_ids[feet[0]]]),
+                lambda: in_base(data.site_xpos[site_ids[partner_feet[0]]]),
+            )
+        body = int(model.jnt_bodyid[model.joint(joints[joint_index]).id])
+        partner_body = int(model.jnt_bodyid[model.joint(joints[int(perm[joint_index])]).id])
+        return (
+            lambda: in_base(data.subtree_com[body]),
+            lambda: in_base(data.subtree_com[partner_body]),
+        )
+
+    signs = np.ones(len(joints), dtype=np.float32)
+    residuals = {}
+    for i, partner in enumerate(perm):
+        partner = int(partner)
+        if partner < i:
+            continue  # the pair was measured from its other end
+        own, other = probe_point(i)
+        forward()
+        rest_own, rest_other = own().copy(), other().copy()
+        forward(i, delta)
+        target = (own() - rest_own) * np.array([1.0, -1.0, 1.0])  # mirror about the xz-plane
+
+        fits = {}
+        for candidate in (1.0, -1.0):
+            forward(partner, candidate * delta)
+            fits[candidate] = float(np.abs((other() - rest_other) - target).max())
+        best = min(fits, key=fits.get)
+        worst = max(fits, key=fits.get)
+        residuals[joints[i]] = fits
+        decisive = fits[worst] >= MIN_DISCRIMINATION * max(fits[best], 1e-15)
+        if fits[best] > MAX_FIT_RESIDUAL or not decisive:
+            raise SymmetryError(
+                f"robot '{spec.name}' does not mirror under the pairing '{joints[i]}' <-> "
+                f"'{joints[partner]}': turning the first by {delta} rad moves its probe point "
+                f"{np.abs(target).max():.3e} m, and the second reproduces the mirrored motion to "
+                f"{fits[1.0]:.3e} m with sign +1 and {fits[-1.0]:.3e} m with sign -1 (a sign has "
+                f"to fit within {MAX_FIT_RESIDUAL} m and to beat the other by "
+                f"{MIN_DISCRIMINATION:g}x). Either the pairing is wrong or the model is not "
+                "mirror-symmetric; symmetry stays unavailable for this robot until one of them "
+                "is fixed"
+            )
+        signs[i] = best
+        signs[partner] = best
+    return signs, residuals
 
 
 # -- per-component observation maps ------------------------------------------
@@ -177,3 +378,25 @@ def obs_mirror(names, sizes, maps) -> tuple[np.ndarray, np.ndarray]:
     if not perms:
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float32)
     return np.concatenate(perms), np.concatenate(signs)
+
+
+# -- the deployment-frame rule -----------------------------------------------
+
+
+def deployment_frame_overrides(env_overrides: dict) -> dict:
+    """`env_overrides` with the mirror augmentation forced off.
+
+    The rule, in one place: a measurement describes the frame the robot will
+    be deployed in, and the mirror is a training-only stochastic augmentation
+    that flips half the envs into the other one. A battery run under it would
+    report a policy's spin_left as its spin_right, and a sizing rollout would
+    attribute the left leg's torques to the right motor.
+
+    Everything else the run recorded survives, `mirror_prob` included: only
+    `enable` is measurement-only, the same split eval/battery.py's
+    no_progress override makes. Callers: eval/battery.py (so eval/video.py
+    too, which rebuilds through it) and sizing/collect.py.
+    """
+    out = dict(env_overrides or {})
+    out["symmetry"] = {**(out.get("symmetry") or {}), "enable": False}
+    return out
