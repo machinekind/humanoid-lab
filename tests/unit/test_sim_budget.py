@@ -160,3 +160,25 @@ def test_budget_report_keeps_missing_peaks_as_null():
     assert block["nacon_max"] is None
     assert block["nefc_max"] is None
     assert block["backend"] == "jax"
+
+
+# -- recommend_budget -------------------------------------------------------
+
+
+def test_recommend_budget_clears_the_peak_at_the_stated_headroom():
+    """w01-tek sized its own pool at about 7x the measured peak. The rounding
+    is upward, so the recommendation never lands under the headroom it
+    claims."""
+    assert sim_budget.recommend_budget(12, headroom=7.0, step=8) >= 12 * 7.0
+    assert sim_budget.recommend_budget(12, headroom=7.0, step=8) % 8 == 0
+
+
+def test_recommend_budget_rounds_up_to_the_step():
+    assert sim_budget.recommend_budget(10, headroom=7.0, step=8) == 72  # 70 -> 72
+    assert sim_budget.recommend_budget(8, headroom=4.0, step=32) == 32  # 32 exactly
+
+
+def test_recommend_budget_never_returns_zero_for_a_zero_peak():
+    """A regime that measured nothing must not recommend a zero-length buffer;
+    warp would then drop every contact."""
+    assert sim_budget.recommend_budget(0, headroom=7.0, step=8) == 8
