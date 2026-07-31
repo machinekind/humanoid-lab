@@ -46,7 +46,7 @@ day and makes the TDD loop fast.
 - [x] 1.1 `tracking_product` multiplies the linear and angular tracking kernels. [details](docs/port-details.md#11-tracking_product)
 - [x] 1.2 `tracking_relative` normalizes tracking error by the commanded magnitude. [details](docs/port-details.md#12-tracking_relative)
 - [x] 1.3 `tracking_far` blends in a wide kernel so far-off tracking still has gradient. [details](docs/port-details.md#13-tracking_far)
-- [ ] 1.4 `shaping_tracking_gate` makes gait-shaping rewards pay only while tracking. [details](docs/port-details.md#14-shaping_tracking_gate)
+- [x] 1.4 `shaping_tracking_gate` makes gait-shaping rewards pay only while tracking. [details](docs/port-details.md#14-shaping_tracking_gate)
 - [ ] 1.5 `no_progress` terminates episodes that ignore their command. [details](docs/port-details.md#15-no_progress)
 - [ ] 1.6 Pure command draws sample clean wz, vy, slow, fast, and backward commands. [details](docs/port-details.md#16-pure-command-draws)
 - [ ] 1.7 `feet_apex` pays swing peaks and `feet_landing` taxes hard touchdowns. [details](docs/port-details.md#17-feet_apex-and-feet_landing)
