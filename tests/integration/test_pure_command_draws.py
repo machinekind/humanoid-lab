@@ -101,7 +101,9 @@ def test_all_probabilities_zero_matches_a_config_without_the_keys(env):
 # -- stream independence ----------------------------------------------------
 
 
-@pytest.mark.parametrize("earlier", ["pure_wz_prob", "pure_vy_prob", "pure_slow_prob", "pure_fast_prob"])
+@pytest.mark.parametrize(
+    "earlier", ["pure_wz_prob", "pure_vy_prob", "pure_slow_prob", "pure_fast_prob"]
+)
 def test_an_earlier_draw_does_not_perturb_the_back_draw(env, earlier):
     """Every draw folds its own index into `_sample_command`'s argument, so
     an enabled draw consumes nothing from any other draw's stream. `back` is
