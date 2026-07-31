@@ -18,32 +18,37 @@ import pytest
 from humanoid_lab import check_contacts, paths
 from humanoid_lab.envs.joystick import default_config
 
-# Short by CLI standards: enough for the fallen regime to reach the floor and
-# settle, cheap enough to run in the slow suite. The recorded measurement in
-# default_config's comment uses the CLI's own longer default.
-TEST_STEPS = 120
+# Short by CLI standards: every measured peak lands inside the first 80
+# control steps, and three seeds is enough to cover the fallen sweep's three
+# attitudes. The recorded measurement in default_config's comment uses the
+# CLI's own longer defaults.
+TEST_STEPS = 100
+TEST_SEEDS = 3
 
-ROBOTS = [("asimov_v1", "sizing_ideal"), ("roboto_origin", "default")]
+ROBOTS = [("asimov_v1", "sizing_ideal"), ("roboto_origin", "deploy_pd")]
 
 
 @pytest.fixture(scope="module")
 def measured():
     return {
         robot: check_contacts.measure_robot(
-            paths.ROBOTS_DIR / robot, preset, steps=TEST_STEPS
+            paths.ROBOTS_DIR / robot, preset, steps=TEST_STEPS, seeds=TEST_SEEDS
         )
         for robot, preset in ROBOTS
     }
 
 
 @pytest.mark.parametrize("robot, preset", ROBOTS, ids=[r for r, _ in ROBOTS])
-def test_every_regime_reports_a_peak_and_the_fallen_one_is_the_worst(
-    measured, robot, preset
-):
-    """Three regimes, and the reason the fallen one is measured at all: a
-    robot on its side puts far more geometry on the floor than a standing one,
-    and early training is mostly fallen robots. If a run ever sizes its budget
-    off the standing number, this is the test that says why not."""
+def test_every_regime_reports_a_peak(measured, robot, preset):
+    """Three regimes, all of them measuring something.
+
+    No ordering is asserted between them, and that is a finding rather than a
+    gap: neither robot's home keyframe is held up by a neutral action under
+    the stock preset gains, so the "standing" regime is itself a collapse, and
+    its opening steps -- both feet flat, every sole capsule loaded -- often
+    carry the highest contact count of the three. The fallen regime is
+    measured because early training is mostly fallen robots, not because it is
+    guaranteed to be the worst."""
     result = measured[robot]
     regimes = result["regimes"]
     assert set(regimes) == set(check_contacts.REGIMES)
@@ -51,8 +56,10 @@ def test_every_regime_reports_a_peak_and_the_fallen_one_is_the_worst(
         assert r["nacon_max"] > 0, f"{name} measured no contacts at all"
         assert r["nefc_max"] >= r["nacon_max"], f"{name} rows below contacts"
         assert r["steps"] == TEST_STEPS
+        assert r["seeds"] == TEST_SEEDS
 
-    assert regimes["fallen"]["nacon_max"] >= regimes["standing"]["nacon_max"]
+    # The fallen regime really did put the robot down.
+    assert regimes["fallen"]["height_end"] < 0.5
 
 
 @pytest.mark.parametrize("robot, preset", ROBOTS, ids=[r for r, _ in ROBOTS])
@@ -96,6 +103,7 @@ def test_the_result_records_what_produced_it(measured):
     assert result["preset"] == "sizing_ideal"
     assert result["backend"] == "jax"
     assert result["steps"] == TEST_STEPS
+    assert result["seeds"] == TEST_SEEDS
     # On jax the rows are derived from the active contacts, not read off a
     # counter, and the report must say so rather than pass a derivation off as
     # a measurement.

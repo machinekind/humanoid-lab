@@ -54,6 +54,18 @@ def rows_per_contact(cone: int, dim: int) -> int:
     raise ValueError(f"unknown mjtCone value {cone!r}: expected 0 (pyramidal) or 1 (elliptic)")
 
 
+def recommend_budget(peak: int, headroom: float, step: int) -> int:
+    """A budget that clears `peak` by `headroom`, rounded up to `step`.
+
+    w01-tek sized its own pool at about 7x its measured peak (12 contacts ->
+    88). Rounding is upward so the returned number never sits under the
+    headroom it claims, and a zero peak still returns one full step: a
+    zero-length buffer would drop every contact there is.
+    """
+    want = max(1, int(np.ceil(float(peak) * float(headroom))))
+    return int(np.ceil(want / step) * step)
+
+
 def active_contacts(dist) -> int:
     """Contacts actually penetrating in `dist`, an mjx contact distance array.
 
