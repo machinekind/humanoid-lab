@@ -19,6 +19,7 @@ from humanoid_lab.eval.battery import (
     mech_power_mean,
     scenario_result,
     torque_saturation_fraction,
+    tracking_error,
     vibration_index,
     yaw_progress_deg,
 )
@@ -301,6 +302,8 @@ def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
         "foot_clear": np.zeros((n, 2)),
         "foot_vz": np.zeros((n, 2)),
         "tau": np.zeros((n, 4)),
+        "ctrl": np.zeros((n, 4)),
+        "qpos": np.zeros((n, 4)),
     }
 
 
@@ -396,6 +399,83 @@ def test_a_scenario_that_never_lifted_a_foot_reports_zero_swings():
 
     assert r["swings"] == 0
     assert r["touchdown_softness_med"] is None
+
+
+# -- tracking_error (port item 4.3) ------------------------------------------
+#
+# The servo KPI: did the PD loop hold the setpoint the policy commanded?
+# ctrl is the setpoint, qpos the angle reached, both over actuated joints.
+
+
+def test_tracking_error_measures_the_gap_between_setpoint_and_angle():
+    n = SETTLE_STEPS + 100
+    ctrl = np.full((n, 3), 0.5)
+    qpos = np.full((n, 3), 0.4)  # a flat 0.1 rad of sag on every joint
+
+    err = tracking_error(ctrl, qpos, SETTLE_STEPS)
+
+    assert err["rms"] == pytest.approx(0.1)
+    assert err["p95"] == pytest.approx(0.1)
+
+
+def test_tracking_error_is_zero_for_a_perfect_servo():
+    q = np.linspace(0.0, 1.0, SETTLE_STEPS + 100)[:, None] * np.ones((1, 2))
+
+    err = tracking_error(q, q, SETTLE_STEPS)
+
+    assert err["rms"] == pytest.approx(0.0)
+    assert err["p95"] == pytest.approx(0.0)
+
+
+def test_tracking_error_excludes_the_reset_transient():
+    n = SETTLE_STEPS + 100
+    ctrl = np.full((n, 2), 0.5)
+    qpos = np.full((n, 2), 0.5)
+    settled = tracking_error(ctrl, qpos, SETTLE_STEPS)
+
+    qpos[:SETTLE_STEPS] = -3.0  # the robot falling into its pose after reset
+
+    assert tracking_error(ctrl, qpos, SETTLE_STEPS) == settled
+    # ... and the same history scored from step 0 would have been dominated
+    # by it, which is the whole reason for the window.
+    assert tracking_error(ctrl, qpos, 0)["rms"] > 1.0
+
+
+def test_tracking_error_p95_reads_the_worst_joints_not_the_mean():
+    n = SETTLE_STEPS + 100
+    ctrl = np.zeros((n, 10))
+    qpos = np.zeros((n, 10))
+    qpos[SETTLE_STEPS:, 0] = 0.4  # one joint lagging badly
+
+    err = tracking_error(ctrl, qpos, SETTLE_STEPS)
+
+    assert err["p95"] > err["rms"]
+
+
+def test_tracking_error_is_null_when_nothing_outlived_the_settle_window():
+    err = tracking_error(np.zeros((SETTLE_STEPS, 2)), np.zeros((SETTLE_STEPS, 2)), SETTLE_STEPS)
+
+    assert err == {"rms": None, "p95": None}
+
+
+def test_scenario_result_carries_the_tracking_error():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    rec["ctrl"][:] = 0.5
+    rec["qpos"][:] = 0.4
+
+    r = scenario_result("walk_ramp", rec, None, _DT, np.zeros(4), n)
+
+    assert r["tracking_err_rms"] == pytest.approx(0.1)
+    assert r["tracking_err_p95"] == pytest.approx(0.1)
+
+
+def test_scenario_result_tracking_error_is_null_on_a_row_that_never_settled():
+    n = SETTLE_STEPS - 10
+    r = scenario_result("stand", _rec(n), n - 1, _DT, np.zeros(4), 300)
+
+    assert r["tracking_err_rms"] is None
+    assert r["tracking_err_p95"] is None
 
 
 # -- the measurement env overrides -------------------------------------------
