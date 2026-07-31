@@ -476,7 +476,17 @@ envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
 | `pure_fast_prob` | `0.0` | Redraw `vx` from `fast_vx`, zero `vy` and `wz`: clean fast straight walking. |
 | `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. w01-tek deliberately set its own `fast_vx` to `(0.8, 1.2)` — **above** its box — to pull the policy past the speed it deadlocked at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
 | `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal w01-tek actually measured. |
-| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside our negative `vx` range. |
+| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside asimov_v1's negative `vx` range. **Not inside roboto_origin's**, whose overlay narrows `vx` to `[-0.6, 1.0]` — arming `pure_back_prob` there without narrowing `back_vx` is refused at construction (see below). |
+
+Every armed redraw is checked against the **composed** `command` box when the
+env is constructed: `command.<range>` must sit inside `command.<axis>`, or
+`Joystick.__init__` raises a `ValueError` naming the draw, the range and the
+box. A redraw is a redraw of the axis, not a widening of it — a policy that
+trained on commands outside its own box would ship a contract that
+understates what it saw. `deploy_contract.py` refuses the same configuration
+at export; the construct-time check just moves the failure to before the GPU
+hours. Draws at probability `0.0` are not checked, so the shipped all-off
+defaults validate nothing.
 
 ## Mirror augmentation (`task.env.symmetry`)
 
