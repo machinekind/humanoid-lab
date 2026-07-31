@@ -107,6 +107,7 @@ Run this against the full diff at the end of the port.
 - [ ] `no_progress` arms only when demand exceeds the threshold and the grace period has elapsed.
 - [ ] `no_progress` reseeds its EMA on every command resample.
 - [ ] `no_progress` is a true termination with no reward term attached.
+- [ ] Battery, eval, and video reconstruction force `no_progress.enable=false`. A cut is not a fall, and the battery drives the command from outside the sampler.
 - [ ] Motion against the command scores negative progress. A test proves it.
 - [ ] `real_pose_ref` settles against the runtime target bounds and raises on a settle that did not end standing still. There is no height command here, so w01-tek's strictly-increasing-prefix guard over its height table degenerates to that one check.
 - [ ] The settled anchor is identical under two different gain sets. A test proves it.
