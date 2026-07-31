@@ -42,6 +42,10 @@ _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 # block (see sim_budget.budget_report); it gets its own section below.
 _META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
 
+# The per-direction spin rows (eval/battery.py's battery_scenarios), listed
+# in the order the section renders them.
+_SPIN_SCENARIOS = ("spin_left", "spin_right")
+
 
 def _fmt(v, nd: int = 3) -> str:
     if v is None:
@@ -110,6 +114,34 @@ def render_markdown(battery: dict) -> str:
             f"{_fmt(r.get('torque_sat_frac'), 4)} | {_fmt(r.get('mech_power_mean'))} | "
             f"{_fmt(r.get('antiphase_score'))} |"
         )
+
+    # Spin probes (port item 4.1), their own section because the pair only
+    # means something read side by side: a policy that turns 140 degrees one
+    # way and 12 the other averages to a healthy-looking 76. Every scenario
+    # row in battery.json carries the two yaw fields; these are the two rows
+    # that exist to be read that way.
+    spin_names = [n for n in scenario_names if n in _SPIN_SCENARIOS]
+    if spin_names:
+        lines += [
+            "",
+            "## Spin probes",
+            "",
+            "| scenario | yaw_progress_deg | yaw_cmd_deg | completed | fell |",
+            "|---|---|---|---|---|",
+        ]
+        for name in spin_names:
+            r = battery[name]
+            lines.append(
+                f"| {name} | {_fmt(r.get('yaw_progress_deg'), 1)} | "
+                f"{_fmt(r.get('yaw_cmd_deg'), 1)} | {_fmt(r.get('completed'))} | "
+                f"{_fmt(r.get('fell'))} |"
+            )
+        lines += [
+            "",
+            "Yaw is the body gyro's z channel integrated over the post-settle "
+            "window, signed: positive is left (CCW). A right-hand row reading "
+            "positive turned the wrong way; one near zero did not turn.",
+        ]
 
     contacts = battery.get("contacts")
     if contacts:

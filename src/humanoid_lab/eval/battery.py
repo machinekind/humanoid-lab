@@ -24,6 +24,8 @@ scenarios of the documented wall-clock length:
   strafe        -- constant vy=0.3 m/s. 4 s.
   walk_to_stop  -- vx=0.5 m/s for the first 3 s, then zero for the
                     remaining 3 s. 6 s total.
+  spin_left     -- pure spin, wz=+0.5 rad/s held. 6 s.
+  spin_right    -- pure spin, wz=-0.5 rad/s held. 6 s.
 """
 
 from __future__ import annotations
@@ -45,6 +47,21 @@ from humanoid_lab.envs import symmetry
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
 # needed, so these are unit-tested directly in tests/test_battery.py
 # (mirrors sizing/report.py's own pure-reducer pattern).
+
+# The reset transient every metric added by port items 4.1 to 4.3 excludes.
+# rollout() starts recording on the first step after reset, and the opening
+# steps are the robot falling into its pose against a command it has not had
+# time to answer -- charging those to a KPI measures the reset, not the
+# policy. 50 steps is 1 s at asimov's ctrl_dt of 0.02 (it is a step count,
+# not a duration, exactly as w01-tek's TRACK_SETTLE_STEPS is). The pre-4.1
+# metrics keep scoring the whole record: changing what they average over
+# would change what an existing battery.json field means.
+SETTLE_STEPS = 50
+
+
+def _round_or_none(value: float | None, nd: int) -> float | None:
+    """`round(value, nd)`, passing a None (nothing measured) straight through."""
+    return None if value is None else round(value, nd)
 
 
 def vibration_index(qvel_hist, dt: float, cutoff_hz: float = 5.0) -> float:
@@ -130,6 +147,30 @@ def antiphase_score(contact_left, contact_right) -> float:
     return 0.5 * (1.0 - corr)
 
 
+def yaw_progress_deg(wz, dt: float, settle_steps: int = SETTLE_STEPS) -> float | None:
+    """Signed yaw swept over the post-settle window, in degrees.
+
+    `wz` is the BODY-frame yaw rate (rollout() records the gyro's z channel,
+    which is what a body-mounted gyro reads and what the deployed robot would
+    have). Integrating it gives the yaw turned about the robot's own vertical
+    axis; for a robot that stays upright that is world yaw, and for one that
+    does not, the body-frame number is the honest one -- a policy cannot spin
+    about an axis it is not standing on.
+
+    Positive is CCW (left), so the sign carries the chirality: a spin_right
+    row whose progress comes out positive turned the wrong way, and one near
+    zero did not turn at all. Summing the rate rather than differencing yaw
+    angles also needs no unwrapping, so a multi-turn spin cannot alias.
+
+    Returns None (not 0.0) when the record does not outlive `settle_steps`:
+    nothing was measured, and a 0.0 there would read as "did not turn".
+    """
+    w = np.asarray(wz, dtype=float)[settle_steps:]
+    if w.size == 0:
+        return None
+    return float(np.degrees(w.sum() * dt))
+
+
 def peak_over(values) -> int | None:
     """Largest of `values`, ignoring the unmeasured ones, or None if none was.
 
@@ -143,10 +184,23 @@ def peak_over(values) -> int | None:
     return max(seen) if seen else None
 
 
-def scenario_result(name: str, rec: dict, fell_at: int | None, dt: float, torque_cap) -> dict:
+def scenario_result(
+    name: str, rec: dict, fell_at: int | None, dt: float, torque_cap, n_steps: int
+) -> dict:
     """One scenario's battery.json entry, computed from its rollout()."""
-    r = {"fell": fell_at is not None, "fell_at": fell_at, "steps": len(rec["vx"])}
-    if r["steps"] < 10:
+    steps = len(rec["vx"])
+    r = {
+        "fell": fell_at is not None,
+        "fell_at": fell_at,
+        "steps": steps,
+        # Held the whole scripted duration. Written from the step budget
+        # rather than from `fell` because rollout()'s early exit is not
+        # guaranteed to stay the only one: today a scenario ends short only
+        # by terminating, so completed == not fell, and a future exit (a
+        # completion cut, a step cap) reports honestly with no schema change.
+        "completed": fell_at is None and steps >= n_steps,
+    }
+    if steps < 10:
         # Too few samples for FFT/percentile metrics to mean anything
         # (an almost-instant fall) -- fell/fell_at/steps already say enough.
         return r
@@ -157,6 +211,15 @@ def scenario_result(name: str, rec: dict, fell_at: int | None, dt: float, torque
     r["vel_err_vx"] = round(float(err[0]), 4)
     r["vel_err_vy"] = round(float(err[1]), 4)
     r["vel_err_wz"] = round(float(err[2]), 4)
+
+    # Yaw actually swept against yaw asked for, over the post-settle window
+    # (port item 4.1). Reported on every row, not just the two spin probes:
+    # it is a raw reading of the same body gyro every row already records,
+    # and `turn`'s yaw budget is worth the same look. The pair is what makes
+    # a spin row diagnosable -- progress alone cannot say whether a policy
+    # under-turned or was barely asked to turn.
+    r["yaw_progress_deg"] = _round_or_none(yaw_progress_deg(rec["wz"], dt), 2)
+    r["yaw_cmd_deg"] = _round_or_none(yaw_progress_deg(cmd[:, 2], dt), 2)
 
     r["height_mean"] = round(float(rec["height"].mean()), 4)
     r["height_std"] = round(float(rec["height"].std()), 4)
@@ -183,6 +246,9 @@ def scenario_result(name: str, rec: dict, fell_at: int | None, dt: float, torque
 # block, itself from PLAN.md's asimov docs): x +-0.8 m/s, y +-0.6 m/s,
 # yaw +-0.6 rad/s. Every scenario below stays inside this envelope.
 _VX_MAX, _VY_MAX, _WZ_MAX = 0.8, 0.6, 0.6
+
+# Held yaw rate for the spin probes, rad/s. See battery_scenarios.
+_SPIN_WZ = 0.5
 
 
 def battery_scenarios(dt: float) -> dict:
@@ -221,12 +287,29 @@ def battery_scenarios(dt: float) -> dict:
         vx = 0.5 if i < stop_switch else 0.0
         return np.array([vx, 0.0, 0.0])
 
+    # Spin probes (port item 4.1). One held pure-yaw command per direction,
+    # no translation, so the two rows differ in exactly one sign and a
+    # chirality bug has nowhere to hide. 0.5 rad/s sits inside the +-0.6
+    # yaw box with headroom: a probe pinned to the corner of the command
+    # envelope would confound "cannot spin this way" with "was never trained
+    # this close to the edge". Same 6 s as the other held scenarios; at
+    # ctrl_dt 0.02 the post-settle window then asks for 2.5 rad (143 deg),
+    # which is enough turning to see and short of a full revolution, so
+    # nothing depends on the yaw reading unwrapping.
+    def spin_left(_i):
+        return np.array([0.0, 0.0, _SPIN_WZ])
+
+    def spin_right(_i):
+        return np.array([0.0, 0.0, -_SPIN_WZ])
+
     return {
         "stand": (stand, n_steps(6.0)),
         "walk_ramp": (walk_ramp, n_steps(ramp_s + ramp_hold_s)),
         "turn": (turn, n_steps(6.0)),
         "strafe": (strafe, n_steps(4.0)),
         "walk_to_stop": (walk_to_stop, n_steps(stop_s + stop_hold_s)),
+        "spin_left": (spin_left, n_steps(6.0)),
+        "spin_right": (spin_right, n_steps(6.0)),
     }
 
 
@@ -413,7 +496,7 @@ def run_battery(run_dir: Path) -> dict:
     nacon_seen, nefc_seen = [], []
     for name, (cmd_at, n_steps) in battery_scenarios(env.dt).items():
         rec, fell_at, (nacon, nefc) = rollout(env, reset, step, inf, cmd_at, n_steps)
-        results[name] = scenario_result(name, rec, fell_at, env.dt, torque_cap)
+        results[name] = scenario_result(name, rec, fell_at, env.dt, torque_cap, n_steps)
         nacon_seen.append(nacon)
         nefc_seen.append(nefc)
 

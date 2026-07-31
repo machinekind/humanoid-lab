@@ -517,6 +517,20 @@ following w01-tek commit `eb8bad2`, or version the battery explicitly.
 direction, magnitude, and duration before wiring. Add a JSON schema test for
 the per-direction fields.
 
+**Landed.** Both scenarios hold `wz = ±0.5` rad/s for 6 s, inside the `±0.6`
+box with headroom so a failing row cannot be excused as an untrained command
+corner. Every scenario row gained `yaw_progress_deg` (body gyro z integrated
+over the 50-step settle window, signed), `yaw_cmd_deg` (the same integral of
+the command, the row's own denominator) and `completed`. `eval/report.py`
+renders the pair in its own section. See docs/configuration.md.
+
+**Deferred.** w01-tek's second probe world, the DR-patched one, is not built.
+It exists to separate "the policy unlearned turning" from "the policy turns
+only in the contact physics it trained in", and that distinction has no
+meaning until foot-friction DR is actually enabled in a keeper run
+(`dr.foot_friction.enable` is off in every config today). Build it when the
+first keeper trains with it on.
+
 ---
 
 ## 4.2 Gait KPIs

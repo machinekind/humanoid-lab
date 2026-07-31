@@ -588,6 +588,10 @@ exactly what the world mirror cannot do. It is documented here and
 deliberately **not built** — w01-tek needed no such thing once its rewards
 were right.
 
+The sensor for that decision is the battery's `spin_left` / `spin_right`
+pair (see [Spin probes](#spin-probes)). Read the two `yaw_progress_deg`
+numbers, never their average.
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone
@@ -692,6 +696,62 @@ step. `run.json`'s come from the `contact_preflight` probe: brax's PPO loop is
 one jitted scan, so no Python-side code holds an `mjx.Data` while training
 runs and the live counters are unreachable from there. The probe measures the
 same per-world peaks on the same backend, before the job spends GPU hours.
+
+## Eval battery metrics (`battery.json`)
+
+`./run.sh battery` writes one entry per scenario. Every field added by port
+items 4.1 to 4.3 is **additive**: no pre-existing field changed meaning, and
+none of the new numbers folds into a score, a gate, or the `fell` / `steps`
+logic. They are raw readings.
+
+### The settle window
+
+`eval/battery.py`'s `SETTLE_STEPS = 50` is the reset transient every new
+metric drops — 1 s at asimov's `ctrl_dt` of 0.02, and a step count rather
+than a duration. `rollout` starts recording on the first step after reset,
+and the opening steps are the robot falling into its pose against a command
+it has not had time to answer. The pre-4.1 metrics (`vel_err_*`,
+`vibration`, `foot_slip`, `height_*`, `torque_sat_frac`, `mech_power_mean`,
+`antiphase_score`) still score the whole record: narrowing their window would
+change what an existing field means.
+
+### Spin probes
+
+Two scenarios, `spin_left` and `spin_right`, hold a pure yaw command —
+`wz = +0.5` and `-0.5` rad/s, no translation — for 6 s. They sit inside the
+`±0.6` yaw box with headroom, so a row that fails cannot be excused as a
+command-envelope corner the policy was never trained near.
+
+| Field | Meaning |
+|---|---|
+| `yaw_progress_deg` | Body gyro z integrated over the post-settle window, degrees, signed (`+` is CCW / left). `null` when the row did not outlive the settle window. |
+| `yaw_cmd_deg` | The commanded yaw rate integrated over the same window: the row's own denominator. |
+| `completed` | The scenario held its full scripted duration. |
+
+Both yaw fields are written on **every** scenario row, not just the two spin
+ones — they read the same body gyro every row already records, and `turn`'s
+yaw budget is worth the same look. The two spin rows are the ones that exist
+to be read side by side.
+
+Why per-direction rows: a policy that turns 140 degrees left and 12 right
+averages to a healthy-looking 76. w01-tek's `stiff_b` keeper shipped unable to
+spin right because every scenario that turned at all turned left. These rows
+are also the sensor for the escalation decision in
+[Mirror augmentation](#mirror-augmentation-taskenvsymmetry): asymmetry that
+survives a healthy reward landscape is what would justify a
+mirror-equivariant network.
+
+The frame is the body gyro, not world yaw. Integrating the rate needs no
+unwrapping, so a multi-turn spin cannot alias, and a robot that is not
+upright gets the honest number — it cannot spin about an axis it is not
+standing on. At `ctrl_dt` 0.02 the post-settle window asks for 2.5 rad
+(143 deg), short of a full revolution.
+
+Not ported: w01-tek's second probe world, which replays the DR-patched contact
+physics (feet at `geom_priority = 1`) to tell "the policy unlearned turning"
+from "the policy turns only in the physics it trained in". That distinction
+only exists once foot-friction DR is actually on in a keeper run. See
+[docs/port-details.md](port-details.md#41-spin-probes).
 
 ## Early stopping (`early_stop`)
 
