@@ -32,6 +32,13 @@ smoke: false # tiny CPU-sized run for a pipeline check
 restore: null # checkpoint dir to warm-start from
 domain_rand: false
 
+# Measure the warp contact/constraint peaks on a short probe before training
+# and record them in run.json's `contacts` block. Warp drops buffer overflow
+# silently, so before the job spends GPU hours is the only cheap moment to
+# catch an undersized budget. Skipped automatically when smoke=true. Off, the
+# block is still written, with null peaks.
+contact_preflight: true
+
 # Deep-merged onto the loaded actuator preset yaml at env/model construction
 # (robot/presets.py's load_actuator_preset -- the one choke point every
 # consumer routes through). Experiment yamls set keys here directly; from

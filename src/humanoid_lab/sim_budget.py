@@ -104,6 +104,29 @@ def live_peaks(data) -> tuple[int | None, int | None]:
     return nacon, peak(getattr(impl, "nefc", None))
 
 
+def contact_dist(data):
+    """The contact distance array off an mjx `Data`, or None if it has none."""
+    contact = getattr(getattr(data, "_impl", None), "contact", None)
+    return None if contact is None else contact.dist
+
+
+def observed_peaks(data) -> tuple[int | None, int | None]:
+    """(contacts, rows) for one step, as a caller in a step loop should record.
+
+    Warp's counters win where they exist. On jax the contact count is still a
+    real measurement -- the penetrating entries of the padded contact array --
+    while the row count is not measurable at all, so it stays None. Deriving a
+    row count from the contact count is check_contacts' job, where the
+    derivation can be labelled as one; a run.json field must not carry a
+    number whose meaning changes with the backend that wrote it.
+    """
+    nacon, nefc = live_peaks(data)
+    if nacon is None:
+        dist = contact_dist(data)
+        nacon = None if dist is None else active_contacts(dist)
+    return nacon, nefc
+
+
 def budget_report(
     backend: str,
     nacon_max,
@@ -143,3 +166,15 @@ def budget_report(
         "njmax": int(njmax),
         "rows_overflow": bool(is_warp and nefc is not None and nefc >= njmax),
     }
+
+
+def budget_report_for_env(env, nacon_max, nefc_max) -> dict:
+    """`budget_report` with the budgets read off `env`'s resolved sim config.
+
+    The single adapter train.py and eval/battery.py both call, so the two
+    files cannot disagree about what a run was configured with.
+    """
+    sim = env._config.sim
+    return budget_report(
+        env._backend, nacon_max, nefc_max, sim.naconmax_per_env, sim.njmax, sim.num_envs
+    )
