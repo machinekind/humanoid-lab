@@ -75,7 +75,20 @@ day and makes the TDD loop fast.
     goldens roll out with DR off and stayed green.
 
 **Phase 3. Symmetry.**
-- [ ] 3.1 Mirror augmentation, plus the rule that eval always runs in the deployment frame. [details](docs/port-details.md#31-symmetry)
+- [x] 3.1 Mirror augmentation, plus the rule that eval always runs in the deployment frame. [details](docs/port-details.md#31-symmetry)
+  - The joint signs are derived numerically per robot, and no naming rule
+    would have worked: asimov_v1 mirrors with -1 on all twelve leg joints,
+    roboto_origin with +1 on its pitch chain and -1 on its yaw/roll chain.
+    The probe compares DISPLACEMENTS, not the brief's absolute positions:
+    asimov_v1's vendored export is asymmetric by 1.0e-4 m, which puts every
+    absolute residual on that floor and tells the two candidate signs apart
+    by a factor of 24 instead of 10^4. See docs/configuration.md.
+  - Two things the brief did not ask for. roboto_origin's robot.yaml now
+    pairs `torso_joint` with itself: the map has to cover every actuated
+    joint, and a centerline joint's partner is itself. And the joints on no
+    foot chain (roboto's arms, its torso) probe the subtree centre of mass
+    below the joint, because a child body's own origin is the hinge and does
+    not move when the joint turns -- measured 0.0 m for all six.
 
 **Phase 4. Eval additions.**
 - [ ] 4.1 `spin_left` and `spin_right` battery probes. [details](docs/port-details.md#41-spin-probes)

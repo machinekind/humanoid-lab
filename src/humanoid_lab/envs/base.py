@@ -21,6 +21,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from humanoid_lab.actuators.models import ACTUATOR_MODELS
+from humanoid_lab.envs import symmetry
 from humanoid_lab.envs.backend import make_data_fn, resolve_backend
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale as preset_action_scale
@@ -226,6 +227,57 @@ class HumanoidEnv(mjx_env.MjxEnv):
         else:
             self._pose_anchor = self._default_pose
             self._reset_qpos = self._home_qpos
+
+        # Mirror augmentation tables (port item 3.1), built only when the
+        # augmentation is on. Two reasons for the gate: the derivation probes
+        # the model (about 3 mj_forward calls per joint pair), and a robot
+        # with no symmetry map at all -- tests/data/toy_robot has one leg --
+        # must still construct for every run that does not ask for this.
+        self._mirror_tables = None
+        sym = self._config.get("symmetry", None)
+        if sym is not None and sym.enable:
+            self._build_mirror_maps()
+
+    # -- mirror augmentation -------------------------------------------------
+    def _build_mirror_maps(self) -> None:
+        """Derive the joint/foot tables and assemble the observation maps.
+
+        The observation maps are sized from THIS env's catalog, measured here
+        by building the catalog on a fresh (unforwarded) data: only the shapes
+        are read, so no physics has to run. w01-tek sizes its maps from a
+        static table in the symmetry module instead, which cannot notice a
+        robot whose joint or foot count differs from the table's.
+        """
+        tables = symmetry.derive(self._mj_model, self._robot_spec, np.asarray(self._home_qpos))
+        self._mirror_tables = tables
+        self._act_perm = jp.array(tables.joint_perm)
+        self._act_sign = jp.array(tables.joint_sign)
+
+        maps = symmetry.component_maps(tables.joint_perm, tables.joint_sign, tables.foot_perm)
+        catalog = self._obs_catalog(self._make_data(), self._mirror_probe_info())
+        sizes = {name: int(np.prod(value.shape)) for name, value in catalog.items()}
+
+        state_names = self.actor_obs_names
+        state_perm, state_sign = symmetry.obs_mirror(state_names, sizes, maps)
+        priv_names = list(self._config.obs.privileged)
+        priv_perm, priv_sign = symmetry.obs_mirror(priv_names, sizes, maps)
+        for names, perm in ((state_names, state_perm), (priv_names, priv_perm)):
+            width = sum(sizes[n] for n in names)
+            if len(perm) != width:
+                raise symmetry.SymmetryError(
+                    f"the assembled mirror map is {len(perm)} wide but the observation list "
+                    f"{names} builds {width} values"
+                )
+        self._state_perm, self._state_sign = jp.array(state_perm), jp.array(state_sign)
+        self._priv_perm, self._priv_sign = jp.array(priv_perm), jp.array(priv_sign)
+
+    def _mirror_probe_info(self) -> dict:
+        """The `info` entries `_obs_catalog` reads, as zeros.
+
+        Only the resulting SHAPES are used (see _build_mirror_maps). A task
+        env that adds catalog entries fed from `info` extends this too.
+        """
+        return {"last_action": jp.zeros(self.action_size)}
 
     # -- settled-pose anchor -------------------------------------------------
     def _settle_pose(self):
@@ -515,4 +567,37 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return {
             "state": state,
             "privileged_state": gather(self._config.obs.privileged),
+        }
+
+    def _get_obs(self, data, info, rng=None):
+        """`_build_obs`, then the mirror when this episode drew the flag.
+
+        Order, and why it is the one w01-tek uses (env.py:1053-1066): the
+        observation is built and NOISED in the real frame, and the mirror is
+        applied to the already-noisy vector. `_build_obs` draws one uniform
+        per element and scales it by a per-COMPONENT constant, and the mirror
+        is a signed permutation that never moves a value across a component
+        boundary -- so the permuted noise-scale vector is the noise-scale
+        vector itself, and negating a symmetric uniform leaves its
+        distribution alone. Mirroring after the noise therefore samples the
+        same DISTRIBUTION as noising after the mirror; it is not the same
+        draw, which is why the order matters for bit-exactness and not for
+        correctness. tests/unit/test_symmetry.py pins the scale invariance
+        that argument rests on.
+
+        Off, this returns `_build_obs`'s own dict object untouched.
+        """
+        obs = self._build_obs(data, info, rng)
+        if self._mirror_tables is None:
+            return obs
+        mirror = info["mirror"]
+        return {
+            "state": jp.where(
+                mirror, self._state_sign * obs["state"][self._state_perm], obs["state"]
+            ),
+            "privileged_state": jp.where(
+                mirror,
+                self._priv_sign * obs["privileged_state"][self._priv_perm],
+                obs["privileged_state"],
+            ),
         }

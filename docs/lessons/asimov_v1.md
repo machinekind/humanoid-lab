@@ -70,3 +70,27 @@ The number that mattered: the carried-over default was `naconmax_per_env=32`,
 exactly asimov's standing peak. On the warp backend that run would have been
 dropping contacts from its second step, silently, with no counter or exception
 anywhere. Measure the budget on the robot rather than inheriting it.
+
+## The vendored model is mirror-symmetric to 0.1 mm, not exactly
+
+Measured 2026-07-31 while deriving the mirror maps for port item 3.1. At the
+`home` keyframe, asimov_v1's left foot site mirrored about the robot's
+xz-plane misses the right foot site by 1.0e-4 m, and paired leg links differ
+in mass by up to 4.6e-4 kg. The source is the vendored CAD export itself:
+`right_ankle_pitch_link` sits at `pos="0 9.99999999979628E-05 ..."` where the
+left one sits at exactly 0, and several other link positions carry
+sub-micrometre y differences. (roboto_origin, whose MJCF is generated rather
+than exported from CAD, measures 5.9e-7 m and 1.5e-3 kg.)
+
+Two consequences. Anything that compares the two sides has to compare
+DISPLACEMENTS, not positions: the sign probe in `envs/symmetry.py` originally
+compared mirrored foot-site positions, and every one of its residuals came
+out on that 1.0e-4 m floor, which left the two candidate signs a factor of 24
+apart instead of 10^4. And this asymmetry is itself a small standing argument
+for the mirror augmentation, which averages a bias like it away across the
+batch.
+
+The foot geoms mirror too, but not by name: `left_foot1_collision` is the
+mirror of `right_foot5_collision`, not of `right_foot1_collision`, and the
+XML's own numbering skips `left_foot5` and `right_foot6`. Nothing should pair
+this robot's geometry by parsing names.

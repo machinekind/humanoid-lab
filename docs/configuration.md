@@ -475,6 +475,119 @@ envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
 | `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal w01-tek actually measured. |
 | `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside our negative `vx` range. |
 
+## Mirror augmentation (`task.env.symmetry`)
+
+Off by default. On, each env draws a coin at reset. The ones that come up
+heads see every observation mirrored left-to-right, and their action is
+un-mirrored before it reaches the physics — so the world they live in is the
+ordinary one, and physics, rewards and termination all run in the real frame.
+
+**What it is for.** Cancelling the simulator's own lateral bias: engine
+contact ordering, and residual model asymmetry. Both robots carry some.
+asimov_v1's vendored CAD export mirrors to 1.0e-4 m and 4.6e-4 kg (its right
+ankle-pitch link sits 0.1 mm off in y); roboto_origin's to 5.9e-7 m and
+1.5e-3 kg. Averaged over a training batch, half the envs meet that bias from
+each side. It costs one bernoulli draw per reset and three gathers per step
+(the action, the actor observation, the privileged one).
+
+**What it is not.** It is not a fix for asymmetric behavior. The flag is
+drawn once at reset, and under brax's
+auto-reset (`BraxAutoResetWrapper(full_reset=False)`, the same wrapper the
+no-progress reseed works around) `info` survives every respawn, so in
+practice the flag is fixed per env for the whole run. A fixed flag is
+unobservable to the learner: for any policy, however asymmetric, a mirrored
+env's policy-frame `(obs, action, reward)` stream is *identical* to a plain
+env's, so PPO gets exactly zero gradient toward `pi(mirror s) = mirror pi(s)`.
+World mirroring cancels the chirality of the **world**; it cannot symmetrize
+the **policy**. That is not a guess: w01-tek's `terrain_blind_v3` trained with
+this on and provably correct maps — mirror-wrapping the checkpoint swapped
+its spin scores exactly, `-33/+124` degrees became `+127/-35` — and still
+could not turn one way. Its asymmetric turning was fixed by the reward
+mechanics of port items 1.1 to 1.6, and its v4 turns 360 degrees both ways
+with no equivariant network. `tests/unit/test_symmetry.py`'s
+`test_fixed_flag_world_mirror_is_invisible_to_the_policy` pins the algebra.
+
+**The maps.** `src/humanoid_lab/envs/symmetry.py`, built once at construction
+and only when `enable` is set. The joint pairing comes from `robot.yaml`'s
+`symmetry` map, which must cover **every** actuated joint: a centerline joint
+is written as its own partner (`torso_joint: torso_joint`), and an unlisted
+joint raises, because leaving it in place with sign `+1` is a wrong mirror
+rather than a missing one.
+
+The joint **signs are derived numerically**, never read off axis names. For
+each pair the derivation perturbs the left joint by 0.05 rad at the reset
+keyframe, mirrors its foot site's displacement about the robot's xz-plane,
+and asks which sign of the right joint reproduces it; the winner must fit
+within 1e-4 m and beat the loser by 100x, which makes the probe double as
+proof that the robot is mirror-symmetric under this pairing. It measures
+displacements rather than positions so a static left-right offset (asimov's
+0.1 mm) cannot swamp the comparison. Joints on no foot chain (roboto's arms
+and torso) probe the subtree centre of mass below the joint instead — a
+child body's own origin is where MuJoCo puts the hinge and does not move at
+all when the joint turns.
+
+The probe runs at the reset **keyframe**, and it also checks that the
+keyframe is its own mirror — it is the anchor the `joint_pos` observation
+subtracts, so a pose that is not mirror-symmetric would break that
+observation's map too. With `real_pose_ref` on, the pose the episode starts
+from is the settled one instead, which inherits the keyframe's symmetry only
+up to the model's own asymmetry worked through the settle: measured on
+roboto_origin (the only robot whose keyframe settles), the keyframe is its
+own mirror exactly and the settled pose to 1.7e-6 rad. The two switches
+compose.
+
+No naming rule would work. asimov_v1 mirrors with `-1` on all twelve leg
+joints, because its left and right pitch hinges carry opposite local y-axes.
+roboto_origin needs `+1` on the thigh pitch, knee and ankle pitch and `-1` on
+the thigh yaw/roll, ankle roll and torso, because its two sides carry
+identical axes — including a compound 60-degree thigh yaw/roll pair. A rule
+fitted to either robot is wrong on the other. Both tables are pinned in
+`tests/integration/test_symmetry_env.py`, which exists to catch silent
+drift.
+
+The observation map is assembled from the env's **resolved** actor and
+privileged lists and validated against the sizes that env's own catalog
+produces, so an obs list change or a robot with a different joint or foot
+count fails at construction, naming the component. Vectors mirror as
+`(x,-y,z)`, angular rates as `(-x,y,-z)`, the command as `(vx,-vy,-wz)`; the
+gait clock's two feet swap in both the cos and the sin half.
+
+Observations are noised in the real frame and mirrored afterwards, the order
+w01-tek uses. The noise is i.i.d. within each component with one scale per
+component, and the mirror never moves a value across a component boundary, so
+mirroring the noisy vector samples the same distribution as noising the
+mirrored one.
+
+**The deployment-frame rule.** `eval/battery.py` and `sizing/collect.py`
+force `symmetry.enable=false` when they rebuild an env from a run config, and
+`eval/video.py` inherits it by rebuilding through the battery. A measurement
+describes the frame the robot is deployed in; a battery that drew the coin
+the other way would report a policy's `spin_left` as its `spin_right`, and a
+sizing rollout would bill the left leg's torques to the right motor. Only
+`enable` is overridden — `mirror_prob` and every other recorded value
+survive. Any future training-only stochastic augmentation stored in run
+config gets the same treatment; the rule lives in one function,
+`envs/symmetry.py`'s `deployment_frame_overrides`.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enable` | `false` | Off changes nothing: no maps are built, no `mirror` key enters `info`, and no RNG key is split, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
+| `mirror_prob` | `0.5` | Probability that an env draws the mirrored frame at reset. `0.5` splits the batch evenly, which is what makes the bias cancel. |
+
+**If asymmetry ever appears anyway**, and survives a healthy reward landscape
+(items 1.1 to 1.6 on, tracking honest, no refused command corners), the
+escalation is a mirror-equivariant *network*, not a bigger augmentation:
+
+```
+pi(s) = (f(s) + mirror_act(f(mirror_obs(s)))) / 2
+```
+
+wired through the network factory, using the same two maps this module
+already derives. That couples the two frames inside the learner, which is
+exactly what the world mirror cannot do. It is documented here and
+deliberately **not built** — w01-tek needed no such thing once its rewards
+were right.
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone
