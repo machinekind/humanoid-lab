@@ -58,6 +58,23 @@ def tracking_rel_sigma(cmd_magnitude, rel_sigma: float, floor: float):
     return rel_sigma * jp.square(jp.maximum(cmd_magnitude, floor))
 
 
+def tracking_far_blend(kernel, err_sq, weight: float, far_sigma: float):
+    """Mix a wide exponential into a tracking kernel:
+    (1-weight)*kernel + weight*exp(-err^2/far_sigma).
+
+    exp(-err^2/sigma) is gradient-free once the error is a few sigma out, so
+    a capability the policy never explored gets no pull toward the command at
+    all. The wide second exponential keeps a usable gradient at range. Both
+    exponentials peak at zero error, so the optimum and the [0, 1] bound are
+    unchanged.
+
+    err_sq is the raw squared error, never a relative one: the far kernel
+    stays absolute in both branches, so a state far off the command sees the
+    same pull at any commanded speed.
+    """
+    return (1.0 - weight) * kernel + weight * jp.exp(-err_sq / far_sigma)
+
+
 def lin_vel_z(linvel_z):
     """Penalize vertical bounce."""
     return jp.square(linvel_z)
