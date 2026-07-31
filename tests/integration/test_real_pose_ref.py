@@ -258,12 +258,21 @@ def test_the_default_pose_still_centers_the_action(anchored_envs, preset):
 
 
 def test_reset_starts_at_the_settled_pose(settled_env):
-    """With the pose noise off, reset lands exactly on the settled state:
-    the robot starts at rest instead of dropping into its own sag."""
+    """With the pose noise off, reset lands on the settled state exactly:
+    the robot starts at rest instead of dropping into its own sag.
+
+    Exact at the joints and at the base position. The base QUATERNION is
+    compared loosely because reset runs mjx.forward, which re-normalizes it:
+    the settled quat is unit in the settle's float64 and a few 1e-8 off it
+    once cast to the env's float32."""
     state = settled_env.reset(jax.random.PRNGKey(3))
-    np.testing.assert_array_equal(
-        np.asarray(state.data.qpos), np.asarray(settled_env._reset_qpos)
-    )
+    qpos = np.asarray(state.data.qpos)
+    settled = np.asarray(settled_env._reset_qpos)
+    adr = settled_env._base_qadr
+
+    np.testing.assert_array_equal(qpos[np.asarray(settled_env._qadr)], settled[np.asarray(settled_env._qadr)])
+    np.testing.assert_array_equal(qpos[adr : adr + 3], settled[adr : adr + 3])
+    np.testing.assert_allclose(qpos[adr + 3 : adr + 7], settled[adr + 3 : adr + 7], atol=1e-6)
 
 
 def test_reset_noise_still_rides_on_the_settled_pose(anchored_envs):
