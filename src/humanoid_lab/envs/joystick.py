@@ -258,10 +258,29 @@ def default_config() -> config_dict.ConfigDict:
             # raised earned ~1.8 reward per step against honest walking's
             # ~0.25). Gated, a stride pays in proportion to how well the
             # command is being served and standing pays nothing for lifting
-            # legs. Gated set: feet_air_time, plus feet_apex when port item
-            # 1.7 lands. Not feet_phase -- see _compute_rewards.
+            # legs. Gated set: feet_air_time and feet_apex. Not feet_phase,
+            # and not the feet_landing penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
+            # Per-swing apex target for feet_apex, m. The duration-averaged
+            # clearance terms tolerate a 1.5-2 cm skim that collects nearly
+            # as much as a crisp arc, so the optimizer skims; paying the
+            # swing's PEAK instead got w01-tek 3-5 cm swings and 30-70%
+            # better grip. Height band of the feet_landing penalty, m:
+            # downward foot speed is priced in proportion to how far INSIDE
+            # this band the foot is (1 at the floor, 0 at glide_height and
+            # above), so the gradient reads "decelerate as you approach". It
+            # is measured BEFORE contact because a penalty read AT contact
+            # under-reads impacts: the solver has already absorbed the hit
+            # within the control step it becomes visible. The physical
+            # touchdown reference is free fall over the band,
+            # sqrt(2*9.81*0.03) ~ 0.77 m/s.
+            #
+            # Both numbers are w01-tek's, tuned for a 0.21 m four-bar leg.
+            # RE-DERIVE for asimov's leg: our own gait.swing_height asks for
+            # 0.08 m of swing, so a 0.05 m apex target is not this robot's.
+            apex_target=0.05,
+            glide_height=0.03,
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
             torque_limit_frac=0.85,
@@ -289,6 +308,12 @@ def default_config() -> config_dict.ConfigDict:
                 stand_still=-0.5,
                 termination=-1.0,
                 torque_limit=0.0,
+                # Per-swing apex shaping (see apex_target above), 0 = off.
+                feet_apex=0.0,
+                # Soft-landing penalty (see glide_height above), 0 = off. A
+                # policy trained with it glides its feet into stance instead
+                # of striking the floor at swing free-fall speed.
+                feet_landing=0.0,
             ),
         ),
     )
@@ -444,6 +469,10 @@ class Joystick(HumanoidEnv):
             "last_last_action": jp.zeros(self.action_size),
             "last_torque": jp.zeros(self.action_size),
             "feet_air_time": jp.zeros(self._n_feet),
+            # Per-swing peak clearance, for feet_apex (see step()). Seeded
+            # unconditionally, like feet_air_time: the info pytree must not
+            # change shape with the reward scales.
+            "swing_apex": jp.zeros(self._n_feet),
             "last_contact": jp.zeros(self._n_feet, dtype=bool),
             "phase": jp.array(0.0),
             "step_count": jp.array(0),
@@ -503,8 +532,22 @@ class Joystick(HumanoidEnv):
         contact_filt = contact | info["last_contact"]
         first_contact = (info["feet_air_time"] > 0) & contact_filt
 
+        # Swing-apex tracker for feet_apex, bracketing the reward call. On
+        # the way up it takes the running maximum of each airborne foot's
+        # clearance; on the step a foot lands, contact_filt is already true,
+        # so this update skips and the term reads the peak the completed
+        # swing actually reached. The zeroing after the reward arms the next
+        # swing. Both halves run whatever the scale is: the tracker is info
+        # state, not a reward, and its shape must not depend on the config.
+        info["swing_apex"] = jp.where(
+            ~contact_filt,
+            jp.maximum(info["swing_apex"], self._foot_clearance(data)),
+            info["swing_apex"],
+        )
+
         rewards, fall = self._compute_rewards(data, info, action, first_contact, contact)
 
+        info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
         info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
         info["last_contact"] = contact
         info["last_last_action"] = info["last_action"]
@@ -601,11 +644,7 @@ class Joystick(HumanoidEnv):
         qpos_act = data.qpos[self._qadr]
         qvel_act = data.qvel[self._vadr]
 
-        # foot_sites sit a few mm above the sole (see base.py's
-        # _foot_site_rest_z docstring); subtract the construct-time resting
-        # height so a planted foot reads ~0 clearance, matching the target
-        # clearance's own stance value of 0 (w01-tek's geom-bottom semantic).
-        foot_clearance = self._foot_site_pos(data)[:, 2] - self._foot_site_rest_z
+        foot_clearance = self._foot_clearance(data)
         target_clearance, _stance_mask = self._gait_targets(info)
         foot_vel = self._foot_linvel(data)
 
@@ -660,11 +699,10 @@ class Joystick(HumanoidEnv):
 
         # Gait-shaping gate (see shaping_tracking_gate in default_config):
         # the positive gait terms follow the linear tracking kernel, after
-        # the product gate when that is on. Gated set today: feet_air_time.
-        # feet_apex joins it when port item 1.7 lands. feet_phase stays
-        # ungated on purpose -- it is the clock-following gradient, and it
-        # has to survive at zero tracking because stepping is how tracking
-        # starts.
+        # the product gate when that is on. Gated set: feet_air_time and
+        # feet_apex. feet_phase stays ungated on purpose -- it is the
+        # clock-following gradient, and it has to survive at zero tracking
+        # because stepping is how tracking starts.
         shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
 
         rewards = {
@@ -687,5 +725,20 @@ class Joystick(HumanoidEnv):
             "stand_still": terms.stand_still(qpos_act, self._default_pose, qvel_act) * (~moving),
             "termination": terms.termination(fall),
             "torque_limit": terms.torque_limit(data.actuator_force, self._torque_cap, cfg.torque_limit_frac),
+            # Appended at the END on purpose: the scaled sum below adds the
+            # terms in dict order, so a key inserted mid-dict shifts every
+            # later float addition and breaks the pre-port golden.
+            #
+            # feet_apex is in the shape_gate's set (see above): a tall swing
+            # while the command goes unserved is the same stand-and-lift
+            # income the gate exists to remove. feet_landing is NOT -- it is
+            # a penalty, and gating a penalty on the tracking kernel would
+            # relax it exactly when tracking is failing, which is when feet
+            # are being slammed into the floor.
+            "feet_apex": terms.feet_apex(info["swing_apex"], first_contact, cfg.apex_target)
+            * moving
+            * shape_gate,
+            "feet_landing": terms.feet_landing(foot_vel[:, 2], foot_clearance, cfg.glide_height)
+            * moving,
         }
         return rewards, fall

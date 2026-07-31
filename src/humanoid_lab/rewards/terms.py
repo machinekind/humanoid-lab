@@ -134,6 +134,43 @@ def feet_slip(foot_linvel_xy, contact):
     return jp.sum(jp.sum(jp.square(foot_linvel_xy), axis=-1) * contact)
 
 
+def feet_apex(swing_apex, first_contact, apex_target: float):
+    """Pay each completed swing for how close its PEAK clearance came to
+    `apex_target`, once, on the step the foot lands.
+
+    The duration-averaged clearance terms (feet_phase here, high_step in
+    w01-tek) tolerate a long 1.5-2 cm skim that collects nearly as much as a
+    crisp arc, so the optimizer skims. Pricing the peak instead got w01-tek 3
+    to 5 cm swings and 30 to 70% better grip. Clipped at the target: the term
+    asks for an apex, it does not pay for exceeding it.
+
+    `swing_apex` is the caller's running maximum over the swing (the env
+    tracks it in its info dict); `first_contact` selects the feet whose swing
+    ended this step.
+    """
+    return jp.sum(jp.clip(swing_apex / apex_target, 0.0, 1.0) * first_contact)
+
+
+def feet_landing(foot_vz, foot_clearance, glide_height: float):
+    """Penalize downward foot speed, weighted by closeness to the floor:
+    sum(min(foot_vz, 0)^2 * clip(1 - clearance/glide_height, 0, 1)).
+
+    Measured BEFORE contact on purpose. A penalty read at contact under-reads
+    hard strikes, because the solver has already absorbed the impact within
+    the control step it becomes visible. Weighting by proximity instead makes
+    the gradient read "decelerate as you approach": 1 at the floor, 0 at
+    `glide_height` and above. Stance feet score ~0 (vz ~ 0), and a swing high
+    above the floor scores 0 whatever its speed.
+
+    The physical reference for touchdown softness is free fall over the glide
+    band: sqrt(2*9.81*0.03) ~ 0.77 m/s at w01-tek's 0.03 m.
+    """
+    return jp.sum(
+        jp.square(jp.clip(foot_vz, None, 0.0))
+        * jp.clip(1.0 - foot_clearance / glide_height, 0.0, 1.0)
+    )
+
+
 def feet_phase(foot_clearance, target_clearance, phase_sigma: float):
     """exp(-err^2/sigma) between actual and gait-clock-commanded foot
     clearance; 1.0 when every foot matches its swing/stance target exactly."""
