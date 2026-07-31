@@ -197,8 +197,9 @@ def render_markdown(battery: dict) -> str:
             )
         lines += [
             "",
-            "|ctrl - qpos| over the actuated joints after the settle window: "
-            "did the servo hold the setpoint the policy commanded. The p95 says "
+            "The gap between ctrl and qpos over the actuated joints, after the "
+            "settle window: did the servo hold the setpoint the policy "
+            "commanded. The p95 says "
             "whether the error is spread evenly or lives in a few joints. Under "
             "an ideal_torque preset ctrl is a torque, so these two numbers are "
             "not a servo error -- run.json's `actuator_gains.model` says which "
