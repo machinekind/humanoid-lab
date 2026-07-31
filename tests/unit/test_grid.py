@@ -192,7 +192,7 @@ def test_alpha_scales_gains_and_cap_together():
     assert m.actuator_gainprm[:, 0] == pytest.approx([100.0, 120.0])
     assert m.actuator_biasprm[:, 1] == pytest.approx([-100.0, -120.0])
     assert m.actuator_biasprm[:, 2] == pytest.approx([-4.0, -6.0])
-    assert m.actuator_forcerange == pytest.approx([[-80.0, 80.0], [-110.0, 110.0]])
+    assert m.actuator_forcerange.ravel() == pytest.approx([-80.0, 80.0, -110.0, 110.0])
 
 
 def test_alpha_keeps_the_bias_consistent_with_the_new_kp():
@@ -228,6 +228,49 @@ def test_alpha_rejects_a_non_positive_factor():
         grid.apply_kt_miscalibration(_fake_pd_model(), 0.0)
     with pytest.raises(ValueError, match="alpha"):
         grid.apply_kt_miscalibration(_fake_pd_model(), -1.0)
+
+
+# -- the explicit-PD path's guards ------------------------------------------
+#
+# These fire before the builder touches a model, so a duck-typed env is
+# enough and the checks stay in the fast suite. What the loop DOES to the
+# physics is tests/integration/test_grid_env.py.
+
+
+def _fake_env(push=False, no_progress=False, symmetry=False, model="pd"):
+    return types.SimpleNamespace(
+        _config={
+            "push": {"enable": push},
+            "no_progress": {"enable": no_progress},
+            "symmetry": {"enable": symmetry},
+        },
+        _preset=types.SimpleNamespace(model=model),
+    )
+
+
+def test_the_explicit_path_refuses_a_cell_that_perturbs_nothing():
+    """lag_tau 0 with no envelope means "use the native env unchanged", not
+    "use this path with a zero filter state". The baseline cell is the
+    native path, and that is the whole honesty requirement."""
+    with pytest.raises(ValueError, match="native"):
+        grid.make_explicit_pd_rollout_fns(_fake_env(), 0.0)
+
+
+@pytest.mark.parametrize("flag", ["push", "no_progress", "symmetry"])
+def test_the_explicit_path_refuses_an_env_still_running_training_stochastics(flag):
+    """The step function mirrors the MEASUREMENT env's step, which has
+    pushes, the no-progress cut and the mirror off. An env with one still on
+    would have it silently dropped, making the cell a different experiment
+    from the battery it is compared against."""
+    with pytest.raises(ValueError, match=flag):
+        grid.make_explicit_pd_rollout_fns(_fake_env(**{flag: True}), 0.01)
+
+
+def test_the_explicit_path_refuses_a_non_pd_preset():
+    """Under `ideal_torque` the gain/bias params are 1.0 and 0.0, which are
+    not gains: the loop would run a servo at kp 1, kd 0."""
+    with pytest.raises(ValueError, match="ideal_torque"):
+        grid.make_explicit_pd_rollout_fns(_fake_env(model="ideal_torque"), 0.01)
 
 
 # -- grid cell naming -------------------------------------------------------

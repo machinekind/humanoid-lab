@@ -109,7 +109,15 @@ day and makes the TDD loop fast.
     group a run was tuning. Under an `ideal_torque` preset `ctrl` is a
     torque, so `tracking_err_*` is not a servo error there — the block's
     `model` field is what says so. See docs/configuration.md.
-- [ ] 4.4 A robustness grid sweeps Kt error, torque lag, and a torque-speed envelope. [details](docs/port-details.md#44-robustness-grid)
+- [x] 4.4 A robustness grid sweeps Kt error, torque lag, and a torque-speed envelope. [details](docs/port-details.md#44-robustness-grid)
+  - The baseline cell takes the native rollout path, and `run_battery`
+    holds the branch. The explicit-PD path reproduces it to 1.0e-6
+    relative on `tracking_err_rms` as the lag vanishes (measured; the test
+    asserts 1e-4). Gates are w01-tek's quadruped numbers, carried verbatim
+    and marked for re-derivation in the source and in every report; yaw
+    error is reported but not gated, and the vibration reference is the
+    grid's own baseline cell rather than a keeper table this repo does not
+    have yet. See docs/configuration.md.
 - [ ] 4.5 Video improvements: per-joint grid, `--plots` selection, push-free rollouts. [details](docs/port-details.md#45-video-qol)
 
 **Phase 5. Deploy contract. Land before the first published policy.**
@@ -171,9 +179,9 @@ Run this against the full diff at the end of the port.
 - [ ] Every velocity in a new metric is body-frame.
 - [ ] Spin probes report each direction separately.
 - [ ] Battery JSON changes are additive.
-- [ ] The robustness grid's baseline cell is documented as the native path.
-- [ ] The explicit-PD path reproduces the native pipeline within a stated tolerance as lag goes to zero. A test proves it.
-- [ ] Grid outputs never overwrite the canonical battery.json.
+- [x] The robustness grid's baseline cell is documented as the native path. `eval/grid.py`'s docstring, `run_battery`'s docstring, docs/configuration.md and every rendered grid report say so, and each names w01-tek's contrary claim as false.
+- [x] The explicit-PD path reproduces the native pipeline within a stated tolerance as lag goes to zero. A test proves it. Measured 1.0e-6 relative on `tracking_err_rms`; `tests/integration/test_grid_env.py` asserts 1e-4.
+- [x] Grid outputs never overwrite the canonical battery.json. `--out` is required for every cell, and a unit test pins that battery.json's content and mtime survive a cell write.
 
 ### Deploy contract
 - [ ] Every env config key is classified as consumed or training-only.

@@ -217,7 +217,7 @@ def test_a_mini_grid_renders_one_row_per_alpha_and_envelope(tmp_path):
             "battery_a1.58_lag5ms_envnone.json": _cell(stand=_row(fell=True, fell_at=7)),
         },
     )
-    md = grid_report.render_markdown(*grid_report.build_grid([run_dir]))
+    md = grid_report.render_markdown(grid_report.build_grid([run_dir]))
 
     assert "| 0ms | 5ms |" in md
     assert "PASS" in md and "FAIL" in md
@@ -227,7 +227,7 @@ def test_a_mini_grid_renders_one_row_per_alpha_and_envelope(tmp_path):
 
 def test_the_report_names_the_gates_it_could_not_apply(tmp_path):
     run_dir = _write_grid(tmp_path, {"battery_a1.58_lag5ms_envnone.json": _cell()})
-    md = grid_report.render_markdown(*grid_report.build_grid([run_dir]))
+    md = grid_report.render_markdown(grid_report.build_grid([run_dir]))
     assert "vibration" in md
     assert "not applied" in md
 
@@ -235,7 +235,7 @@ def test_the_report_names_the_gates_it_could_not_apply(tmp_path):
 def test_an_empty_grid_reports_that_rather_than_crashing(tmp_path):
     run_dir = tmp_path / "run_a"
     run_dir.mkdir()
-    md = grid_report.render_markdown(*grid_report.build_grid([run_dir]))
+    md = grid_report.render_markdown(grid_report.build_grid([run_dir]))
     assert "No grid cells" in md
 
 
@@ -243,6 +243,6 @@ def test_the_report_marks_the_gates_as_unre_derived(tmp_path):
     """The brief mandates re-derivation for a biped. The numbers ship with
     that caveat attached to every report, not only to the source."""
     run_dir = _write_grid(tmp_path, {"battery_a1_lag0ms_envnone.json": _cell()})
-    md = grid_report.render_markdown(*grid_report.build_grid([run_dir]))
+    md = grid_report.render_markdown(grid_report.build_grid([run_dir]))
     assert "quadruped" in md
     assert "re-derive" in md
