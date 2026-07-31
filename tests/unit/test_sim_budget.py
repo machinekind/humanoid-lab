@@ -53,7 +53,7 @@ def test_rows_per_contact_matches_mujocos_own_accounting(cone, dim, rows):
 
 
 def test_rows_per_contact_rejects_an_unknown_cone():
-    with pytest.raises(ValueError, match="cone"):
+    with pytest.raises(ValueError, match="mjtCone"):
         sim_budget.rows_per_contact(99, 3)
 
 
