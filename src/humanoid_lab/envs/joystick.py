@@ -149,6 +149,24 @@ def default_config() -> config_dict.ConfigDict:
             # pay only when the WHOLE command is tracked, and a deadlocked
             # spin earns ~0.
             tracking_product=False,
+            # Command-relative tracking error (off = legacy absolute). The
+            # absolute kernel pays only within ~sqrt(tracking_sigma) of the
+            # target regardless of the target's size, so a fast command puts
+            # the whole reward cliff out of exploration's reach: w01-tek's
+            # policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under
+            # a 1.0 one. Relative mode divides the squared error by the
+            # squared commanded magnitude, so 80% of target pays the same at
+            # every speed and tracking_rel_sigma is dimensionless.
+            tracking_relative=False,
+            tracking_rel_sigma=0.25,
+            # Floors on the relative denominator, so a near-zero command
+            # divides by the floor and never by zero. Both are w01-tek
+            # quadruped starting points: its terrain presets later widened
+            # tracking_rel_sigma to 0.5 and tracking_rel_floor_ang to 0.7,
+            # because the narrow kernel rounded partial tracking to zero.
+            # Re-derive for asimov rather than trusting these.
+            tracking_rel_floor_lin=0.3,  # m/s
+            tracking_rel_floor_ang=0.4,  # rad/s
             phase_sigma=0.002,
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
@@ -385,8 +403,28 @@ class Joystick(HumanoidEnv):
         base_height = data.qpos[self._base_qadr + 2]
         fall = (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
 
-        k_lin = terms.tracking_lin_vel(cmd[:2], linvel[:2], cfg.tracking_sigma)
-        k_ang = terms.tracking_ang_vel(cmd[2], gyro[2], cfg.tracking_sigma)
+        # Velocity tracking kernels, absolute or command-relative (see
+        # tracking_relative in default_config). Both flags below are static
+        # config read here at trace time, so off compiles to exactly the
+        # absolute kernels.
+        err_lin = terms.tracking_err_lin(cmd[:2], linvel[:2])
+        err_ang = terms.tracking_err_ang(cmd[2], gyro[2])
+        if cfg.get("tracking_relative", False):
+            k_lin = terms.tracking_kernel(
+                err_lin,
+                terms.tracking_rel_sigma(
+                    jp.linalg.norm(cmd[:2]), cfg.tracking_rel_sigma, cfg.tracking_rel_floor_lin
+                ),
+            )
+            k_ang = terms.tracking_kernel(
+                err_ang,
+                terms.tracking_rel_sigma(
+                    jp.abs(cmd[2]), cfg.tracking_rel_sigma, cfg.tracking_rel_floor_ang
+                ),
+            )
+        else:
+            k_lin = terms.tracking_kernel(err_lin, cfg.tracking_sigma)
+            k_ang = terms.tracking_kernel(err_ang, cfg.tracking_sigma)
         if cfg.get("tracking_product", False):
             # Gate each term by the other's kernel: tracking pays only for
             # tracking the whole command (see tracking_product in
