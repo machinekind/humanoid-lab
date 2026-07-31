@@ -98,6 +98,49 @@ def test_all_probabilities_zero_matches_a_config_without_the_keys(env):
     np.testing.assert_array_equal(with_keys, legacy)
 
 
+# -- the draw keys live outside the base split ------------------------------
+
+
+def test_no_draw_key_aliases_a_key_from_the_base_split(env, monkeypatch):
+    """`fold_in(key, i)` IS `split(key, n)[i]` for every i < n -- measured, not
+    assumed (see the non-vacuity guard below). So a draw folding in its small
+    table index would key off one of `_sample_command`'s own base split keys,
+    and a draw that used the folded key directly instead of re-splitting it
+    would ship a selector that is a deterministic function of another axis's
+    value. The offset domain is what keeps that impossible.
+
+    The indices are captured from the sampler itself rather than copied from
+    the source, so this fails if a draw is ever added on a raw index."""
+    seen = []
+    real_fold_in = jax.random.fold_in
+
+    def spy(key, data):
+        seen.append(int(data))
+        return real_fold_in(key, data)
+
+    monkeypatch.setattr(jax.random, "fold_in", spy)
+    with block_values(env._config.command, **{k: 0.5 for k in PROB_KEYS}):
+        env._sample_command(jax.random.PRNGKey(11))
+
+    assert len(seen) == len(PROB_KEYS)  # every draw ran
+    assert len(set(seen)) == len(seen)  # and none shares an index
+
+    probe = jax.random.PRNGKey(7)
+    # A 5-way split covers the base 4-way split and the no_progress step's
+    # own arity, so widening either one cannot silently collide with a draw.
+    base = [np.asarray(jax.random.key_data(k)) for k in jax.random.split(probe, 5)]
+    for index in seen:
+        folded = np.asarray(jax.random.key_data(real_fold_in(probe, index)))
+        for j, key in enumerate(base):
+            assert not np.array_equal(folded, key), f"draw index {index} aliases split key {j}"
+
+    # Not vacuous: the raw table indices this offset replaces DO alias. 1, 2
+    # and 3 are exactly the base draw's vy, wz and zero_prob keys.
+    for idx in range(1, 5):
+        raw = np.asarray(jax.random.key_data(real_fold_in(probe, idx)))
+        assert np.array_equal(raw, base[idx])
+
+
 # -- stream independence ----------------------------------------------------
 
 

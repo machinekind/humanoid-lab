@@ -419,12 +419,18 @@ before `zero_prob`, which stays the sampler's last word: standing still
 overrides every draw.
 
 Each draw is gated on its static probability and keys off
-`jax.random.fold_in(rng, idx)` with an index of its own — `1 wz, 2 vy,
-3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not exist in
-the trace, all five off leave the sampler bit-identical to the pre-1.6 one
-(`tests/integration/test_golden_baseline.py`), and enabling one draw does not
-move another draw's samples
+`jax.random.fold_in(rng, 0x100 + idx)` with an index of its own — `1 wz,
+2 vy, 3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not
+exist in the trace, all five off leave the sampler bit-identical to the
+pre-1.6 one (`tests/integration/test_golden_baseline.py`), and enabling one
+draw does not move another draw's samples
 (`tests/integration/test_pure_command_draws.py`).
+
+The `0x100` offset is load-bearing. `fold_in(key, i)` is bit-identical to
+`split(key, n)[i]` for every `i < n`, so a raw table index would fold in one
+of the sampler's own base split keys — index 1 would *be* the `vy` uniform
+key. The offset puts every draw's key out of reach of any split of `rng`,
+whatever width that split later grows to.
 
 Every range is a **starting value to re-derive**, taken from this repo's own
 envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
