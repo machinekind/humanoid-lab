@@ -120,8 +120,15 @@ case "${1:-}" in
   # [--out path.mp4] [--seed N] [--plot-torque] [--plot-joints]
   # [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
+  # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
+  # latest checkpoint (port items 5.1 and 5.2, see docs/deploy.md). Forced
+  # onto CPU like `battery`: the export runs mjx.forward once and no
+  # physics. Both round-trip validations run against a temp directory, so a
+  # failed export leaves the destination as it found it.
+  # Passthrough args: --run runs/<name> [--out DIR].
+  export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|grid-report|report|eval} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|grid-report|report|eval|export} [args]"
     exit 1
     ;;
 esac

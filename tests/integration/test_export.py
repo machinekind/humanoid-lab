@@ -68,14 +68,17 @@ def run_dir(env, tmp_path_factory) -> Path:
 
     # A normalizer with real statistics: an identity one (mean 0, std 1)
     # would let a normalization bug pass every check below.
-    obs_spec = jax.tree.map(
-        lambda shape: specs.Array(tuple(shape), jp.dtype("float32")), env.observation_size
-    )
+    # observation_size is {key: (width,)}; a tree map over it would descend
+    # into the tuples and hand back bare ints.
+    obs_spec = {
+        key: specs.Array(tuple(shape), jp.dtype("float32"))
+        for key, shape in env.observation_size.items()
+    }
     normalizer = running_statistics.init_state(obs_spec)
-    batch = jax.tree.map(
-        lambda shape: jax.random.uniform(k_stats, (64, *shape), minval=-3.0, maxval=3.0),
-        env.observation_size,
-    )
+    batch = {
+        key: jax.random.uniform(k_stats, (64, *spec.shape), minval=-3.0, maxval=3.0)
+        for key, spec in obs_spec.items()
+    }
     normalizer = running_statistics.update(normalizer, batch)
 
     ppo_checkpoint.save(
