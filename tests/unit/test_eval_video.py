@@ -1,18 +1,21 @@
-"""eval/video.py's env and CLI wiring (port item 4.5's residual): the
-push-free-by-default rollout, `--push`, and the platform-conditional GL
-default.
+"""eval/video.py's env, panel and CLI wiring (port items 4.5 and the plot
+panels): the push-free-by-default rollout, `--push`, `--plot-torque`,
+`--plot-joints`, `--joint`, the panel compositor, and the
+platform-conditional GL default.
 
 Model-free. `render_video` is stopped at its first line -- the call that
 builds the env -- so what reaches `load_checkpoint_policy` is pinned
-without rendering a frame. The panels themselves are
-tests/unit/test_eval_plots.py.
+without rendering a frame, and `_composite_plots` runs against dummy panel
+builders. The panels themselves are tests/unit/test_eval_plots.py.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from humanoid_lab.eval import video
@@ -118,6 +121,120 @@ def test_the_push_flag_reaches_render_video(tmp_path, monkeypatch, stub_render):
     _main(["--run", str(tmp_path), "--push"], monkeypatch)
 
     assert stub_render["push"] is True
+
+
+def test_both_plot_flags_default_off(tmp_path, monkeypatch, stub_render):
+    """Plain rendering must stay the pre-panel code path: the per-step device
+    transfers the panels need are only paid when a flag asks for them."""
+    _main(["--run", str(tmp_path)], monkeypatch)
+
+    assert stub_render["plot_torque"] is False
+    assert stub_render["plot_joints"] is False
+    assert stub_render["joint"] is None
+
+
+def test_the_plot_flags_reach_render_video(tmp_path, monkeypatch, stub_render):
+    _main(["--run", str(tmp_path), "--plot-torque", "--plot-joints"], monkeypatch)
+
+    assert stub_render["plot_torque"] is True
+    assert stub_render["plot_joints"] is True
+
+
+def test_the_joint_flag_reaches_render_video(tmp_path, monkeypatch, stub_render):
+    _main(["--run", str(tmp_path), "--joint", "left_knee"], monkeypatch)
+
+    assert stub_render["joint"] == "left_knee"
+
+
+# -- --joint implies --plot-joints -------------------------------------------
+
+
+def test_a_named_joint_implies_the_joint_panel():
+    """`--joint NAME` alone is enough: asking for one joint's zoom panel is
+    asking for a joint panel."""
+    assert video.resolve_panels(False, False, "left_knee") == (False, True)
+
+
+def test_the_implication_lives_below_the_cli():
+    """A library caller passing joint= gets it too, which is why the
+    normalization is in render_video and not in main()."""
+    assert video.resolve_panels(False, False, None) == (False, False)
+    assert video.resolve_panels(True, False, None) == (True, False)
+
+
+def test_a_named_joint_does_not_arm_the_torque_strip():
+    assert video.resolve_panels(False, True, "left_knee") == (False, True)
+
+
+# -- the panel compositor ----------------------------------------------------
+
+
+def _panels_env(nu=2):
+    """The three attributes _composite_plots reads off the env, no model."""
+    return SimpleNamespace(
+        dt=0.02,
+        mj_model=SimpleNamespace(actuator_forcerange=np.tile([-10.0, 10.0], (nu, 1))),
+        robot_spec=SimpleNamespace(joint_groups={"leg": ["a", "b"]}),
+    )
+
+
+@pytest.fixture
+def dummy_panels(monkeypatch):
+    """Replace eval/plots.py's builders with panel factories of a known
+    height, so the compositor's stacking is checkable without matplotlib."""
+    def factory(height):
+        def build(*args, width, **kwargs):
+            return lambda t: np.full((height, width, 3), height, np.uint8)
+        return build
+
+    monkeypatch.setattr(video, "torque_strip", factory(7))
+    monkeypatch.setattr(video, "joint_grid", factory(11))
+    monkeypatch.setattr(video, "joint_zoom", factory(13))
+
+
+def _composite(plot_torque, plot_joints, joint=None, n_samples=3, nu=2):
+    frames = [np.zeros((5, 4, 3), np.uint8), np.ones((5, 4, 3), np.uint8)]
+    samples = [np.zeros(nu) for _ in range(n_samples)]
+    return video._composite_plots(
+        frames, [0.0, 0.02], _panels_env(nu), ["a", "b"], joint,
+        plot_torque, plot_joints, samples, samples, samples,
+    )
+
+
+def test_the_torque_strip_stacks_under_every_frame(dummy_panels):
+    out = _composite(plot_torque=True, plot_joints=False)
+
+    assert len(out) == 2
+    assert [f.shape for f in out] == [(5 + 7, 4, 3)] * 2
+
+
+def test_both_panels_stack_in_flag_order(dummy_panels):
+    """Torque strip first, joint panel below it -- the order --plot-joints'
+    help text promises ("below that")."""
+    out = _composite(plot_torque=True, plot_joints=True)
+
+    assert out[0].shape == (5 + 7 + 11, 4, 3)
+    assert out[0][5, 0, 0] == 7  # the strip's row, directly under the render
+    assert out[0][5 + 7, 0, 0] == 11  # the grid's, under the strip
+
+
+def test_a_named_joint_swaps_the_grid_for_the_zoom(dummy_panels):
+    out = _composite(plot_torque=False, plot_joints=True, joint="a")
+
+    assert out[0].shape == (5 + 13, 4, 3)
+
+
+def test_no_control_steps_composites_nothing(dummy_panels, capsys):
+    """--steps 0 leaves `frames` with only the initial pose and no samples;
+    the panel builders would crash on an empty times array, so the
+    compositor returns the frames untouched and says so."""
+    frames = [np.zeros((5, 4, 3), np.uint8)]
+    out = video._composite_plots(
+        frames, [0.0], _panels_env(), ["a", "b"], None, True, True, [], [], [],
+    )
+
+    assert out is frames
+    assert "skipping plot panels" in capsys.readouterr().out
 
 
 # -- the GL backend default --------------------------------------------------

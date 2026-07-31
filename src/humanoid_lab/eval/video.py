@@ -73,6 +73,16 @@ def env_overrides_for(run: dict, push: bool = False) -> dict:
     return merged_env_overrides(run, push_override(push))
 
 
+def resolve_panels(plot_torque: bool, plot_joints: bool, joint: str | None) -> tuple[bool, bool]:
+    """(plot_torque, plot_joints) after `--joint`'s implication.
+
+    Asking for one joint's zoom panel is asking for a joint panel, so
+    `--joint NAME` alone is enough -- and the implication belongs here rather
+    than in main(), so a library caller passing joint= gets it too.
+    """
+    return bool(plot_torque), bool(plot_joints) or joint is not None
+
+
 def _pick_camera(mj_model: mujoco.MjModel):
     """Prefer a named MJCF camera already in the model over synthesizing
     one. source/xmls/asimov.xml ships several `mode="track"` cameras
@@ -172,7 +182,7 @@ def render_video(
     # "canonical order: the action/obs contract"). eval/plots.py's builders
     # assume this order for their joint_names argument.
     joint_names = list(env.robot_spec.actuated_joints)
-    plot_joints = plot_joints or joint is not None  # --joint implies --plot-joints
+    plot_torque, plot_joints = resolve_panels(plot_torque, plot_joints, joint)
     if joint is not None and joint not in joint_names:
         sys.exit(f"unknown joint {joint!r}; valid joints: {joint_names}")
 
