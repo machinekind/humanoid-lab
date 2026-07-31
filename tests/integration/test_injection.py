@@ -4,7 +4,12 @@ import mujoco
 import pytest
 
 from humanoid_lab.robot.build import build_spec, compile_spec
-from humanoid_lab.robot.presets import action_scale, load_actuator_preset, resolve
+from humanoid_lab.robot.presets import (
+    action_scale,
+    effective_gains,
+    load_actuator_preset,
+    resolve,
+)
 from humanoid_lab.robot.spec import load_robot_spec
 
 TOY_ROBOT_DIR = Path(__file__).parent.parent / "data" / "toy_robot"
@@ -167,3 +172,38 @@ groups:
 
     with pytest.raises(ValueError, match="knee"):
         resolve(preset, robot_spec)
+
+
+# -- the effective-gain stamp (port item 4.3) --------------------------------
+
+
+def test_effective_gains_report_what_the_built_model_got():
+    """The point of reading gains back off the model: an `actuators.overrides`
+    entry never appears in the preset yaml, so a stamp taken from the yaml
+    would record numbers the physics never used."""
+    overrides = {"groups": {"knee": {"kp": 999.0, "kd": 42.0}}}
+    model = compile_spec(build_spec(TOY_ROBOT_DIR, "pd_test", overrides))
+    joints = load_robot_spec(TOY_ROBOT_DIR).actuated_joints
+
+    block = effective_gains(
+        model.actuator_gainprm, model.actuator_biasprm, joints, model="pd", preset="pd_test"
+    )
+
+    assert block["joints"] == ["hip_pitch_joint", "knee_joint"]
+    assert block["kp"] == pytest.approx([50.0, 999.0])  # yaml says 60.0 for the knee
+    assert block["kd"] == pytest.approx([2.0, 42.0])  # yaml says 3.0
+
+
+def test_effective_gains_stamp_an_ideal_torque_preset_too():
+    """Its gain params are not PD gains; the model name is what says so."""
+    mj_model = compile_spec(build_spec(TOY_ROBOT_DIR, "ideal_test"))
+    joints = load_robot_spec(TOY_ROBOT_DIR).actuated_joints
+
+    block = effective_gains(
+        mj_model.actuator_gainprm, mj_model.actuator_biasprm, joints,
+        model="ideal_torque", preset="ideal_test",
+    )
+
+    assert block["model"] == "ideal_torque"
+    assert block["kp"] == pytest.approx([1.0] * len(joints))
+    assert block["kd"] == pytest.approx([0.0] * len(joints))

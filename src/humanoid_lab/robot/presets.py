@@ -169,6 +169,40 @@ def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, flo
     }
 
 
+def effective_gains(
+    actuator_gainprm, actuator_biasprm, joint_names, *, model: str, preset: str
+) -> dict:
+    """The gain block run.json stamps, read back off a BUILT model.
+
+    Not the preset yaml's numbers. Gains reach the physics through
+    load_actuator_preset's `overrides` deep-merge and then through
+    actuators/models.py's inject, and an `actuators.overrides` entry never
+    appears in the yaml at all -- so a stamp taken from the yaml can record
+    numbers the run never used. This reads what mujoco ended up holding.
+
+    For the `pd` model those params ARE the PD gains: PositionPD.inject
+    writes gainprm=(kp,0,0) and biasprm=(0,-kp,-kd), so kp is
+    `gainprm[:, 0]` and kd is `-biasprm[:, 2]`. For `ideal_torque` they are
+    not gains at all (gainprm[0] is 1.0, there is no bias term) and the
+    numbers come out as 1.0 and 0.0. They are stamped anyway: `model` is what
+    makes them readable, and a run.json whose shape depended on the actuator
+    model would need branching at every reader.
+
+    `joint_names` is the canonical actuated-joint order, which is also the
+    actuator column order (robot/build.py injects in that order).
+    """
+    kp = [float(row[0]) for row in actuator_gainprm]
+    kd = [-float(row[2]) for row in actuator_biasprm]
+    names = list(joint_names)
+    if len(kp) != len(names) or len(kd) != len(names):
+        raise ValueError(
+            f"gain table has {len(kp)} actuators and bias table {len(kd)}, but the "
+            f"robot declares {len(names)} actuated joints {names} -- the stamp would "
+            "mislabel every column"
+        )
+    return {"preset": preset, "model": model, "joints": names, "kp": kp, "kd": kd}
+
+
 def parse_set_overrides(items: list[str]) -> dict:
     """Parse CLI `--set PATH=VALUE` items into a load_actuator_preset overrides dict.
 

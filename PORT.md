@@ -103,7 +103,12 @@ day and makes the TDD loop fast.
     already computed. Every apex reads low by the keyframe offset in
     docs/lessons/foot-clearance.md, so the numbers are comparable across
     checkpoints but are not yet physical heights.
-- [ ] 4.3 `tracking_error` reports servo error, and run.json records effective gains. [details](docs/port-details.md#43-tracking_error)
+- [x] 4.3 `tracking_error` reports servo error, and run.json records effective gains. [details](docs/port-details.md#43-tracking_error)
+  - The stamp is per-actuator, not w01-tek's single `[0,0]` reading: our
+    presets carry per-group gains, so one scalar would hide exactly the
+    group a run was tuning. Under an `ideal_torque` preset `ctrl` is a
+    torque, so `tracking_err_*` is not a servo error there — the block's
+    `model` field is what says so. See docs/configuration.md.
 - [ ] 4.4 A robustness grid sweeps Kt error, torque lag, and a torque-speed envelope. [details](docs/port-details.md#44-robustness-grid)
 - [ ] 4.5 Video improvements: per-joint grid, `--plots` selection, push-free rollouts. [details](docs/port-details.md#45-video-qol)
 

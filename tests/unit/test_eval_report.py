@@ -263,3 +263,32 @@ def test_a_scenario_that_never_swung_renders_dashes_not_zeros():
 def test_a_battery_without_gait_kpis_renders_no_gait_section():
     """battery.json files written before port item 4.2."""
     assert "## Gait KPIs" not in render_markdown(BATTERY)
+
+
+# -- the servo tracking error (port item 4.3) --------------------------------
+
+_TRACKED = {**GOOD_ROW, "tracking_err_rms": 0.0412, "tracking_err_p95": 0.0930}
+_UNTRACKED = {**GOOD_ROW, "tracking_err_rms": None, "tracking_err_p95": None}
+_TRACK_BATTERY = {**BATTERY, "walk_ramp": _TRACKED, "stand": _UNTRACKED}
+
+
+def test_the_servo_section_shows_rms_and_p95_per_scenario():
+    section = _section(render_markdown(_TRACK_BATTERY), "## Servo tracking")
+    header = next(line for line in section if line.startswith("| scenario |"))
+    row = next(line for line in section if line.startswith("| walk_ramp |"))
+
+    assert "tracking_err_rms" in header and "tracking_err_p95" in header
+    assert "0.0412" in row and "0.0930" in row
+
+
+def test_a_scenario_that_never_settled_renders_a_dash():
+    section = _section(render_markdown(_TRACK_BATTERY), "## Servo tracking")
+    row = next(line for line in section if line.startswith("| stand |"))
+
+    assert "| - |" in row
+    assert "0.0000" not in row
+
+
+def test_a_battery_without_a_tracking_error_renders_no_servo_section():
+    """battery.json files written before port item 4.3."""
+    assert "## Servo tracking" not in render_markdown(BATTERY)

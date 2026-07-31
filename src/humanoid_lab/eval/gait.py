@@ -46,8 +46,10 @@ _FIELDS = (
 )
 
 
-def _swings(clear_f, vz_f):
+def _swings(clear_f: np.ndarray, vz_f: np.ndarray):
     """(apex, touchdown speed) for every scorable swing of one foot.
+
+    Both arguments are float columns of the trimmed record, one foot's.
 
     A swing is a contiguous run of `clear_f > AIRBORNE_M`. Two runs are
     dropped because they were not fully observed rather than because they
@@ -55,7 +57,7 @@ def _swings(clear_f, vz_f):
     happened before the window opened) and one still airborne at the last
     (it has no touchdown). Both would report a floor as if it were a peak.
     """
-    airborne = np.asarray(clear_f, dtype=float) > AIRBORNE_M
+    airborne = clear_f > AIRBORNE_M
     n = len(airborne)
     out = []
     t = 0
@@ -68,14 +70,14 @@ def _swings(clear_f, vz_f):
             t += 1
         if start == 0 or t >= n or t - start < MIN_SWING_STEPS:
             continue
-        apex = float(np.asarray(clear_f, dtype=float)[start:t].max())
+        apex = float(clear_f[start:t].max())
         # Touchdown speed is the DOWNWARD vertical speed on the last
         # airborne step, so a foot still rising there arrived at 0, not at a
         # negative speed. This is the one velocity in these KPIs that is
         # world-frame rather than body-frame, on purpose: how hard a foot
         # hits the ground is a question about the foot and the ground, and
         # the ground does not rotate with the robot.
-        td = max(0.0, -float(np.asarray(vz_f, dtype=float)[t - 1]))
+        td = max(0.0, -float(vz_f[t - 1]))
         out.append((apex, td))
     return out
 

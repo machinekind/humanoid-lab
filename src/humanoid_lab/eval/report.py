@@ -175,6 +175,37 @@ def render_markdown(battery: dict) -> str:
             "median with no swings behind it, not a zero.",
         ]
 
+    # Servo tracking error (port item 4.3). Raw, like the gait KPIs, and for
+    # the same reason: what a good number is depends on the preset's gains,
+    # and the gains a run actually used are stamped in run.json rather than
+    # known here.
+    if any("tracking_err_rms" in battery[n] for n in scenario_names):
+        lines += [
+            "",
+            "## Servo tracking",
+            "",
+            "| scenario | tracking_err_rms | tracking_err_p95 |",
+            "|---|---|---|",
+        ]
+        for name in scenario_names:
+            r = battery[name]
+            if "tracking_err_rms" not in r:
+                continue
+            lines.append(
+                f"| {name} | {_fmt(r.get('tracking_err_rms'), 4)} | "
+                f"{_fmt(r.get('tracking_err_p95'), 4)} |"
+            )
+        lines += [
+            "",
+            "The gap between ctrl and qpos over the actuated joints, after the "
+            "settle window: did the servo hold the setpoint the policy "
+            "commanded. The p95 says "
+            "whether the error is spread evenly or lives in a few joints. Under "
+            "an ideal_torque preset ctrl is a torque, so these two numbers are "
+            "not a servo error -- run.json's `actuator_gains.model` says which "
+            "preset produced the run.",
+        ]
+
     contacts = battery.get("contacts")
     if contacts:
         lines += [
