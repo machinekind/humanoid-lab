@@ -217,6 +217,18 @@ model builds. `run.json` records the resolved `cfg.actuators` block,
 overrides included, so `eval/battery.py` and `sizing/collect.py`
 reconstruct the same model from a finished run.
 
+## Velocity-tracking kernels (`task.env.reward`)
+
+The two tracking terms, `tracking_lin_vel` and `tracking_ang_vel`, are
+`exp(-err²/tracking_sigma)` kernels by default. The switches below reshape
+them. Every one is off at its default, and off reproduces the legacy kernel
+exactly.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `tracking_sigma` | `0.25` | Width of the absolute kernel, in (m/s)² and (rad/s)². |
+| `tracking_product` | `false` | Multiply the two kernels into each other: `k_lin, k_ang = k_lin*k_ang, k_ang*k_lin`. Additive tracking pays the easy half of a command — a robot that ignores a pure-spin command still earns the full `tracking_lin_vel`, since standing still tracks the zero linear command perfectly (w01-tek measured that at about 63% of an ideal spin's payout). With the product, full pay needs the whole command tracked. |
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone

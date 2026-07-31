@@ -139,6 +139,16 @@ def default_config() -> config_dict.ConfigDict:
         ),
         reward=config_dict.create(
             tracking_sigma=0.25,
+            # Multiplicative velocity tracking (off = legacy additive).
+            # Additive tracking pays the easy half of a command: a robot
+            # that deadlocks under a pure-spin command still earns the FULL
+            # tracking_lin_vel, because its commanded linear velocity is 0
+            # and standing still "tracks" it perfectly. w01-tek measured that
+            # payout at about 63% of an ideal spin's. With tracking_product
+            # both terms are gated by the product of the two kernels: full
+            # pay only when the WHOLE command is tracked, and a deadlocked
+            # spin earns ~0.
+            tracking_product=False,
             phase_sigma=0.002,
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
@@ -375,9 +385,19 @@ class Joystick(HumanoidEnv):
         base_height = data.qpos[self._base_qadr + 2]
         fall = (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
 
+        k_lin = terms.tracking_lin_vel(cmd[:2], linvel[:2], cfg.tracking_sigma)
+        k_ang = terms.tracking_ang_vel(cmd[2], gyro[2], cfg.tracking_sigma)
+        if cfg.get("tracking_product", False):
+            # Gate each term by the other's kernel: tracking pays only for
+            # tracking the whole command (see tracking_product in
+            # default_config). The reassignment is simultaneous, so both
+            # sides read the pre-product kernels and both come out equal to
+            # the same product.
+            k_lin, k_ang = k_lin * k_ang, k_ang * k_lin
+
         rewards = {
-            "tracking_lin_vel": terms.tracking_lin_vel(cmd[:2], linvel[:2], cfg.tracking_sigma),
-            "tracking_ang_vel": terms.tracking_ang_vel(cmd[2], gyro[2], cfg.tracking_sigma),
+            "tracking_lin_vel": k_lin,
+            "tracking_ang_vel": k_ang,
             "lin_vel_z": terms.lin_vel_z(linvel[2]),
             "ang_vel_xy": terms.ang_vel_xy(gyro[:2]),
             "orientation": terms.orientation(gravity[:2]),
