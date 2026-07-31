@@ -753,6 +753,40 @@ from "the policy turns only in the physics it trained in". That distinction
 only exists once foot-friction DR is actually on in a keeper run. See
 [docs/port-details.md](port-details.md#41-spin-probes).
 
+### Gait KPIs
+
+`eval/gait.py`'s `gait_metrics`, pure numpy over the per-foot clearance and
+vertical velocity the rollout records. A **swing** is a contiguous run of
+clearance above 5 mm in the post-settle window.
+
+| Field | Meaning |
+|---|---|
+| `swings` | Scorable swings found, pooled over every foot. The sample count behind all four medians below. |
+| `swing_apex_med_m` | Median peak clearance of a swing, metres. |
+| `swing_apex_p90_m` | 90th percentile of the same. |
+| `touchdown_v_med` | Median downward vertical speed on the last airborne step, m/s. |
+| `touchdown_softness_med` | Median of `touchdown_v / sqrt(2*g*apex)`: the touchdown speed over what free fall from that swing's own apex would have delivered. `1.0` is a foot dropped like a brick; lower is a foot flown in. |
+
+Three runs are not counted as swings: shorter than 2 steps (contact noise,
+not a step taken), still airborne when the record ends (no touchdown to
+measure), and already airborne at the first measured step (the settle window
+may have cut the apex off, so the number would be a floor rather than a
+peak). With no scorable swing the row reads `swings: 0` and `null` for every
+median — an unmeasured apex written as `0.0` would average into a keeper
+comparison as though a foot had been measured lying on the floor.
+
+The metrics work for any foot count. They fold into nothing: velocity
+tracking error scores both a skimming gait and a stand-and-lift farm as
+healthy, which is the gap these two numbers close.
+
+**Read the apex against the offset.** `_foot_clearance` is measured from the
+reset keyframe's site height, not the floor, and the keyframes float the
+robot by 4.92 mm on `asimov_v1` and 3.11 mm on `roboto_origin`. So the 5 mm
+airborne band sits about 10 mm above the floor on asimov, and every apex here
+reads low by that offset. `docs/lessons/foot-clearance.md` owns the numbers
+and the deferred fix; nothing in these KPIs is worth calibrating before it
+lands.
+
 ## Early stopping (`early_stop`)
 
 Off by default. When on, the trainer ends a run whose eval reward has stopped

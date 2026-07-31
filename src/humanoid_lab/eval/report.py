@@ -143,6 +143,38 @@ def render_markdown(battery: dict) -> str:
             "positive turned the wrong way; one near zero did not turn.",
         ]
 
+    # Gait KPIs (port item 4.2). Raw metrics with no threshold attached, so
+    # they get a table and no PASS/ATTENTION line: what a healthy apex is
+    # depends on the robot's leg, and this repo has measured neither. The
+    # swing count travels with the medians because a median over three
+    # swings and one over ninety are not the same reading.
+    if any("swings" in battery[n] for n in scenario_names):
+        lines += [
+            "",
+            "## Gait KPIs",
+            "",
+            "| scenario | swings | swing_apex_med_m | swing_apex_p90_m "
+            "| touchdown_v_med | touchdown_softness_med |",
+            "|---|---|---|---|---|---|",
+        ]
+        for name in scenario_names:
+            r = battery[name]
+            if "swings" not in r:
+                continue
+            lines.append(
+                f"| {name} | {r.get('swings')} | {_fmt(r.get('swing_apex_med_m'), 4)} | "
+                f"{_fmt(r.get('swing_apex_p90_m'), 4)} | {_fmt(r.get('touchdown_v_med'))} | "
+                f"{_fmt(r.get('touchdown_softness_med'))} |"
+            )
+        lines += [
+            "",
+            "A swing is a contiguous run of foot clearance over 5 mm, measured "
+            "after the settle window. `touchdown_softness_med` is the touchdown "
+            "speed over the free-fall speed from that swing's own apex: 1.0 is a "
+            "foot dropped like a brick, lower is a foot flown in. A `-` is a "
+            "median with no swings behind it, not a zero.",
+        ]
+
     contacts = battery.get("contacts")
     if contacts:
         lines += [
