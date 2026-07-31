@@ -715,6 +715,12 @@ it has not had time to answer. The pre-4.1 metrics (`vel_err_*`,
 `antiphase_score`) still score the whole record: narrowing their window would
 change what an existing field means.
 
+A scenario that ends inside the window therefore reports `null` (or
+`swings: 0`) for every new metric while the older ones still print numbers.
+That is the expected reading for an early checkpoint that falls in under a
+second, not a broken feature — a 100k-step smoke policy falls at about step
+50 on `asimov_v1`, right on the boundary.
+
 ### Spin probes
 
 Two scenarios, `spin_left` and `spin_right`, hold a pure yaw command —
