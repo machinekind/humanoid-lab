@@ -227,11 +227,14 @@ def main(cfg: DictConfig) -> None:
         )
         if wb is not None:
             wb.log({**metrics, "perf/steps_per_sec": sps}, step=num_steps)
-        # Brax's evaluator is the only producer of this callback here, so
-        # every call is an eval. (w01-tek's version has to skip the
-        # EpisodeMetricsLogger's training-only calls; that logger runs under
-        # ppo.log_training_metrics, which this repo never sets. Anyone who
-        # sets it owes this callback the same eval/episode_reward guard.)
+        # Only eval calls carry eval/episode_reward. Today brax's evaluator
+        # is this callback's sole producer, but ppo.log_training_metrics is
+        # one free-form override away, and its EpisodeMetricsLogger calls
+        # would read as NaN rewards here -- NaN never beats the running
+        # best, so a few of them would fake a plateau and stop the run.
+        # w01-tek carries the same guard for the same reason.
+        if "eval/episode_reward" not in metrics:
+            return
         last_eval["steps"], last_eval["metrics"] = num_steps, metrics
         if es.enable:
             eval_rewards.append(float(reward))
