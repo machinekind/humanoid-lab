@@ -14,6 +14,6 @@ Full checklist: `docs/adding-a-robot.md`. Short version:
    hand-edit).
 6. `./run.sh build --robot <name> --preset <preset>` and `./run.sh check
    --robot <name> --preset <preset>` must both pass.
-7. Add `tests/test_<name>.py`, mirroring `tests/test_asimov_v1.py`.
+7. Add `tests/integration/test_<name>.py`, mirroring `tests/integration/test_asimov_v1.py`.
 8. Add `configs/robot/<name>.yaml` (a `name`/`dir` pointer, see
    `configs/robot/asimov_v1.yaml`).

@@ -237,7 +237,10 @@ def default_config() -> config_dict.ConfigDict:
             fast_vx=(0.5, 0.8),
             # Redraw vx from back_vx, zero vy and wz: clean backward
             # walking, the refusal w01-tek actually measured. Sits inside
-            # our negative vx range.
+            # asimov_v1's negative vx range -- but NOT inside
+            # roboto_origin's, whose overlay narrows vx to [-0.6, 1.0].
+            # Arming pure_back_prob there without narrowing back_vx is
+            # refused by check_pure_draw_ranges below.
             pure_back_prob=0.0,
             back_vx=(-0.8, -0.2),
         ),
@@ -441,11 +444,66 @@ def default_config() -> config_dict.ConfigDict:
     )
 
 
+# (probability key, range key, command box axis) for each pure draw that
+# REDRAWS an axis. pure_wz and pure_vy are absent on purpose: they keep the
+# value the base uniform already drew inside the box and only zero the other
+# axes, so they cannot leave it.
+#
+# Kept in step with deploy_contract.py's PURE_DRAWS, which is the same table
+# for the same reason at the other end (tests/unit/test_deploy_contract.py
+# pins the two identical).
+PURE_DRAW_RANGES = (
+    ("pure_slow_prob", "slow_vx", "vx"),
+    ("pure_fast_prob", "fast_vx", "vx"),
+    ("pure_back_prob", "back_vx", "vx"),
+)
+
+
+def check_pure_draw_ranges(command) -> None:
+    """Refuse an armed pure draw that redraws outside the command box.
+
+    A pure draw's range is a re-draw of one axis, not a widening of it: the
+    box is what the policy is told it was trained for, and every commanded
+    velocity the env can produce has to sit inside it. w01-tek deliberately
+    set its own fast range ABOVE its box to pull a policy past a speed it
+    deadlocked at, which is exactly the state this refuses.
+
+    Symmetric with deploy_contract.check_config_covered, which refuses the
+    same configuration at export. Refusing it here too means a run that
+    could never ship fails at construction rather than after the GPU hours:
+    the export-time check is the last gate, not the only one.
+
+    Only draws with a nonzero probability are checked, so the shipped
+    all-off defaults validate nothing and no preset changes meaning.
+    """
+    for prob_key, range_key, axis in PURE_DRAW_RANGES:
+        if float(command.get(prob_key, 0.0)) <= 0.0:
+            continue
+        if range_key not in command or axis not in command:
+            continue
+        lo, hi = (float(v) for v in command[range_key])
+        box_lo, box_hi = (float(v) for v in command[axis])
+        if lo < box_lo or hi > box_hi:
+            raise ValueError(
+                f"command.{prob_key} is armed but command.{range_key} = "
+                f"({lo}, {hi}) draws outside the command box command.{axis} = "
+                f"({box_lo}, {box_hi}) -- the policy would train on commands "
+                f"the exported box says it never saw. Widen command.{axis} or "
+                f"narrow command.{range_key}"
+            )
+
+
 class Joystick(HumanoidEnv):
     def __init__(self, robot_dir, preset_name, config=None, config_overrides=None, actuator_overrides=None):
         super().__init__(
             robot_dir, preset_name, config or default_config(), config_overrides, actuator_overrides
         )
+
+        # Checked against the COMPOSED config: a robot overlay moves the box
+        # (roboto_origin's vx is [-0.6, 1.0], narrower on the backward side
+        # than the shipped back_vx range), so the defaults alone do not
+        # settle it.
+        check_pure_draw_ranges(self._config.command)
 
         # action_scale override: 0.0 sentinel keeps the preset-derived
         # per-joint vector HumanoidEnv.__init__ already computed; a scalar

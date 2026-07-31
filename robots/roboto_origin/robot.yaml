@@ -239,7 +239,7 @@ model_patches:
     # joint pivots. Left/right pairs mirror in y. None of these reach the
     # floor in any keyframe (the shin capsule, the lowest, clears it by
     # ~0.034 m at home) -- gated by
-    # tests/test_roboto_origin.py::test_home_settle_contacts_floor_and_feet_only.
+    # tests/integration/test_roboto_origin.py::test_home_settle_contacts_floor_and_feet_only.
     base_collision:
       body: base_link
       type: box

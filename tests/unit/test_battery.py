@@ -16,6 +16,7 @@ from humanoid_lab.eval import battery
 from humanoid_lab.eval.battery import (
     SETTLE_STEPS,
     _measurement_env_overrides,
+    armed_grid_flags,
     peak_over,
     antiphase_score,
     battery_scenarios,
@@ -673,9 +674,62 @@ def test_a_malformed_envelope_is_rejected_before_any_rollout(
     run_dir.mkdir()
 
     with pytest.raises(SystemExit):
-        _main(["--run", str(run_dir), "--torque-envelope", "15,5"], monkeypatch)
+        _main(
+            ["--run", str(run_dir), "--torque-envelope", "15,5",
+             "--out", str(tmp_path / "cell.json")],
+            monkeypatch,
+        )
 
     assert stub_battery == {}
+
+
+# -- a grid cell cannot land on the canonical path ---------------------------
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [["--alpha", "1.58"], ["--lag-tau", "0.005"], ["--torque-envelope", "5,15"]],
+)
+def test_a_perturbation_flag_without_out_refuses_to_run(
+    flag, tmp_path, monkeypatch, stub_battery, capsys
+):
+    """A default --out would let a forgotten flag drop a perturbed
+    measurement onto the run's canonical battery.json. The CLI refuses
+    instead, and says why -- same shape as build_model.py's --set/--out."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with pytest.raises(SystemExit):
+        _main(["--run", str(run_dir), *flag], monkeypatch)
+
+    err = capsys.readouterr().err
+    assert flag[0] in err
+    assert "requires --out" in err
+    assert stub_battery == {}
+    assert not (run_dir / "battery.json").exists()
+
+
+def test_the_refusal_names_every_armed_flag(tmp_path, monkeypatch, stub_battery, capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with pytest.raises(SystemExit):
+        _main(
+            ["--run", str(run_dir), "--alpha", "1.58", "--lag-tau", "0.005",
+             "--torque-envelope", "5,15"],
+            monkeypatch,
+        )
+
+    err = capsys.readouterr().err
+    assert "--alpha" in err and "--lag-tau" in err and "--torque-envelope" in err
+
+
+def test_the_unperturbed_battery_is_not_a_grid_cell():
+    """The baseline cell is the native path, so plain defaults are the
+    canonical battery and may write the canonical file."""
+    assert armed_grid_flags(1.0, 0.0, None) == []
+    assert armed_grid_flags(1.0, 0.0, "5,15") == ["--torque-envelope"]
+    assert armed_grid_flags(0.8, 0.005, None) == ["--alpha", "--lag-tau"]
 
 
 # -- contact budget peaks ----------------------------------------------------

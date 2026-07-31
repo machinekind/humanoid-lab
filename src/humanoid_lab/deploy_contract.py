@@ -215,6 +215,12 @@ TRAINING_ONLY_KEYS = frozenset(
 # above its box to pull a policy past a speed it deadlocked at, which would
 # make the reported box a lie here -- so the condition is checked, not
 # assumed.
+#
+# envs/joystick.py's PURE_DRAW_RANGES is the same table, and its
+# check_pure_draw_ranges refuses the same configuration at env construction:
+# a run that could never ship should fail before the GPU hours, not after.
+# This one stays the last gate. tests/unit/test_deploy_contract.py pins the
+# two tables identical.
 PURE_DRAWS = (
     ("pure_slow_prob", "slow_vx", "vx"),
     ("pure_fast_prob", "fast_vx", "vx"),

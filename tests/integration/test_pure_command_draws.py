@@ -31,6 +31,7 @@ import pytest
 
 from humanoid_lab import paths
 from humanoid_lab.envs.joystick import Joystick, default_config
+from humanoid_lab.registry import make_env
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 PRESET = "sizing_ideal"
@@ -268,3 +269,59 @@ def test_a_resampled_command_is_drawn_the_same_way(env):
     command = np.asarray(stepped.info["command"])
     assert command[1] == 0.0 and command[2] == 0.0
     assert lo <= command[0] <= hi
+
+
+# -- the construct-time range check -----------------------------------------
+
+
+def test_an_armed_draw_outside_the_command_box_refuses_to_construct():
+    """The range is a REDRAW of the axis, not a widening of it: the box is
+    what the exported contract says the policy trained under. Refused here
+    as well as at export, so the run fails before the GPU hours."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.command.pure_fast_prob = 0.2
+    cfg.command.fast_vx = (0.9, 1.4)  # command.vx tops out at 0.8
+
+    with pytest.raises(ValueError) as excinfo:
+        Joystick(ROBOT_DIR, PRESET, cfg)
+
+    message = str(excinfo.value)
+    assert "pure_fast_prob" in message  # the draw
+    assert "0.9" in message and "1.4" in message  # the range
+    assert "0.8" in message  # the box
+
+
+def test_an_armed_draw_inside_the_command_box_constructs():
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.command.pure_back_prob = 0.3  # back_vx = (-0.8, -0.2), inside vx
+
+    assert Joystick(ROBOT_DIR, PRESET, cfg) is not None
+
+
+def test_a_disarmed_out_of_box_range_constructs(env):
+    """Every draw is off by default, so the shipped config validates nothing
+    -- the off path stays bit-exact (test_golden_baseline.py is the gate).
+    Widening a range without arming its draw is not a violation."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.command.fast_vx = (0.9, 1.4)
+    cfg.command.pure_fast_prob = 0.0
+
+    assert Joystick(ROBOT_DIR, PRESET, cfg) is not None
+
+
+def test_the_box_a_robot_overlay_narrows_is_the_one_checked():
+    """configs/robot/roboto_origin.yaml sets command.vx to [-0.6, 1.0],
+    narrower on the backward side than the shipped back_vx = (-0.8, -0.2).
+    The check reads the COMPOSED config, so arming pure_back under that
+    overlay is refused even though the same defaults pass on asimov_v1,
+    whose vx is [-0.8, 0.8]. Composed the way training composes it."""
+    overrides = {
+        "episode_length": 50,
+        "command": {"vx": [-0.6, 1.0], "pure_back_prob": 0.3},
+    }
+
+    with pytest.raises(ValueError, match="back_vx"):
+        make_env("joystick", ROBOT_DIR, PRESET, overrides)

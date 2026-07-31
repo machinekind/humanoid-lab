@@ -75,9 +75,9 @@ case "${1:-}" in
   # [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0].
   #
   # The last three are the robustness grid's eval-only plant perturbations
-  # (port item 4.4, see src/humanoid_lab/eval/grid.py). Every grid cell
-  # passes --out: a perturbed measurement must never overwrite the run's
-  # canonical battery.json. Cell filenames come from eval/grid.py's
+  # (port item 4.4, see src/humanoid_lab/eval/grid.py). Any of them requires
+  # --out and the CLI refuses without it: a perturbed measurement must never
+  # overwrite the run's canonical battery.json. Cell filenames come from eval/grid.py's
   # cell_name, which is what `grid-report` aggregates, e.g.
   #   ./run.sh battery --run runs/r --alpha 1.58 --lag-tau 0.005 \
   #     --out runs/r/grid/battery_a1.58_lag5ms_envnone.json

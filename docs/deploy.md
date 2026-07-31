@@ -133,9 +133,12 @@ gait clock, the anchor, the scale and the clip bounds all round-trip. Each
 side carries its own last action and its own clock, so a drift compounds
 over the run instead of cancelling.
 
-Both bound the error at 1e-4. On a joint target in radians that is 0.006
-degrees, three orders below the 0.01 rad encoder noise the policy trains
-under. The residual is float32 reassociation between JAX and numpy. w01-tek
+Both bound the error at 1e-4 and raise `ExportValidationError` above it,
+carrying the measured error and the bound. The check is an explicit raise
+rather than an assert on purpose: `python -O` strips asserts, and a stripped
+check would ship unvalidated artifacts. On a joint target in radians 1e-4 is
+0.006 degrees, three orders below the 0.01 rad encoder noise the policy
+trains under. The residual is float32 reassociation between JAX and numpy. w01-tek
 measured 3.9e-5 on a policy with large weights. Measured here on
 `runs/hpc_smoke_roboto`, a 512-256-128 actor: 4.9e-06 for validation one
 and 8.1e-07 for validation two. Every export prints its own numbers.

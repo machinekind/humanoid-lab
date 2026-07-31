@@ -13,11 +13,17 @@ network and experiment groups.
 | `train` | Hydra training run |
 | `smoke` | short CPU training run, wandb off |
 | `build` / `check` | build and check a robot's MJX model |
-| `test` | `pytest tests -q` |
-| `battery` / `report` / `eval` | eval battery, report, video |
+| `check-contacts` | measure the warp contact and constraint budgets a preset needs |
+| `test` | `pytest tests/unit -q` — model-free, seconds, the edit loop |
+| `test-slow` / `test-all` | `tests/integration` (builds and steps MJX) / both, before a merge |
+| `battery` / `grid-report` / `report` / `eval` | eval battery, robustness-grid table, report, video |
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
+| `export` | deploy artifacts (`policy.npz`, `policy_meta.json`) from a checkpoint |
 
 Overrides pass straight through, e.g. `./run.sh train ppo.num_timesteps=3e8 run_name=asimov_v1`.
+
+docs/configuration.md's `run.sh` verbs table is the authoritative one and
+lists every flag each verb takes.
 
 ## Cluster
 

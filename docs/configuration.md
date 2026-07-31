@@ -476,7 +476,17 @@ envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
 | `pure_fast_prob` | `0.0` | Redraw `vx` from `fast_vx`, zero `vy` and `wz`: clean fast straight walking. |
 | `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. w01-tek deliberately set its own `fast_vx` to `(0.8, 1.2)` — **above** its box — to pull the policy past the speed it deadlocked at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
 | `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal w01-tek actually measured. |
-| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside our negative `vx` range. |
+| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside asimov_v1's negative `vx` range. **Not inside roboto_origin's**, whose overlay narrows `vx` to `[-0.6, 1.0]` — arming `pure_back_prob` there without narrowing `back_vx` is refused at construction (see below). |
+
+Every armed redraw is checked against the **composed** `command` box when the
+env is constructed: `command.<range>` must sit inside `command.<axis>`, or
+`Joystick.__init__` raises a `ValueError` naming the draw, the range and the
+box. A redraw is a redraw of the axis, not a widening of it — a policy that
+trained on commands outside its own box would ship a contract that
+understates what it saw. `deploy_contract.py` refuses the same configuration
+at export; the construct-time check just moves the failure to before the GPU
+hours. Draws at probability `0.0` are not checked, so the shipped all-off
+defaults validate nothing.
 
 ## Mirror augmentation (`task.env.symmetry`)
 
@@ -868,7 +878,7 @@ from `run.json`.
 | `--alpha A` | `1.0` | Firmware Kt miscalibration. Scales the built model's effective `kp`, `kd` **and** torque cap together by `A`. Operates on the post-injection values — the same numbers `run.json`'s `actuator_gains` stamps — so it composes with any preset and any `actuators.overrides`. `1.0` writes nothing. |
 | `--lag-tau TAU` | `0.0` | Actuator bandwidth, seconds. Replaces the model's instantaneous PD actuator with an explicit per-substep loop: `tau_pd = kp*(ctrl - qpos) - kd*qvel`, clipped to the cap, then `tau += (1 - exp(-dt_sub/TAU)) * (tau_pd - tau)`. The lag state persists across control steps and zeroes at reset. |
 | `--torque-envelope OMEGA_B,OMEGA_0` | none | Back-EMF droop, rad/s. Caps **driving** torque at the static cap up to `OMEGA_B`, ramping linearly to zero at `OMEGA_0`. **Braking** (`tau * qvel < 0`) is exempt from the ramp and keeps the full static cap. Composes with `--alpha`: the plateau is the alpha-scaled cap. Forces the explicit-PD path even at `--lag-tau 0`, because the ramp needs per-substep `qvel`. |
-| `--out PATH` | `<run>/battery.json` | Where the cell lands. **Every grid cell passes this.** A perturbed measurement must never overwrite the run's canonical number table. |
+| `--out PATH` | `<run>/battery.json` | Where the cell lands. **Required whenever any flag above is armed** — the CLI errors out otherwise, naming the flags. A perturbed measurement must never overwrite the run's canonical number table, and a forgotten `--out` must fail rather than land there. |
 
 Every `battery.json` — perturbed or not — now carries a `grid` block naming
 `alpha`, `lag_tau`, `torque_envelope`, and `path` (`native` or
@@ -1051,7 +1061,7 @@ Read from `run.sh` as it stands today:
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
-| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0]`. Writes `<run>/battery.json` unless `--out` says otherwise. See [Robustness grid](#robustness-grid-eval-only). |
+| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0]`. Writes `<run>/battery.json` unless `--out` says otherwise; the last three flags require `--out`, so a grid cell never lands on the canonical path. See [Robustness grid](#robustness-grid-eval-only). |
 | `grid-report` | `python -m humanoid_lab.eval.grid_report` | `--runs runs/<name> [runs/<other> ...] [--out PATH]`. Aggregates each run's `grid/` cells into one markdown table with PASS/FAIL per cell. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
 | `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |

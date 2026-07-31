@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from humanoid_lab import deploy_contract as dc
+from humanoid_lab.envs import joystick
 from humanoid_lab.envs.joystick import default_config
 
 
@@ -131,3 +132,10 @@ def test_an_armed_pure_draw_inside_the_command_box_is_covered():
     config = default_config().to_dict()
     config["command"]["pure_back_prob"] = 0.3
     dc.check_config_covered(config)
+
+
+def test_the_env_checks_the_same_draws_this_one_does():
+    """envs/joystick.py refuses the same configuration at construction, so a
+    run that could never ship fails before the GPU hours. Two tables, and
+    this is what keeps them from drifting apart."""
+    assert joystick.PURE_DRAW_RANGES == dc.PURE_DRAWS

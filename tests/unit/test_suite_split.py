@@ -30,6 +30,14 @@ FORBIDDEN = {
     "mj step": r"mj" + r"_step\(",
     "mjx forward": r"mjx\.forward",
     "mjx step": r"mjx\.step",
+    # The two composite entry points. Each is a whole pipeline of the lines
+    # above -- build_model's `build` compiles a spec and writes an XML;
+    # eval/battery's `load_checkpoint_policy` builds an env AND restores a
+    # checkpoint. Matched as CALLS, so a unit test may still name either one
+    # in prose or monkeypatch it away by name (tests/unit/test_eval_video.py
+    # does exactly that to stop render_video before it loads anything).
+    "model build": r"build" + r"_model\.build\(|from humanoid_lab\.build" + r"_model import build\b",
+    "checkpoint policy": r"load" + r"_checkpoint" + r"_policy\(",
 }
 
 UNIT_DIR = Path(__file__).parent
