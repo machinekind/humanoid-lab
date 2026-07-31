@@ -66,6 +66,37 @@ def default_config() -> config_dict.ConfigDict:
         # to every actuated joint's qpos at reset, so the policy never sees
         # the exact same start pose twice. 0.0 disables it.
         reset_noise=0.05,
+        # Anchor `pose`, `stand_still` and the reset pose on the pose the
+        # robot actually settles into, instead of on the keyframe's COMMANDED
+        # joint values. Off = the legacy keyframe anchor, bit-exact.
+        #
+        # Both terms measure a deviation from `_default_pose`, which is what
+        # the keyframe TELLS the joints to do. Under gravity and finite gains
+        # the robot comes to rest below that command, so the deviation never
+        # reaches zero and both terms charge a floor no policy can remove.
+        # w01-tek measured 0.343 rad of summed sag, about 97% of its whole
+        # standing residual; roboto_origin's home keyframe settles 0.065 rad
+        # off its command (0.015 rad at the knee), which at the stock
+        # scales.stand_still of -0.5 is 0.032 of standing penalty per step
+        # that exists only because the anchor is wrong. Each actuator preset
+        # sags differently, so the floor also moves with a config axis that
+        # has nothing to do with the task.
+        #
+        # On, the env settles a QUASI-RIGID copy of the model once at
+        # construction (see HumanoidEnv._settle_pose) and anchors on the
+        # result: a function of the geometry alone, identical for every gain
+        # set and every actuator model. Compensating the real plant's sag to
+        # reach that pose is the policy's job.
+        #
+        # The settle must end standing and at rest or construction raises
+        # (HumanoidEnv._check_settled). asimov_v1's keyframes do not: held
+        # rigid, `home` topples backward within a second and `knees_bent`
+        # goes over by four. Only turn this on for a robot whose reset
+        # keyframe is a standing equilibrium.
+        #
+        # The ctrl anchor does NOT move: `_default_pose` stays what a zero
+        # action commands and what the joint_pos observation subtracts.
+        real_pose_ref=False,
         # Per-joint vector from the actuator preset's action_scale() by
         # default (0.0 sentinel = "use the preset"). A scalar or per-joint
         # list here overrides it uniformly, mirroring w01-tek's action_scale
@@ -471,11 +502,18 @@ class Joystick(HumanoidEnv):
 
         # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) on
         # every actuated joint's qpos. reset_noise=0.0 degenerates to the
-        # old exact-keyframe reset (still draws/consumes r_pose either way,
-        # so the rng split discipline doesn't depend on the config value).
+        # old exact-pose reset (still draws/consumes r_pose either way, so
+        # the rng split discipline doesn't depend on the config value).
+        #
+        # The noise rides on _reset_qpos, which is _home_qpos itself unless
+        # real_pose_ref settled one (see default_config): under the settled
+        # pose the episode starts at rest, base height and residual tilt
+        # included, instead of dropping into its own sag over the first
+        # control steps. ctrl still holds the ctrl-space neutral, which the
+        # anchor never moves -- w01-tek's reset makes the same split.
         reset_noise = self._config.get("reset_noise", 0.0)
         pose_noise = jax.random.uniform(r_pose, (self.action_size,), minval=-1.0, maxval=1.0)
-        qpos = self._home_qpos.at[self._qadr].add(pose_noise * reset_noise)
+        qpos = self._reset_qpos.at[self._qadr].add(pose_noise * reset_noise)
 
         data = self._make_data()
         data = data.replace(qpos=qpos, qvel=jp.zeros(self._mj_model.nv), ctrl=self._neutral_ctrl)
@@ -742,13 +780,17 @@ class Joystick(HumanoidEnv):
             "action_rate": terms.action_rate(action, info["last_action"]),
             "action_accel": terms.action_accel(action, info["last_action"], info["last_last_action"]),
             "energy": terms.energy(qvel_act, data.actuator_force),
-            "pose": terms.pose(qpos_act, self._default_pose, self._pose_weight),
+            # Both pose terms score the deviation from _pose_anchor, which is
+            # _default_pose itself unless real_pose_ref settled one (see
+            # default_config). The anchor is a REWARD reference only: the
+            # action still centers on _default_pose.
+            "pose": terms.pose(qpos_act, self._pose_anchor, self._pose_weight),
             "feet_air_time": terms.feet_air_time(info["feet_air_time"], first_contact, self._config.gait.air_time_cap)
             * moving
             * shape_gate,
             "feet_slip": terms.feet_slip(foot_vel[:, :2], contact) * moving,
             "feet_phase": terms.feet_phase(foot_clearance, target_clearance, cfg.phase_sigma) * moving,
-            "stand_still": terms.stand_still(qpos_act, self._default_pose, qvel_act) * (~moving),
+            "stand_still": terms.stand_still(qpos_act, self._pose_anchor, qvel_act) * (~moving),
             "termination": terms.termination(fall),
             "torque_limit": terms.torque_limit(data.actuator_force, self._torque_cap, cfg.torque_limit_frac),
             # Appended at the END on purpose: the scaled sum below adds the

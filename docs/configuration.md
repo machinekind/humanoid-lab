@@ -286,6 +286,71 @@ failing, which is when feet are being slammed into the floor.
 | `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for asimov's leg** — this is w01-tek's number for a 0.21 m four-bar leg, and our own `gait.swing_height` asks for 0.08 m. |
 | `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`; w01-tek's number, same leg. |
 
+## Settled pose anchor (`task.env.real_pose_ref`)
+
+Off by default. `pose` and `stand_still` both score a deviation from
+`_default_pose` — the reset keyframe's **commanded** joint values. Under
+gravity and finite gains the robot comes to rest below that command, so the
+deviation never reaches zero and both terms charge a floor no policy can
+remove. w01-tek measured 0.343 rad of summed sag, about 97% of its entire
+standing residual. `roboto_origin`'s `home` keyframe settles 0.065 rad off
+its command (0.015 rad at the knee), which at the stock `scales.stand_still`
+of `-0.5` is 0.032 of standing penalty per step that exists only because the
+anchor is wrong. Each actuator preset sags differently, so the floor also
+moves with a config axis that has nothing to do with the task.
+
+On, the env settles a **quasi-rigid copy** of the model once at construction
+and anchors `pose`, `stand_still` and the reset pose on the result. Every
+actuator on the copy becomes the same stiff position servo — kp 400, kd 20,
+force cap removed, timestep 5e-4, `implicitfast` — held at the keyframe
+targets for two simulated seconds. The pose that comes out is a function of
+the geometry alone: two gain sets and two actuator models settle to
+bit-identical anchors. Compensating the real plant's sag to reach that pose
+is the policy's job. Cost is about 0.2 s of plain CPU MuJoCo, and only when
+the flag is on.
+
+**The ctrl anchor does not move.** `_default_pose` stays what
+`ctrl_from_action` centers on and what the `joint_pos` observation subtracts.
+Only the reward reference and the reset pose change. Re-centering the action
+space on a sagged pose would silently change what a zero action commands and
+what the policy reads back; w01-tek keeps the same separation between its ctrl
+anchor and its pose reference.
+
+Two details are load-bearing:
+
+- The settle targets are clipped to the **runtime target bounds**
+  (`_ctrl_lo`/`_ctrl_hi`, the preset's soft limits), not to the model's raw
+  `ctrlrange`. `step()` clips motor targets to those bounds, so a pose
+  settled past them is one the policy can never command. A `pd` preset's raw
+  ctrlrange is `[0, 0]` besides — those actuators are deliberately
+  `ctrllimited=False`.
+- The settle forces each actuator's `gaintype`/`biastype`/`ctrllimited` as
+  well as its gain and bias parameters. This diverges from w01-tek, whose
+  actuators are always position servos. An `ideal_torque` preset injects
+  `biastype NONE` actuators whose ctrl is a torque; overwriting the parameter
+  arrays alone would leave `force = 400*ctrl` and settle a different robot.
+
+**Construction raises if the settle does not end standing still**, naming the
+robot and the settled height. Two conditions: the settled base height must
+clear `fall.min_height`, and the robot must have come to rest (max `|qvel|`
+under 1e-2). A biped needs both. `asimov_v1`'s keyframes satisfy neither —
+held rigid, `home` topples backward within a second (its CoM sits about 2 cm
+behind the heel) and comes to rest at 0.111 m, while `knees_bent` is still
+above the fall floor at the two-second cut but moving at 0.15 rad/s and on
+the floor by four seconds. A height check alone would have anchored on that
+snapshot. **Turn this on only for a robot whose reset keyframe is a standing
+equilibrium**; `roboto_origin`'s `home` is (base height flat to 1e-5 m out to
+ten simulated seconds), and asimov_v1's are not, pending a balanced keyframe.
+
+w01-tek's version settles one rung per commanded stand height and interpolates
+the anchor on the command. This repo has no height command, so the table
+degenerates to the single settle above. If a height command ever lands here,
+that table is the extension.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `real_pose_ref` | `false` | Anchor `pose`, `stand_still` and the reset pose on the settled pose instead of the keyframe pose. `false` is the legacy anchor, bit-exact, and runs no settle. |
+
 ## No-progress termination (`task.env.no_progress`)
 
 Off by default. When on, an env whose measured progress keeps falling short
