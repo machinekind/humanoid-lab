@@ -170,3 +170,49 @@ def test_a_battery_without_a_contacts_block_still_renders():
     """battery.json files written before the block existed."""
     md = render_markdown(BATTERY)
     assert "# Eval report" in md
+
+
+# -- the spin probes (port item 4.1) -----------------------------------------
+
+_SPIN_LEFT = {
+    **GOOD_ROW, "completed": True,
+    "yaw_progress_deg": 138.4, "yaw_cmd_deg": 143.2,
+}
+_SPIN_RIGHT = {
+    **GOOD_ROW, "completed": False, "fell": True, "fell_at": 120,
+    "yaw_progress_deg": -11.7, "yaw_cmd_deg": -143.2,
+}
+_SPIN_BATTERY = {**BATTERY, "spin_left": _SPIN_LEFT, "spin_right": _SPIN_RIGHT}
+
+
+def _spin_section(md: str) -> list[str]:
+    """The lines of the report's `## Spin probes` section."""
+    lines = md.splitlines()
+    start = lines.index("## Spin probes")
+    rest = lines[start + 1 :]
+    end = next((i for i, line in enumerate(rest) if line.startswith("## ")), len(rest))
+    return rest[:end]
+
+
+def test_the_spin_section_reports_each_direction_separately():
+    """The whole point of the pair: a chirality bug is invisible in an
+    average over both directions."""
+    section = _spin_section(render_markdown(_SPIN_BATTERY))
+
+    left = next(line for line in section if line.startswith("| spin_left |"))
+    right = next(line for line in section if line.startswith("| spin_right |"))
+    assert "138.4" in left and "143.2" in left
+    assert "-11.7" in right and "-143.2" in right
+
+
+def test_the_spin_section_reports_yaw_asked_for_next_to_yaw_delivered():
+    section = _spin_section(render_markdown(_SPIN_BATTERY))
+    header = next(line for line in section if line.startswith("| scenario |"))
+
+    assert "yaw_progress_deg" in header and "yaw_cmd_deg" in header
+
+
+def test_a_battery_without_spin_rows_renders_no_spin_section():
+    """battery.json files written before port item 4.1."""
+    md = render_markdown(BATTERY)
+    assert "## Spin probes" not in md

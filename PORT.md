@@ -91,7 +91,12 @@ day and makes the TDD loop fast.
     not move when the joint turns -- measured 0.0 m for all six.
 
 **Phase 4. Eval additions.**
-- [ ] 4.1 `spin_left` and `spin_right` battery probes. [details](docs/port-details.md#41-spin-probes)
+- [x] 4.1 `spin_left` and `spin_right` battery probes. [details](docs/port-details.md#41-spin-probes)
+  - The yaw fields (`yaw_progress_deg`, `yaw_cmd_deg`) are written on every
+    scenario row, not only the two spin ones: they read the same body gyro
+    every row already records. w01-tek's second, DR-patched probe world is
+    deferred until foot-friction DR is on in a keeper run. See
+    docs/configuration.md.
 - [ ] 4.2 Gait KPIs report swing apex and touchdown softness. [details](docs/port-details.md#42-gait-kpis)
 - [ ] 4.3 `tracking_error` reports servo error, and run.json records effective gains. [details](docs/port-details.md#43-tracking_error)
 - [ ] 4.4 A robustness grid sweeps Kt error, torque lag, and a torque-speed envelope. [details](docs/port-details.md#44-robustness-grid)

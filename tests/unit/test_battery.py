@@ -10,14 +10,17 @@ import numpy as np
 import pytest
 
 from humanoid_lab.eval.battery import (
+    SETTLE_STEPS,
     _measurement_env_overrides,
     peak_over,
     antiphase_score,
     battery_scenarios,
     foot_slip,
     mech_power_mean,
+    scenario_result,
     torque_saturation_fraction,
     vibration_index,
+    yaw_progress_deg,
 )
 
 # -- vibration_index ---------------------------------------------------------
@@ -143,7 +146,10 @@ def test_mech_power_mean_matches_hand_computation():
 
 def test_battery_scenarios_have_expected_names():
     scenarios = battery_scenarios(_DT)
-    assert set(scenarios) == {"stand", "walk_ramp", "turn", "strafe", "walk_to_stop"}
+    assert set(scenarios) == {
+        "stand", "walk_ramp", "turn", "strafe", "walk_to_stop",
+        "spin_left", "spin_right",
+    }
 
 
 def test_stand_is_always_zero():
@@ -198,6 +204,159 @@ def test_scenario_step_counts_scale_with_dt():
     n_slow = battery_scenarios(0.04)["stand"][1]
 
     assert n_fast == 2 * n_slow
+
+
+# -- spin probes (port item 4.1) ---------------------------------------------
+#
+# Chirality needs its own row per direction: w01-tek's stiff_b keeper shipped
+# unable to spin right because every scenario that turned at all turned left.
+
+
+def test_spin_left_holds_a_pure_positive_yaw_command():
+    cmd_at, n = battery_scenarios(_DT)["spin_left"]
+
+    for i in (0, n // 2, n - 1):
+        cmd = np.asarray(cmd_at(i))
+        assert cmd.shape == (3,)
+        assert cmd[0] == pytest.approx(0.0)  # pure spin: no translation
+        assert cmd[1] == pytest.approx(0.0)
+        assert cmd[2] > 0.0  # + wz is CCW / left
+
+
+def test_spin_right_is_the_exact_mirror_of_spin_left():
+    left_at, n_left = battery_scenarios(_DT)["spin_left"]
+    right_at, n_right = battery_scenarios(_DT)["spin_right"]
+
+    assert n_left == n_right  # same duration, so the two rows compare directly
+    for i in (0, n_left // 2, n_left - 1):
+        assert np.allclose(np.asarray(right_at(i)), -np.asarray(left_at(i)))
+
+
+def test_spin_commands_stay_inside_the_yaw_envelope():
+    for name in ("spin_left", "spin_right"):
+        cmd_at, n = battery_scenarios(_DT)[name]
+        wz = np.array([float(np.asarray(cmd_at(i))[2]) for i in range(n)])
+
+        assert np.all(np.abs(wz) <= 0.6)  # asimov's yaw command box
+        assert np.all(wz == wz[0])  # held, not ramped
+
+
+def test_spin_scenarios_are_six_seconds_at_any_dt():
+    for name in ("spin_left", "spin_right"):
+        assert battery_scenarios(0.02)[name][1] == 300
+        assert battery_scenarios(0.04)[name][1] == 150
+
+
+# -- yaw_progress_deg --------------------------------------------------------
+
+
+def test_yaw_progress_integrates_the_post_settle_window():
+    n = SETTLE_STEPS + 250
+    wz = np.full(n, 0.5)  # rad/s, held
+
+    # only the 250 post-settle steps count: 250 * 0.02 * 0.5 = 2.5 rad
+    assert yaw_progress_deg(wz, _DT) == pytest.approx(np.degrees(2.5))
+
+
+def test_yaw_progress_sign_follows_the_spin_direction():
+    n = SETTLE_STEPS + 100
+    left = yaw_progress_deg(np.full(n, 0.5), _DT)
+    right = yaw_progress_deg(np.full(n, -0.5), _DT)
+
+    assert left > 0.0
+    assert right == pytest.approx(-left)
+
+
+def test_yaw_progress_ignores_the_reset_transient():
+    n = SETTLE_STEPS + 100
+    quiet = np.zeros(n)
+    quiet[SETTLE_STEPS:] = 0.5
+    spiked = quiet.copy()
+    spiked[:SETTLE_STEPS] = 40.0  # a violent reset transient, excluded
+
+    assert yaw_progress_deg(spiked, _DT) == pytest.approx(yaw_progress_deg(quiet, _DT))
+
+
+def test_yaw_progress_is_none_when_nothing_outlived_the_settle_window():
+    assert yaw_progress_deg(np.full(SETTLE_STEPS, 0.5), _DT) is None
+    assert yaw_progress_deg(np.zeros(0), _DT) is None
+
+
+# -- scenario_result's spin fields -------------------------------------------
+
+
+def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
+    """A synthetic rollout record of `n` steps, shaped like rollout()'s."""
+    cmd = np.zeros((n, 3))
+    cmd[:, 2] = cmd_wz
+    return {
+        "cmd": cmd,
+        "vx": np.zeros(n),
+        "vy": np.zeros(n),
+        "wz": np.full(n, wz),
+        "height": np.full(n, 0.7),
+        "qvel": np.zeros((n, 4)),
+        "contact": np.ones((n, 2), dtype=bool),
+        "foot_speed": np.zeros((n, 2)),
+        "tau": np.zeros((n, 4)),
+    }
+
+
+def test_scenario_result_reports_yaw_progress_per_direction():
+    n = SETTLE_STEPS + 250
+    left = scenario_result("spin_left", _rec(n, wz=0.5, cmd_wz=0.5), None, _DT, np.zeros(4), n)
+    right = scenario_result("spin_right", _rec(n, wz=-0.5, cmd_wz=-0.5), None, _DT, np.zeros(4), n)
+
+    assert left["yaw_progress_deg"] == pytest.approx(np.degrees(2.5), abs=1e-2)
+    assert right["yaw_progress_deg"] == pytest.approx(-np.degrees(2.5), abs=1e-2)
+    # the commanded sweep over the same window is the row's own denominator
+    assert left["yaw_cmd_deg"] == pytest.approx(np.degrees(2.5), abs=1e-2)
+    assert right["yaw_cmd_deg"] == pytest.approx(-np.degrees(2.5), abs=1e-2)
+
+
+def test_scenario_result_marks_a_full_length_run_completed():
+    n = SETTLE_STEPS + 100
+    r = scenario_result("spin_left", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert r["completed"] is True
+    assert r["fell"] is False
+
+
+def test_scenario_result_marks_an_early_termination_incomplete():
+    r = scenario_result("spin_left", _rec(40), 39, _DT, np.zeros(4), 300)
+
+    assert r["completed"] is False
+    assert r["fell"] is True
+    assert r["fell_at"] == 39
+
+
+def test_a_row_too_short_to_score_still_carries_fell_and_completed():
+    r = scenario_result("spin_right", _rec(3), 2, _DT, np.zeros(4), 300)
+
+    assert r["completed"] is False
+    assert r["fell"] is True
+    assert "yaw_progress_deg" not in r  # 3 steps measures nothing
+
+
+def test_yaw_progress_is_null_when_the_row_never_outlived_the_settle_window():
+    n = SETTLE_STEPS - 10
+    r = scenario_result("spin_left", _rec(n, wz=0.5, cmd_wz=0.5), n - 1, _DT, np.zeros(4), 300)
+
+    assert r["yaw_progress_deg"] is None
+    assert r["yaw_cmd_deg"] is None
+
+
+def test_the_existing_scenario_fields_keep_their_meaning():
+    n = SETTLE_STEPS + 100
+    r = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    # port item 4.1 is additive: every pre-4.1 key is still there, unchanged.
+    for key in (
+        "fell", "fell_at", "steps", "vel_err_vx", "vel_err_vy", "vel_err_wz",
+        "height_mean", "height_std", "vibration", "foot_slip",
+        "torque_sat_frac", "mech_power_mean", "antiphase_score",
+    ):
+        assert key in r
 
 
 # -- the measurement env overrides -------------------------------------------
