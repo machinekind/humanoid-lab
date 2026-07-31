@@ -303,9 +303,11 @@ On, the env settles a **quasi-rigid copy** of the model once at construction
 and anchors `pose`, `stand_still` and the reset pose on the result. Every
 actuator on the copy becomes the same stiff position servo — kp 400, kd 20,
 force cap removed, timestep 5e-4, `implicitfast` — held at the keyframe
-targets for two simulated seconds. The pose that comes out is a function of
-the geometry alone: two gain sets and two actuator models settle to
-bit-identical anchors. Compensating the real plant's sag to reach that pose
+targets for two simulated seconds. The pose that comes out does not depend
+on the runtime gains or the actuator model: two gain sets and two actuator
+models settle to bit-identical anchors. Mechanism properties are not
+factored out: a preset that changes joint armature (roboto's presets do)
+moves the two-second settle, measured at about 5e-5 rad there. Compensating the real plant's sag to reach that pose
 is the policy's job. Cost is about 0.2 s of plain CPU MuJoCo, and only when
 the flag is on.
 
