@@ -114,7 +114,11 @@ case "${1:-}" in
   # eval/video.py sets MUJOCO_GL=egl unless already exported -- see its
   # module docstring. Only exercised on darwin so far in this repo; treat
   # the linux/egl path as untested until a GPU-box run confirms it.
-  # Passthrough args: --run runs/<name> [--scenario name] [--steps N] [--out path.mp4].
+  # Rollouts are push-free by default (the battery's measurement
+  # convention); --push restores the run's own random pushes.
+  # Passthrough args: --run runs/<name> [--scenario name] [--steps N]
+  # [--out path.mp4] [--seed N] [--plot-torque] [--plot-joints]
+  # [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   *)
     echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|grid-report|report|eval} [args]"

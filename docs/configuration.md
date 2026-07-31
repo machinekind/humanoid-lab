@@ -815,6 +815,38 @@ produced the run. Every preset shipped today resolves to `pd` — both robots'
 `deploy_pd` and `sizing_ideal`, and asimov's `encos_datasheet` — so the
 caveat is future-proofing, not a live footnote.
 
+### The `actuator_gains` block (`run.json`)
+
+`run.json` carries two actuator records. `actuators` is what the config asked
+for: `cfg.actuators` verbatim, preset name and `overrides` included.
+`actuator_gains` is what the **built model got**, read back off its actuator
+params after preset loading and after `actuators.overrides` merging.
+
+| Field | Meaning |
+|---|---|
+| `preset` | The preset name, `cfg.actuators.name`. |
+| `model` | The actuator model the preset resolved to: `pd`, `ideal_torque`, … |
+| `joints` | Actuated joints in canonical order. This is also the column order of `kp` and `kd`. |
+| `kp` | Per actuator, `actuator_gainprm[:, 0]`. |
+| `kd` | Per actuator, `-actuator_biasprm[:, 2]`. |
+
+The two blocks differ whenever an override patches a gain: an
+`actuators.overrides` entry never appears in the preset yaml, so a stamp read
+from the yaml would record numbers the run never used.
+
+For a `pd` preset those params **are** the PD gains —
+`actuators/models.py`'s `PositionPD.inject` writes `gainprm = (kp, 0, 0)` and
+`biasprm = (0, -kp, -kd)`. For `ideal_torque` they are not gains at all:
+`gainprm[0]` is `1.0` and there is no bias term, so the block reads `1.0`
+and `0.0`. It is stamped anyway. `model` is what makes the numbers readable,
+and a `run.json` whose shape depended on the actuator model would need
+branching at every reader.
+
+There are no runtime `pd_kp` / `pd_kd` override knobs. The actuator-preset
+axis already covers that: a different stiffness is a different preset, or an
+`actuators.overrides` entry on the group that needs it, and both land in this
+block.
+
 ## Robustness grid (eval-only)
 
 Three sim2real risks, probed by perturbing the plant of one battery run.
@@ -931,37 +963,41 @@ nothing at all (on `roboto_origin` / `sizing_ideal` the joints reach about
 3.1 rad/s and peak at 52% of cap, so `8,20` is a no-op), and a preset with
 generous caps needs a tighter ramp than a deployable one to feel anything.
 
-### The `actuator_gains` block (`run.json`)
+## Eval videos
 
-`run.json` carries two actuator records. `actuators` is what the config asked
-for: `cfg.actuators` verbatim, preset name and `overrides` included.
-`actuator_gains` is what the **built model got**, read back off its actuator
-params after preset loading and after `actuators.overrides` merging.
+`./run.sh eval --run runs/<name>` renders one battery scenario to MP4 —
+the same scripted command trajectories `battery.json` measures, so a clip
+and its battery row describe the same trajectory.
 
-| Field | Meaning |
-|---|---|
-| `preset` | The preset name, `cfg.actuators.name`. |
-| `model` | The actuator model the preset resolved to: `pd`, `ideal_torque`, … |
-| `joints` | Actuated joints in canonical order. This is also the column order of `kp` and `kd`. |
-| `kp` | Per actuator, `actuator_gainprm[:, 0]`. |
-| `kd` | Per actuator, `-actuator_biasprm[:, 2]`. |
+| Flag | Default | Effect |
+|---|---|---|
+| `--scenario NAME` | `walk_ramp` | Any `eval/battery.py::battery_scenarios` name. |
+| `--steps N` | the scenario's own length | Truncates the rollout. |
+| `--plot-torque` | off | A normalized-torque strip under the render: every joint's torque over its own actuator cap, one colour per joint group, dashed lines at ±1. Normalized because this robot's per-joint force ranges are heterogeneous — a single N·m cap line across a hip and an ankle means nothing. |
+| `--plot-joints` | off | A per-joint target-vs-state grid: one row per joint group, one column per side, achieved position solid and the policy's target dashed. |
+| `--joint NAME` | — | Swaps the grid for a single-joint zoom panel. Implies `--plot-joints`. |
+| `--push` | off | Restores the run's own random pushes. |
 
-The two blocks differ whenever an override patches a gain: an
-`actuators.overrides` entry never appears in the preset yaml, so a stamp read
-from the yaml would record numbers the run never used.
+**Rows of the joint grid share a y-range** (`sharey="row"`). That is what
+makes left/right asymmetry readable: per-axes autoscaling would rescale each
+column to fill its own box, and a left knee swinging four times as far as
+the right would look identical to it.
 
-For a `pd` preset those params **are** the PD gains —
-`actuators/models.py`'s `PositionPD.inject` writes `gainprm = (kp, 0, 0)` and
-`biasprm = (0, -kp, -kd)`. For `ideal_torque` they are not gains at all:
-`gainprm[0]` is `1.0` and there is no bias term, so the block reads `1.0`
-and `0.0`. It is stamped anyway. `model` is what makes the numbers readable,
-and a `run.json` whose shape depended on the actuator model would need
-branching at every reader.
+**Rollouts are push-free by default.** A mid-video kick reads as a policy
+failure to anyone watching the clip, and the battery disables pushes for the
+same reason. `eval/video.py` states this itself rather than inheriting it,
+so the two conventions can be changed independently.
 
-There are no runtime `pd_kp` / `pd_kd` override knobs. The actuator-preset
-axis already covers that: a different stiffness is a different preset, or an
-`actuators.overrides` entry on the group that needs it, and both land in this
-block.
+Panels are opt-in: a plain render pays none of their per-step device
+transfers. Each is drawn ONCE for the whole episode and replayed with a
+moving cursor column stamped in, so video assembly costs one matplotlib pass
+per panel instead of one per frame.
+
+**GL backend.** `eval/video.py` sets `MUJOCO_GL=egl` on **linux only** (via
+`setdefault`, so an exported value wins). macOS has no EGL and forcing it
+there breaks offscreen rendering, so darwin keeps its default (CGL). Only
+the darwin path has been exercised in this repo; treat linux/egl as untested
+until a GPU-box run confirms it.
 
 ## Early stopping (`early_stop`)
 
@@ -1015,7 +1051,7 @@ Read from `run.sh` as it stands today:
 | `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0]`. Writes `<run>/battery.json` unless `--out` says otherwise. See [Robustness grid](#robustness-grid-eval-only). |
 | `grid-report` | `python -m humanoid_lab.eval.grid_report` | `--runs runs/<name> [runs/<other> ...] [--out PATH]`. Aggregates each run's `grid/` cells into one markdown table with PASS/FAIL per cell. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
-| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME]`. Renders one battery scenario to MP4. |
+| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
 
 ## Configs compose only from the editable install
 

@@ -699,6 +699,39 @@ because macOS has no egl. Check our `run.sh`.
 **TDD.** Panel parsing and unknown-name rejection are unit tests. Grid
 rendering gets an integration smoke test.
 
+**Landed, in two passes.**
+
+PR #3 (`claude/eval-video-plots`) built the panels: `eval/plots.py`'s
+`torque_strip`, `joint_grid` and `joint_zoom`, and `eval/video.py`'s
+`--plot-torque` / `--plot-joints` / `--joint`. Each panel is drawn once for
+the whole episode and replayed with a stamped cursor column, so assembly
+costs one matplotlib pass per panel rather than one per frame. `joint_grid`
+was built with `sharey="row"` from the start, so the shared row y-range this
+brief asks for was already true. Joint grouping comes from
+`RobotSpec.joint_groups` rather than w01-tek's quadruped leg-prefix parsing.
+
+This branch added the residual. `--push` restores the run's own random
+pushes for one render; the default stays push-free, and `eval/video.py` now
+states that itself (`push_override`) instead of inheriting it silently from
+the battery's measurement env — the two conventions can now move
+independently. `eval/battery.py::merged_env_overrides` is the seam it uses:
+a one-level merge over the measurement overrides, so re-enabling a push
+keeps the run's own `interval_steps` and `vel`. The row-shared y-range got
+its unit test (synthetic data with a 4:1 asymmetric row). `run.sh`'s darwin
+GL note was checked against `eval/video.py` and is correct: `MUJOCO_GL=egl`
+is set on linux only, via `setdefault`, and a unit test pins it per
+platform.
+
+Two divergences from the brief. Panel selection is three boolean flags, not
+w01-tek's `--plots` comma list with unknown-name rejection: there are two
+panels here, so there is no list worth parsing and nothing an unknown name
+would usefully reject. And the grid's target signal is `data.ctrl` with no
+`info["motor_targets"]` fallback, because this env has no action-delay
+machinery (see `envs/joystick.py`'s module docstring) — post-step `ctrl`
+IS the policy's clipped PD target for that step.
+
+See docs/configuration.md's "Eval videos".
+
 ---
 
 ## 5.1 Deploy contract

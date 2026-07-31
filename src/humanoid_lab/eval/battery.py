@@ -440,7 +440,27 @@ def _measurement_env_overrides(run: dict) -> dict:
     return overrides
 
 
-def load_checkpoint_policy(run_dir: Path):
+def merged_env_overrides(run: dict, extra: dict | None = None) -> dict:
+    """`_measurement_env_overrides(run)` with `extra` merged one level deep
+    over it.
+
+    One level, not recursive: every measurement-only change is a flat
+    `{block: {key: value}}` edit, and a caller that wants to put a push back
+    (`{"push": {"enable": True}}`) has to keep the run's own `interval_steps`
+    and `vel` around it -- which a one-level merge does and a wholesale
+    replacement would not.
+
+    This is the seam `eval/video.py` uses to re-enable pushes for a render
+    (see its `--push`). The battery itself never passes `extra`.
+    """
+    overrides = _measurement_env_overrides(run)
+    for key, block in (extra or {}).items():
+        current = overrides.get(key)
+        overrides[key] = {**current, **block} if isinstance(current, dict) else block
+    return overrides
+
+
+def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = None):
     """Load a run's measurement env + latest-checkpoint policy.
 
     Rebuilds the env exactly as train.py did: registry.make_env with the
@@ -451,6 +471,10 @@ def load_checkpoint_policy(run_dir: Path):
     replayed build_ppo_params + overrides), matching sizing/collect.py's
     _ppo_params_from_run: the network shape that produced this checkpoint
     can't drift from what train.py actually used.
+
+    `extra_env_overrides` is merged one level deep over those measurement
+    overrides (see merged_env_overrides). The battery never passes it;
+    eval/video.py's `--push` does.
 
     Returns (run, env, ckpt_path, inf) where inf = jax.jit(policy).
     """
@@ -463,7 +487,7 @@ def load_checkpoint_policy(run_dir: Path):
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    env_overrides = _measurement_env_overrides(run)
+    env_overrides = merged_env_overrides(run, extra_env_overrides)
     env = make_env(run["task"], robot_dir, preset_name, env_overrides, actuator_overrides)
 
     ckpt = _find_latest_checkpoint(run, run_dir)
