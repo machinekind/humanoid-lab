@@ -1055,6 +1055,7 @@ Read from `run.sh` as it stands today:
 | `grid-report` | `python -m humanoid_lab.eval.grid_report` | `--runs runs/<name> [runs/<other> ...] [--out PATH]`. Aggregates each run's `grid/` cells into one markdown table with PASS/FAIL per cell. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
 | `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
+| `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
 
 ## Configs compose only from the editable install
 
