@@ -432,10 +432,11 @@ class Joystick(HumanoidEnv):
         base_height = data.qpos[self._base_qadr + 2]
         fall = (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
 
-        # Velocity tracking kernels, absolute or command-relative (see
-        # tracking_relative in default_config). Both flags below are static
-        # config read here at trace time, so off compiles to exactly the
-        # absolute kernels.
+        # Velocity tracking kernels: absolute or command-relative, optionally
+        # blended with a wider far-field exponential, optionally gating each
+        # other. Every switch below is static config read here at trace time
+        # under a plain Python if, so all-off compiles to exactly the two
+        # legacy absolute kernels.
         err_lin = terms.tracking_err_lin(cmd[:2], linvel[:2])
         err_ang = terms.tracking_err_ang(cmd[2], gyro[2])
 
