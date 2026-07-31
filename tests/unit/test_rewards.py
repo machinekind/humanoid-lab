@@ -14,23 +14,79 @@ def _is_finite_scalar(x) -> bool:
     return x.shape == () and bool(jp.all(jp.isfinite(x)))
 
 
-def test_tracking_lin_vel_is_one_at_perfect_tracking():
+def test_tracking_err_lin_is_zero_at_perfect_tracking():
     cmd = jp.array([0.3, -0.2])
-    assert terms.tracking_lin_vel(cmd, cmd, sigma=0.25) == pytest.approx(1.0)
+    assert terms.tracking_err_lin(cmd, cmd) == pytest.approx(0.0)
 
 
-def test_tracking_lin_vel_decays_with_error():
+def test_tracking_err_lin_sums_both_axes():
     cmd = jp.array([0.3, -0.2])
     off = jp.array([0.0, 0.0])
-    assert terms.tracking_lin_vel(cmd, off, sigma=0.25) < 1.0
+    assert terms.tracking_err_lin(cmd, off) == pytest.approx(0.09 + 0.04)
 
 
-def test_tracking_ang_vel_is_one_at_perfect_tracking():
-    assert terms.tracking_ang_vel(0.4, 0.4, sigma=0.25) == pytest.approx(1.0)
+def test_tracking_err_ang_is_the_squared_yaw_rate_error():
+    assert terms.tracking_err_ang(0.4, 0.0) == pytest.approx(0.16)
+    assert terms.tracking_err_ang(0.4, 0.4) == pytest.approx(0.0)
 
 
-def test_tracking_ang_vel_decays_with_error():
-    assert terms.tracking_ang_vel(0.4, 0.0, sigma=0.25) < 1.0
+def test_tracking_kernel_is_one_at_zero_error():
+    assert terms.tracking_kernel(0.0, sigma=0.25) == pytest.approx(1.0)
+
+
+def test_tracking_kernel_decays_with_error():
+    assert terms.tracking_kernel(0.25, sigma=0.25) == pytest.approx(jp.exp(-1.0))
+    assert terms.tracking_kernel(0.25, sigma=0.25) < 1.0
+
+
+# -- relative kernel width (port item 1.2) ---------------------------------
+
+
+def test_tracking_rel_sigma_scales_with_the_squared_command():
+    # rel_sigma * max(|cmd|, floor)^2, both commands above the floor.
+    assert terms.tracking_rel_sigma(0.4, rel_sigma=0.25, floor=0.3) == pytest.approx(0.04)
+    assert terms.tracking_rel_sigma(0.8, rel_sigma=0.25, floor=0.3) == pytest.approx(0.16)
+
+
+def test_relative_kernel_pays_the_same_at_the_same_fraction_of_target():
+    """The whole point of the relative kernel: 80% of target scores the same
+    at any commanded speed, so a fast command is not a reward cliff."""
+    slow = terms.tracking_kernel(
+        terms.tracking_err_ang(0.4, 0.8 * 0.4),
+        terms.tracking_rel_sigma(0.4, rel_sigma=0.25, floor=0.3),
+    )
+    fast = terms.tracking_kernel(
+        terms.tracking_err_ang(0.8, 0.8 * 0.8),
+        terms.tracking_rel_sigma(0.8, rel_sigma=0.25, floor=0.3),
+    )
+    assert float(slow) == pytest.approx(float(fast), rel=1e-6)
+    assert float(slow) == pytest.approx(float(jp.exp(-0.16)), rel=1e-6)
+
+
+def test_the_absolute_kernel_does_not_pay_the_same_at_the_same_fraction():
+    """The cliff the relative kernel removes: at a fixed fraction of target,
+    the absolute kernel collapses as the command grows."""
+    slow = terms.tracking_kernel(terms.tracking_err_ang(0.4, 0.8 * 0.4), sigma=0.25)
+    fast = terms.tracking_kernel(terms.tracking_err_ang(0.8, 0.8 * 0.8), sigma=0.25)
+    assert float(fast) < float(slow)
+
+
+def test_tracking_rel_sigma_floors_a_small_command():
+    # Below the floor the width stops shrinking, so small commands share one
+    # width instead of sharpening toward a division by zero.
+    small = terms.tracking_rel_sigma(0.1, rel_sigma=0.25, floor=0.3)
+    smaller = terms.tracking_rel_sigma(0.0, rel_sigma=0.25, floor=0.3)
+    assert float(small) == pytest.approx(float(smaller))
+    assert float(smaller) == pytest.approx(0.25 * 0.09)
+
+
+def test_a_zero_command_gives_a_finite_relative_kernel():
+    k = terms.tracking_kernel(
+        terms.tracking_err_ang(0.0, 0.1),
+        terms.tracking_rel_sigma(0.0, rel_sigma=0.25, floor=0.3),
+    )
+    assert _is_finite_scalar(k)
+    assert 0.0 < float(k) < 1.0
 
 
 def test_action_rate_zero_for_constant_action():
@@ -92,8 +148,10 @@ def test_torque_limit_positive_above_cap():
 @pytest.mark.parametrize(
     "fn, args",
     [
-        (terms.tracking_lin_vel, (jp.array([0.1, 0.2]), jp.array([0.0, 0.3]), 0.25)),
-        (terms.tracking_ang_vel, (0.2, -0.1, 0.25)),
+        (terms.tracking_err_lin, (jp.array([0.1, 0.2]), jp.array([0.0, 0.3]))),
+        (terms.tracking_err_ang, (0.2, -0.1)),
+        (terms.tracking_kernel, (0.05, 0.25)),
+        (terms.tracking_rel_sigma, (0.5, 0.25, 0.3)),
         (terms.lin_vel_z, (0.3,)),
         (terms.ang_vel_xy, (jp.array([0.1, -0.2]),)),
         (terms.orientation, (jp.array([0.05, -0.02]),)),

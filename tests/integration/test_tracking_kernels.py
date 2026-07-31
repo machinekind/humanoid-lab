@@ -132,6 +132,99 @@ def test_tracking_product_leaves_the_other_terms_untouched(env, reset_state):
         assert on[key] == off[key], key
 
 
+# -- 1.2 tracking_relative -------------------------------------------------
+
+
+def test_tracking_relative_is_off_by_default(env):
+    r = env._config.reward
+    assert r.tracking_relative is False
+    assert r.tracking_rel_sigma == 0.25
+    assert r.tracking_rel_floor_lin == 0.3
+    assert r.tracking_rel_floor_ang == 0.4
+
+
+def test_relative_kernels_are_command_magnitude_invariant(env, reset_state):
+    """At rest the robot tracks 0% of any command, so the relative kernel
+    must score both commands identically -- that invariance is the mechanism.
+    Both yaw rates sit above tracking_rel_floor_ang (0.4), so neither is
+    floored."""
+    with reward_flags(env, tracking_relative=True):
+        slow = rewards_for(env, reset_state, (0.0, 0.0, 0.8))
+        fast = rewards_for(env, reset_state, (0.0, 0.0, 1.5))
+
+    assert slow["tracking_ang_vel"] == pytest.approx(fast["tracking_ang_vel"], rel=1e-3)
+    # exp(-cmd^2 / (rel_sigma * cmd^2)) = exp(-1/0.25) at any command.
+    assert slow["tracking_ang_vel"] == pytest.approx(float(jp.exp(-4.0)), rel=1e-3)
+
+
+def test_the_absolute_kernel_collapses_where_the_relative_one_does_not(env, reset_state):
+    """The cliff being removed: the same 0%-tracked states score orders of
+    magnitude apart under the absolute kernel, so a fast command has no
+    reachable gradient."""
+    slow = rewards_for(env, reset_state, (0.0, 0.0, 0.8))
+    fast = rewards_for(env, reset_state, (0.0, 0.0, 1.5))
+    assert fast["tracking_ang_vel"] < 0.01 * slow["tracking_ang_vel"]
+
+
+def test_relative_lin_kernel_uses_the_planar_command_norm(env, reset_state):
+    """denom_lin is norm(cmd_xy), so a command of the same magnitude split
+    across x and y scores the same as one along x alone."""
+    with reward_flags(env, tracking_relative=True):
+        along_x = rewards_for(env, reset_state, (0.8, 0.0, 0.0))
+        diagonal = rewards_for(env, reset_state, (0.8 / 2**0.5, 0.8 / 2**0.5, 0.0))
+    assert along_x["tracking_lin_vel"] == pytest.approx(
+        diagonal["tracking_lin_vel"], rel=1e-3
+    )
+    # Both are 0%-tracked, so both are exp(-1/rel_sigma). Scoring the
+    # diagonal off cmd[0] alone would give exp(-8) instead.
+    assert along_x["tracking_lin_vel"] == pytest.approx(float(jp.exp(-4.0)), rel=1e-3)
+
+
+def test_a_zero_command_divides_by_the_floor_and_stays_finite(env, reset_state):
+    with reward_flags(env, tracking_relative=True):
+        r = rewards_for(env, reset_state, (0.0, 0.0, 0.0))
+    for key in ("tracking_lin_vel", "tracking_ang_vel"):
+        assert jp.isfinite(jp.asarray(r[key])), key
+        # At rest under a zero command the error is 0, so any finite width
+        # gives exactly 1.0. A zero width would give nan.
+        assert r[key] == pytest.approx(1.0)
+
+
+def test_small_commands_share_the_floored_width(env, reset_state):
+    """Below tracking_rel_floor_ang (0.4) the width stops shrinking, so a
+    tiny command cannot sharpen the kernel toward a cliff of its own."""
+    with reward_flags(env, tracking_relative=True):
+        floored = rewards_for(env, reset_state, (0.0, 0.0, 0.2))
+        at_floor = rewards_for(env, reset_state, (0.0, 0.0, 0.4))
+    # width = 0.25 * 0.4^2 = 0.04 for both; only the error differs.
+    assert floored["tracking_ang_vel"] == pytest.approx(float(jp.exp(-0.04 / 0.04)), rel=1e-3)
+    assert at_floor["tracking_ang_vel"] == pytest.approx(float(jp.exp(-0.16 / 0.04)), rel=1e-3)
+
+
+def test_the_product_gate_composes_with_the_relative_branch(env, reset_state):
+    """tracking_product runs after the branch, so it multiplies whichever
+    pair of kernels the branch produced."""
+    cmd = (0.5, 0.0, 0.5)
+    with reward_flags(env, tracking_relative=True):
+        pre = rewards_for(env, reset_state, cmd)
+        with reward_flags(env, tracking_product=True):
+            post = rewards_for(env, reset_state, cmd)
+
+    expected = pre["tracking_lin_vel"] * pre["tracking_ang_vel"]
+    assert post["tracking_lin_vel"] == pytest.approx(expected, rel=1e-6)
+    assert post["tracking_ang_vel"] == pytest.approx(expected, rel=1e-6)
+
+
+def test_tracking_relative_leaves_the_other_terms_untouched(env, reset_state):
+    off = rewards_for(env, reset_state, _MIXED_CMD)
+    with reward_flags(env, tracking_relative=True):
+        on = rewards_for(env, reset_state, _MIXED_CMD)
+    for key in off:
+        if key.startswith("tracking_"):
+            continue
+        assert on[key] == off[key], key
+
+
 def test_tracking_product_keeps_the_reward_key_order(env, reset_state):
     """The reward sum's float addition order follows dict insertion order, so
     the product must not move or add a key."""
