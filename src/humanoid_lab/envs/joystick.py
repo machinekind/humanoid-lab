@@ -167,6 +167,24 @@ def default_config() -> config_dict.ConfigDict:
             # Re-derive for asimov rather than trusting these.
             tracking_rel_floor_lin=0.3,  # m/s
             tracking_rel_floor_ang=0.4,  # rad/s
+            # Far-field mix-in for both tracking kernels (weight 0 = off,
+            # exact legacy kernel): (1-w)*kernel + w*exp(-err^2/far_sigma),
+            # applied in the absolute and the relative branch alike, and the
+            # far kernel stays absolute in both. exp(-err^2/sigma) is
+            # gradient-free once the error is a few sigma out, so a
+            # capability the policy never explored gets no pull toward the
+            # command at all; the wider second exponential keeps a usable
+            # gradient at range while the optimum and the [0, 1] bound stay
+            # unchanged.
+            #
+            # This term ALONE creates a stable standing deadlock: at a yaw
+            # rate error of 0.8 rad/s it pays 0.25*exp(-0.64/2.5), about 19%
+            # of the maximum angular reward, for standing still, and that
+            # gradient is weaker than the penalties a pivot attempt incurs.
+            # Only turn it on together with tracking_product or
+            # tracking_relative.
+            tracking_far_weight=0.0,
+            tracking_far_sigma=2.5,
             phase_sigma=0.002,
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
@@ -409,6 +427,17 @@ class Joystick(HumanoidEnv):
         # absolute kernels.
         err_lin = terms.tracking_err_lin(cmd[:2], linvel[:2])
         err_ang = terms.tracking_err_ang(cmd[2], gyro[2])
+
+        far_w = cfg.get("tracking_far_weight", 0.0)
+
+        def _far_blend(kernel, err_sq):
+            """The far-field mix-in (see tracking_far_weight in
+            default_config). far_w is static config, so weight 0 returns the
+            bare kernel untouched rather than a numerically-equal blend."""
+            if not far_w:
+                return kernel
+            return terms.tracking_far_blend(kernel, err_sq, far_w, cfg.tracking_far_sigma)
+
         if cfg.get("tracking_relative", False):
             k_lin = terms.tracking_kernel(
                 err_lin,
@@ -425,6 +454,10 @@ class Joystick(HumanoidEnv):
         else:
             k_lin = terms.tracking_kernel(err_lin, cfg.tracking_sigma)
             k_ang = terms.tracking_kernel(err_ang, cfg.tracking_sigma)
+        # Both branches blend, and both pass the raw squared error: the far
+        # kernel is absolute either way.
+        k_lin = _far_blend(k_lin, err_lin)
+        k_ang = _far_blend(k_ang, err_ang)
         if cfg.get("tracking_product", False):
             # Gate each term by the other's kernel: tracking pays only for
             # tracking the whole command (see tracking_product in

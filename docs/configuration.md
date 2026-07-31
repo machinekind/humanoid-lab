@@ -232,6 +232,8 @@ exactly.
 | `tracking_rel_sigma` | `0.25` | Dimensionless width of the relative kernel. A w01-tek quadruped starting point: its terrain presets later widened this to `0.5` because the narrow kernel rounded partial tracking to zero. |
 | `tracking_rel_floor_lin` | `0.3` | Floor on the linear relative denominator, m/s. Keeps a near-zero command from sharpening the kernel to a point and dividing by zero. |
 | `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role. w01-tek's terrain presets later widened this to `0.7`. |
+| `tracking_far_weight` | `0.0` | Mix a wide exponential into both kernels: `(1-w)*kernel + w*exp(-err²/tracking_far_sigma)`. Applies in the absolute and the relative branch alike, and the far kernel stays absolute in both. `exp(-err²/σ)` is gradient-free a few sigma out, so a capability the policy never explored gets no pull toward the command; the wide kernel keeps a usable gradient at range without moving the optimum or leaving `[0, 1]`. **This term alone creates a standing deadlock**: at a yaw rate error of 0.8 rad/s it pays `0.25*exp(-0.64/2.5)`, about 19% of the maximum angular reward, for standing still, and that gradient is weaker than the penalties a pivot attempt incurs. Turn it on only together with `tracking_product` or `tracking_relative`. |
+| `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
 
 ## Domain randomization (`dr`)
 
