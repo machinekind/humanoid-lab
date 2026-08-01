@@ -11,11 +11,9 @@
 # elsewhere transfers. A different machine, card or driver gets its own
 # measurement: a 24 GB card's env ceiling says nothing about an H100's.
 #
-# steps/s compares across the slices of one invocation, because they share a
-# seed. Across invocations it compares only at a matched SEED. Two runs
-# differing only in seed have reported 1,343,166 and 777,859 steps/s. Spawns
-# and falls differ, so a different number of geoms sit in contact and the
-# contact accumulator overflows at a different rate.
+# steps/s compares across the slices of one invocation, because they share
+# a seed. Across invocations it compares only at a matched SEED (see
+# CLAUDE.md's facts list).
 #
 # Each slice is a throwaway training of the preset a real run will use, domain
 # randomization included, so the measured rate is the launch's early-run cost.

@@ -283,11 +283,6 @@ def scenario_result(
 
 # -- scenario command builders ----------------------------------------------
 
-# asimov command envelope (envs/joystick.py's default_config `command`
-# block, itself from PLAN.md's asimov docs): x +-0.8 m/s, y +-0.6 m/s,
-# yaw +-0.6 rad/s. Every scenario below stays inside this envelope.
-_VX_MAX, _VY_MAX, _WZ_MAX = 0.8, 0.6, 0.6
-
 # Held yaw rate for the spin probes, rad/s. See battery_scenarios.
 _SPIN_WZ = 0.5
 

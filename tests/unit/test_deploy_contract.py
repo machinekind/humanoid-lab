@@ -16,7 +16,6 @@ from __future__ import annotations
 import pytest
 
 from humanoid_lab import deploy_contract as dc
-from humanoid_lab.envs import joystick
 from humanoid_lab.envs.joystick import default_config
 
 
@@ -58,10 +57,8 @@ def test_the_headline_classifications_are_the_documented_ones():
     """Pins the split the deploy runtime is written against."""
     for key in (
         "ctrl_dt",
-        "action_scale",
         "reset_keyframe",
         "obs.state",
-        "obs.include",
         "command.vx",
         "command.vy",
         "command.wz",
@@ -111,30 +108,12 @@ def test_a_partial_config_of_known_keys_is_covered():
     dc.check_config_covered({"command": {"vx": (-1.0, 1.0)}, "ctrl_dt": 0.02})
 
 
-def test_an_armed_pure_draw_outside_the_command_box_raises():
-    """The precondition that keeps the curriculum keys training-only."""
-    config = default_config().to_dict()
-    config["command"]["pure_fast_prob"] = 0.2
-    config["command"]["fast_vx"] = (0.9, 1.4)  # above command.vx
-    with pytest.raises(ValueError, match="fast_vx"):
-        dc.check_config_covered(config)
-
-
-def test_a_disarmed_pure_draw_outside_the_command_box_is_ignored():
-    config = default_config().to_dict()
-    config["command"]["pure_fast_prob"] = 0.0
-    config["command"]["fast_vx"] = (0.9, 1.4)
-    dc.check_config_covered(config)
-
-
-def test_an_armed_pure_draw_inside_the_command_box_is_covered():
+def test_an_armed_pure_draw_is_covered():
+    """The curriculum keys stay training-only whatever their values; the
+    out-of-box refusal lives at env construction (see
+    tests/unit/test_pure_draw_ranges.py)."""
     config = default_config().to_dict()
     config["command"]["pure_back_prob"] = 0.3
     dc.check_config_covered(config)
 
 
-def test_the_env_checks_the_same_draws_this_one_does():
-    """envs/joystick.py refuses the same configuration at construction, so a
-    run that could never ship fails before the GPU hours. Two tables, and
-    this is what keeps them from drifting apart."""
-    assert joystick.PURE_DRAW_RANGES == dc.PURE_DRAWS

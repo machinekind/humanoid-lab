@@ -70,25 +70,6 @@ def test_the_battery_env_this_layers_onto_is_already_push_free():
     assert overrides["push"]["enable"] is False
 
 
-def test_push_keeps_the_run_s_other_push_settings():
-    """`--push` restores the run's OWN push config -- interval and velocity
-    come from the rebuilt env, not from a new default."""
-    run = {"hydra_config": {"task": {"env": {"push": {"interval_steps": 50, "vel": 0.7}}}}}
-    merged = video.env_overrides_for(run, push=True)
-
-    assert merged["push"]["enable"] is True
-    assert merged["push"]["interval_steps"] == 50
-    assert merged["push"]["vel"] == 0.7
-
-
-def test_without_push_the_run_s_other_push_settings_survive_too():
-    run = {"hydra_config": {"task": {"env": {"push": {"interval_steps": 50, "vel": 0.7}}}}}
-    merged = video.env_overrides_for(run, push=False)
-
-    assert merged["push"]["enable"] is False
-    assert merged["push"]["interval_steps"] == 50
-
-
 # -- CLI wiring --------------------------------------------------------------
 
 
@@ -144,26 +125,6 @@ def test_the_joint_flag_reaches_render_video(tmp_path, monkeypatch, stub_render)
     _main(["--run", str(tmp_path), "--joint", "left_knee"], monkeypatch)
 
     assert stub_render["joint"] == "left_knee"
-
-
-# -- --joint implies --plot-joints -------------------------------------------
-
-
-def test_a_named_joint_implies_the_joint_panel():
-    """`--joint NAME` alone is enough: asking for one joint's zoom panel is
-    asking for a joint panel."""
-    assert video.resolve_panels(False, False, "left_knee") == (False, True)
-
-
-def test_the_implication_lives_below_the_cli():
-    """A library caller passing joint= gets it too, which is why the
-    normalization is in render_video and not in main()."""
-    assert video.resolve_panels(False, False, None) == (False, False)
-    assert video.resolve_panels(True, False, None) == (True, False)
-
-
-def test_a_named_joint_does_not_arm_the_torque_strip():
-    assert video.resolve_panels(False, True, "left_knee") == (False, True)
 
 
 # -- the panel compositor ----------------------------------------------------

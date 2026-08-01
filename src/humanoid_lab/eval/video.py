@@ -22,7 +22,7 @@ is the same code path as before); panel rendering lives in eval/plots.py.
 `--push` restores the run's own random pushes for the rollout. They are OFF
 by default, matching the battery's measurement convention: a mid-video kick
 reads as a policy failure to anyone watching the clip. The default is stated
-here (see env_overrides_for), not merely inherited from the battery's
+here (see push_override), not merely inherited from the battery's
 measurement env -- this module owns what its own renders show.
 
 MUJOCO_GL: `egl` is set (via setdefault, so an already-exported MUJOCO_GL
@@ -49,7 +49,6 @@ import numpy as np
 from humanoid_lab.eval.battery import (
     battery_scenarios,
     load_checkpoint_policy,
-    merged_env_overrides,
 )
 from humanoid_lab.eval.plots import joint_grid, joint_zoom, torque_strip
 
@@ -64,22 +63,6 @@ def push_override(push: bool) -> dict:
     whatever it trained with.
     """
     return {"push": {"enable": bool(push)}}
-
-
-def env_overrides_for(run: dict, push: bool = False) -> dict:
-    """The env overrides a video rollout builds its env with: the battery's
-    measurement set, with this module's push decision merged over it."""
-    return merged_env_overrides(run, push_override(push))
-
-
-def resolve_panels(plot_torque: bool, plot_joints: bool, joint: str | None) -> tuple[bool, bool]:
-    """(plot_torque, plot_joints) after `--joint`'s implication.
-
-    Asking for one joint's zoom panel is asking for a joint panel, so
-    `--joint NAME` alone is enough -- and the implication belongs here rather
-    than in main(), so a library caller passing joint= gets it too.
-    """
-    return bool(plot_torque), bool(plot_joints) or joint is not None
 
 
 def _pick_camera(mj_model: mujoco.MjModel):
@@ -181,7 +164,8 @@ def render_video(
     # "canonical order: the action/obs contract"). eval/plots.py's builders
     # assume this order for their joint_names argument.
     joint_names = list(env.robot_spec.actuated_joints)
-    plot_torque, plot_joints = resolve_panels(plot_torque, plot_joints, joint)
+    # `--joint NAME` alone is enough: one joint's zoom panel is a joint panel.
+    plot_joints = plot_joints or joint is not None
     if joint is not None and joint not in joint_names:
         sys.exit(f"unknown joint {joint!r}; valid joints: {joint_names}")
 

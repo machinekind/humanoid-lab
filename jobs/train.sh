@@ -20,15 +20,9 @@
 #   WANDB       set false to turn wandb off (default true)
 #   RUN_ARGS    extra hydra overrides, space separated
 #
-# The defaults size a run for four H100-class cards. Scale NUM_ENVS and
-# BATCH together on anything smaller.
-#
-# A CPU smoke. NUM_ENVS and BATCH have to come down with it. `smoke=true`
-# sizes the run small, and this script's defaults for those two are applied
-# afterwards and would win. Most of the wall clock is the MJX compile, which
-# on CPU runs to tens of minutes.
-#   NUM_ENVS=64 BATCH=64 RUN_ARGS="smoke=true wandb.enable=false" \
-#     ./jobs/train.sh
+# The NUM_ENVS/BATCH defaults are an untested starting point for a
+# multi-GPU box: measure with jobs/preflight_sizing.sh on the real node
+# class and scale the two together.
 #
 # A full run:
 #   ROBOT=asimov_v1 SEED=0 NUM_ENVS=32768 BATCH=1024 \
@@ -43,11 +37,9 @@
 # Partial-failure policy: there is none to have. This runs one training and
 # exits with its exit code.
 #
-# The steps/s this prints compares only against another run at the same SEED.
-# Two runs identical except for the seed have reported 1,343,166 and 777,859
-# steps/s. Spawns and falls differ, so a different number of geoms sit in
-# contact and the contact accumulator overflows at a different rate. A single
-# reading is not a throughput figure for the config.
+# The steps/s this prints compares only against another run at the same
+# SEED (see CLAUDE.md's facts list). A single reading is not a throughput
+# figure for the config.
 
 set -euo pipefail
 

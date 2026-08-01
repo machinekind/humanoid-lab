@@ -407,11 +407,6 @@ class HumanoidEnv(mjx_env.MjxEnv):
         world_linvel = data.qvel[self._base_vadr : self._base_vadr + 3]
         return brax_math.rotate(world_linvel, brax_math.quat_inv(self._quat(data)))
 
-    def _accel(self, data):
-        if "acc" in self._sensor_adr:
-            adr = self._sensor_adr["acc"]
-            return data.sensordata[adr : adr + 3]
-        raise KeyError("robot.yaml declares no 'acc' sensor and there is no qpos/qvel fallback for it")
 
     def _foot_site_pos(self, data):
         return data.site_xpos[self._foot_site_ids]
@@ -477,20 +472,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
     @property
     def actor_obs_names(self):
-        """Resolved actor observation list: the task's ordered obs.state,
-        filtered by the obs.include whitelist when one is set (sensor-suite
-        presets name what the robot HAS; task signals it doesn't list are
-        dropped too, so presets must include them explicitly)."""
-        include = self._config.obs.get("include", ())
-        names = list(self._config.obs.state)
-        if include:
-            names = [n for n in names if n in include]
-        if not names:
-            raise ValueError(
-                f"obs.include {list(include)} leaves no actor observations "
-                f"(task obs.state: {list(self._config.obs.state)})"
-            )
-        return names
+        """Resolved actor observation list: the task's ordered obs.state."""
+        return list(self._config.obs.state)
 
     def _build_obs(self, data, info, rng=None):
         """Observations declared by the env config.

@@ -146,10 +146,6 @@ def default_config() -> config_dict.ConfigDict:
         # The ctrl anchor does NOT move: `_default_pose` stays what a zero
         # action commands and what the joint_pos observation subtracts.
         real_pose_ref=False,
-        # Per-joint vector from the actuator preset's action_scale() by
-        # default (0.0 sentinel = "use the preset"). A scalar or per-joint
-        # list here overrides it uniformly.
-        action_scale=0.0,
         # asimov docs (PLAN.md): gyro +-0.01, joint_pos +-0.01 rad,
         # joint_vel +-0.1 rad/s. No gravity noise figure was published;
         # unlisted components default to noise-free (see base.py's
@@ -160,7 +156,6 @@ def default_config() -> config_dict.ConfigDict:
         # `state` is the actor (only signals a real robot has -- no
         # world-frame linvel), `privileged` the critic.
         obs=config_dict.create(
-            include=(),  # obs presets whitelist actor sensors; () = all
             state=(
                 "gyro",
                 "gravity",
@@ -418,10 +413,6 @@ def default_config() -> config_dict.ConfigDict:
 # REDRAWS an axis. pure_wz and pure_vy are absent on purpose: they keep the
 # value the base uniform already drew inside the box and only zero the other
 # axes, so they cannot leave it.
-#
-# Kept in step with deploy_contract.py's PURE_DRAWS, which is the same table
-# for the same reason at the other end (tests/unit/test_deploy_contract.py
-# pins the two identical).
 PURE_DRAW_RANGES = (
     ("pure_slow_prob", "slow_vx", "vx"),
     ("pure_fast_prob", "fast_vx", "vx"),
@@ -438,10 +429,9 @@ def check_pure_draw_ranges(command) -> None:
     ABOVE the box to pull a policy past a speed it deadlocks at is exactly
     the state this refuses.
 
-    Symmetric with deploy_contract.check_config_covered, which refuses the
-    same configuration at export. Refusing it here too means a run that
-    could never ship fails at construction rather than after the GPU hours:
-    the export-time check is the last gate, not the only one.
+    Export gets the same guarantee for free: loading a checkpoint rebuilds
+    its env through this constructor, so a run that could never ship fails
+    here, before the GPU hours.
 
     Only draws with a nonzero probability are checked, so the shipped
     all-off defaults validate nothing and no preset changes meaning.
@@ -474,15 +464,6 @@ class Joystick(HumanoidEnv):
         # than the shipped back_vx range), so the defaults alone do not
         # settle it.
         check_pure_draw_ranges(self._config.command)
-
-        # action_scale override: 0.0 sentinel keeps the preset-derived
-        # per-joint vector HumanoidEnv.__init__ already computed; a scalar
-        # or per-joint sequence here overrides it uniformly.
-        override = self._config.get("action_scale", 0.0)
-        if isinstance(override, (tuple, list)):
-            self._action_scale = jp.array([float(v) for v in override])
-        elif float(override) != 0.0:
-            self._action_scale = jp.full(self.action_size, float(override))
 
         self._torque_cap = jp.array(self._mj_model.actuator_forcerange[:, 1])
         # Orientation tolerance cone as sin^2 of its half-angle, so it

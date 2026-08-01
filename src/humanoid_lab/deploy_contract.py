@@ -66,18 +66,13 @@ CONSUMED_KEYS = frozenset(
         # Control period. Sets the rate the runtime calls the policy at,
         # and the gait clock's per-step increment.
         "ctrl_dt",
-        # Overrides the preset-derived per-joint action scale, which is half
-        # the action -> ctrl mapping. Ships resolved in `action_scale`.
-        "action_scale",
         # Picks the keyframe that IS `default_pose`: the obs anchor
         # (joint_pos = q - default_pose) and, under a pd preset, the ctrl
         # anchor. Ships resolved in `default_pose` / `anchor_ctrl`.
         "reset_keyframe",
-        # The ordered actor observation list, and the whitelist that filters
-        # it. Together they resolve `obs_layout`, which is the byte order of
-        # the vector the runtime feeds the network.
+        # The ordered actor observation list. Resolves `obs_layout`, which
+        # is the byte order of the vector the runtime feeds the network.
         "obs.state",
-        "obs.include",
         # The trained command box. Ships as command_low/command_high, and
         # command.vx additionally sets the gait clock's speed normalizer
         # (`cmd_speed_max`).
@@ -205,16 +200,9 @@ TRAINING_ONLY_KEYS = frozenset(
 # way to pull a policy past a speed it deadlocks at) would make the reported
 # box a lie, so the condition is checked rather than assumed.
 #
-# envs/joystick.py's PURE_DRAW_RANGES is the same table, and its
-# check_pure_draw_ranges refuses the same configuration at env construction:
-# a run that could never ship should fail before the GPU hours, not after.
-# This one stays the last gate. tests/unit/test_deploy_contract.py pins the
-# two tables identical.
-PURE_DRAWS = (
-    ("pure_slow_prob", "slow_vx", "vx"),
-    ("pure_fast_prob", "fast_vx", "vx"),
-    ("pure_back_prob", "back_vx", "vx"),
-)
+# envs/joystick.py's check_pure_draw_ranges refuses that configuration at
+# env construction, and export rebuilds the run's env through the same
+# constructor, so the condition is enforced without a second copy here.
 
 
 def _leaf_paths(config, prefix: str = "") -> set[str]:
@@ -246,23 +234,6 @@ def check_config_covered(env_config) -> None:
             "it, then list it in CONSUMED_KEYS) or cannot (list it in "
             "TRAINING_ONLY_KEYS) before exporting a policy trained with it"
         )
-
-    command = env_config.get("command") or {}
-    for prob_key, range_key, axis in PURE_DRAWS:
-        if float(command.get(prob_key, 0.0)) <= 0.0:
-            continue
-        if range_key not in command or axis not in command:
-            continue
-        lo, hi = (float(v) for v in command[range_key])
-        box_lo, box_hi = (float(v) for v in command[axis])
-        if lo < box_lo or hi > box_hi:
-            raise ValueError(
-                f"command.{range_key} = ({lo}, {hi}) draws outside the trained "
-                f"command box command.{axis} = ({box_lo}, {box_hi}) with "
-                f"command.{prob_key} armed -- the exported command box would "
-                f"understate what the policy trained under. Widen command.{axis} "
-                f"or narrow command.{range_key}"
-            )
 
 
 def build_contract(env, run: dict, checkpoint: str = "") -> dict:
