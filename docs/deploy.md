@@ -139,9 +139,9 @@ rather than an assert on purpose: `python -O` strips asserts, and a stripped
 check would ship unvalidated artifacts. On a joint target in radians 1e-4 is
 0.006 degrees, three orders below the 0.01 rad encoder noise the policy
 trains under. The residual is float32 reassociation between JAX and numpy;
-a policy with large weights has measured 3.9e-5. Measured here on
-`runs/hpc_smoke_roboto`, a 512-256-128 actor: 4.9e-06 for validation one
-and 8.1e-07 for validation two. Every export prints its own numbers.
+a policy with large weights has measured 3.9e-5. Measured here on a roboto
+smoke run with a 512-256-128 actor: 4.9e-06 for validation one and 8.1e-07
+for validation two. Every export prints its own numbers.
 
 ### The runtime
 

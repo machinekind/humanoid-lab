@@ -25,35 +25,20 @@ Overrides pass straight through, e.g. `./run.sh train ppo.num_timesteps=3e8 run_
 docs/configuration.md's `run.sh` verbs table is the authoritative one and
 lists every flag each verb takes.
 
-## Cluster
+## Remote training
 
-Training runs on HPC (remote host `<hpc-host>`, `<gpu-partition>` partition, multi-GPU
-nodes). Per-person paths live in untracked local config.
+Remote training execution lives in a private ops repo; see CLAUDE.local.md
+(gitignored) for where it is. `jobs/` holds the payloads that repo calls, and
+`jobs/README.md` states the contract between the two.
 
-- `./hpc.sh [command]` runs a command on the remote host, or opens a shell
-  with no arguments. It resolves the ssh destination from `make -s hpc-dest`
-  and uses `ssh -o BatchMode=yes`, which fails fast instead of hanging on a
-  password prompt. Use it rather than reading the config yourself: the
-  per-person files are gitignored and agent sessions cannot read them.
-- `make push` / `make pull` rsync the tree and bring `runs/` and `logs/` back.
-  `make queue` and `make logs JOB=<id>` wrap queue-status and log tails.
-- `hpc/local.mk` (gitignored) holds your tree name as `HPC_TREE = <name>`.
-  `hpc/local.env` (gitignored, cluster-side) holds `STORE_DIR` and the other
-  per-person paths that batch jobs read; `hpc/local.env.example` is the
-  template.
-- `hpc/train.job` is the job and `hpc/_common.sh` the shared setup.
-  `hpc/preflight_sizing.job` measures peak GPU memory and steps/s at several
-  env counts before a real launch. `hpc/README.md` covers the details.
-
-Nobody runs `submit` without Marcin's explicit go. This is a standing rule
-carried over from w01-tek.
+Remote job submission is a human-authorized action. Agents never submit on
+their own.
 
 ## Facts that cost time to learn
 
 - `warp-lang==1.13.0` is a mandatory pin. Newer versions break
-  `mujoco-mjx`'s warp backend on this cluster.
-- The venv lives on remote storage (`STORE_DIR`), not `$HOME`.
-- steps/s is comparable only between runs at the same seed. Two w01-tek runs
-  differing only in seed reported 1,343,166 and 777,859 steps/s.
+  `mujoco-mjx`'s warp backend on the training hosts.
+- steps/s is comparable only between runs at the same seed. Two runs differing
+  only in seed reported 1,343,166 and 777,859 steps/s.
 - Memory ceilings and throughput do not transfer between node classes. Measure
   on the hardware the real run will use.

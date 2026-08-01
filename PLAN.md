@@ -65,7 +65,7 @@ humanoid-lab/
 │                                    #   experiment (with keepers/ frozen presets)
 ├── run.sh                           # verbs: build, check, smoke, train, eval, report,
 │                                    #   export, sizing-report
-├── hpc/                             # batch templates parametrized by robot/experiment
+├── jobs/                            # remote training payloads parametrized by env vars
 ├── docs/                            # configuration.md, adding-a-robot.md, lessons/<robot>.md
 └── tests/                           # per-robot: compile, obs dims, short NaN smoke (CPU CI)
 ```
@@ -220,9 +220,8 @@ Each step has a gate. Do not start the next step before the gate passes.
    Gate: report renders percentile table + scatter from a smoke run.
 8. GPU model check (`check --gpu --backend warp`) and a bounded train on the GPU box. Gate:
    tracking reward improves and videos render.
-9. HPC batch templates, adapted from w01-tek `training/hpc/`. HPC notes: Marcin's tree is
-   `<tree>/w01-tek` on the training host, venv on its storage, `warp-lang==1.13.0` was
-   mandatory there. Do not submit jobs without Marcin's explicit go.
+9. Remote training payloads under `jobs/`, parametrized by environment variables. `warp-lang==1.13.0`
+   is mandatory on the training hosts. Do not submit jobs without Marcin's explicit go.
 10. Fixed eval battery + report, then the sizing experiments above.
 
 ## Open questions for Marcin
