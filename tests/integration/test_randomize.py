@@ -223,7 +223,10 @@ def test_find_base_body_id_finds_the_free_joint_body(mj_model, robot_spec):
 # axis wearing two names. The tests below pin the offset and the decorrelation
 # it buys.
 
-ALL_ENABLED = {k: {"enable": True} for k in randomize._DEFAULT_DR}
+# Every switchable field on; `base` has no enable (it is the always-on set)
+# and stays at its defaults.
+DRAWN_FIELDS = [k for k, v in randomize._DEFAULT_DR.items() if "enable" in v]
+ALL_ENABLED = {k: {"enable": True} for k in DRAWN_FIELDS}
 
 # 200 keys: enough that a sample correlation of 0 lands well inside +-0.3 and a
 # correlation of 1 cannot hide, cheap enough to vmap the whole model over.
@@ -256,9 +259,9 @@ def test_no_dr_draw_key_aliases_a_key_from_the_base_split(
     randomize_fn = randomize.make_domain_randomize(mj_model, robot_spec, ALL_ENABLED)
     randomize_fn(mjx_model, jax.random.split(jax.random.PRNGKey(5), 2))
 
-    # One index per optional field (joint_gains, com_offset, dof,
+    # One index per switchable field (joint_gains, com_offset, dof,
     # foot_friction, motor_strength), all distinct.
-    assert len(seen) == len(randomize._DEFAULT_DR)
+    assert len(seen) == len(DRAWN_FIELDS)
     assert len(set(seen)) == len(seen)
 
     probe = jax.random.PRNGKey(7)

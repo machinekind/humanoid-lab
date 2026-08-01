@@ -105,7 +105,7 @@ def test_the_result_records_what_produced_it(measured):
     provenance: which robot, which preset, which backend, how many steps."""
     result = measured["asimov_v1"]
     assert result["robot"] == "asimov_v1"
-    assert result["preset"] == "sizing_ideal"
+    assert result["preset"] == _first_preset("asimov_v1")
     assert result["backend"] == "jax"
     assert result["steps"] == TEST_STEPS
     assert result["seeds"] == TEST_SEEDS
