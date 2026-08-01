@@ -1,10 +1,9 @@
 """Joystick velocity-tracking task, robot-agnostic (biped).
 
-The gait clock is a fixed antiphase (offsets [0, pi]) two-foot clock, there
-is no commanded stand height (asimov has one static standing height, not an
-adjustable crouch), and the quadruped-only reward terms (contact_match,
-high_step, height_tracking, stand_feet_down) do not exist here -- see
-rewards/terms.py's module docstring and PLAN.md step 6.
+The gait clock is a fixed antiphase (offsets [0, pi]) two-foot clock,
+there is no commanded stand height, and the quadruped-only reward terms
+(contact_match, high_step, height_tracking, stand_feet_down) do not exist
+here -- see rewards/terms.py's module docstring.
 
 Actor observations use only signals the real robot has (IMU + joint
 encoders + own history + the commanded velocity + the env's own gait
@@ -14,8 +13,8 @@ actuator force) is privileged (critic-only).
 Deferred (not built yet):
 - No action_delay/latency/encoder-offset/action-filter machinery. Actions
   apply on the control step they are computed, with no delay stage in
-  between. PLAN.md's v1 sysid row (action delay 0-1 control steps) means
-  this machinery has to exist before sim2real-fidelity training.
+  between. Real hardware is expected to add 0-1 control steps of action
+  delay, so this machinery has to exist before sim2real-fidelity training.
 """
 
 from __future__ import annotations
@@ -39,8 +38,7 @@ _PHASE_OFFSETS = (0.0, np.pi)
 
 def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
-        # asimov docs (PLAN.md "Research findings"): 200 Hz physics, 50 Hz
-        # policy (decimation 4).
+        # 200 Hz physics, 50 Hz policy (decimation 4).
         ctrl_dt=0.02,
         sim_dt=0.005,
         sim=config_dict.create(
@@ -83,8 +81,7 @@ def default_config() -> config_dict.ConfigDict:
         # the keyframe TELLS the joints to do. Under gravity and finite gains
         # the robot comes to rest below that command, so the deviation never
         # reaches zero and both terms charge a floor no policy can remove.
-        # Measured on the quadruped predecessor: 0.343 rad of summed sag,
-        # about 97% of its whole standing residual. roboto_origin's home
+        # roboto_origin's home
         # keyframe settles 0.065 rad off its command (0.015 rad at the knee),
         # which at the stock scales.stand_still of -0.5 is 0.032 of standing
         # penalty per step that exists only because the anchor is wrong.
@@ -107,10 +104,9 @@ def default_config() -> config_dict.ConfigDict:
         # The ctrl anchor does NOT move: `_default_pose` stays what a zero
         # action commands and what the joint_pos observation subtracts.
         real_pose_ref=False,
-        # asimov docs (PLAN.md): gyro +-0.01, joint_pos +-0.01 rad,
-        # joint_vel +-0.1 rad/s. No gravity noise figure was published;
-        # unlisted components default to noise-free (see base.py's
-        # _build_obs).
+        # Fallback noise scales; robot overlays pin their measured ones
+        # (configs/robot/*.yaml). Unlisted components default to noise-free
+        # (see base.py's _build_obs).
         obs_noise=config_dict.create(gyro=0.01, joint_pos=0.01, joint_vel=0.1),
         # Declarative observation spec: ordered lists of catalog names (see
         # HumanoidEnv._obs_catalog + this env's command/phase additions).
@@ -140,8 +136,8 @@ def default_config() -> config_dict.ConfigDict:
                 "actuator_force",
             ),
         ),
-        # asimov docs (PLAN.md): command envelope x +-0.8 m/s, y +-0.6 m/s,
-        # yaw +-0.6 rad/s.
+        # Fallback command envelope; robot overlays pin their own
+        # (configs/robot/*.yaml).
         command=config_dict.create(
             vx=(-0.8, 0.8),
             vy=(-0.6, 0.6),
@@ -160,13 +156,12 @@ def default_config() -> config_dict.ConfigDict:
             # tracking_product/tracking_relative a contaminated corner pays
             # ~0 no matter how well the robot serves it, so the skill is
             # never profitable to learn and the policy settles on refusing
-            # it. A quadruped policy trained this way held 0.000 m/s under a
-            # commanded -0.4 backward, and five isolating probes confirmed
-            # the refusal was learned, not mechanical.
+            # it. The quadruped predecessor measured exactly that refusal
+            # (0.000 m/s held under a clean backward command), learned, not
+            # mechanical.
             #
-            # Every range below is a STARTING VALUE to re-derive for asimov,
-            # derived here from our own envelope (vx +-0.8, vy +-0.6,
-            # wz +-0.6).
+            # Every range below is a STARTING VALUE derived from the
+            # fallback envelope above; re-derive per robot.
             #
             # Keep wz, zero the linear part: spin-in-place training.
             pure_wz_prob=0.0,
@@ -194,7 +189,8 @@ def default_config() -> config_dict.ConfigDict:
             pure_back_prob=0.0,
             back_vx=(-0.8, -0.2),
         ),
-        # Untuned starting values for asimov's mass and leg length.
+        # Untuned starting values; re-derive for each robot's mass and
+        # leg length.
         push=config_dict.create(enable=True, interval_steps=200, vel=0.4),
         # No-progress termination, CaT-style (arXiv 2403.18765): an env whose
         # measured progress keeps falling short of its command is cut
@@ -207,8 +203,8 @@ def default_config() -> config_dict.ConfigDict:
         # commands never arm the cut, and a command change re-arms it only
         # after grace_sec. The math is in envs/progress.py.
         #
-        # Every number here is an untuned starting value from a 0.21 m
-        # four-bar quadruped leg. grace_sec and risk_below are the two to
+        # Every number here is an untuned starting value carried from the
+        # quadruped predecessor. grace_sec and risk_below are the two to
         # re-derive for a biped: turning a two-legged gait around takes
         # longer than turning a four-legged one, so 2 s of grace may be short
         # and 50% of demand may be a lot to ask inside it.
@@ -219,17 +215,15 @@ def default_config() -> config_dict.ConfigDict:
             risk_below=0.5,  # hazard starts below this fraction of demand
             p_max=0.02,      # per-step hazard at zero progress
         ),
-        # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
-        # (0.636 m) is not this: it's the floating-base placeholder measured
-        # so the feet just touch the floor, not the robot's standing height.
-        # max_tilt_gz is the gravity_body z component (near -1 upright, rising
-        # toward 0 and positive as the robot tips over); -0.4 is an untuned
-        # starting value.
+        # Fallback fall thresholds; robot overlays pin their own (a
+        # workable min_height is ~60% of the robot's standing height).
+        # max_tilt_gz is the gravity_body z component: near -1 upright,
+        # rising toward 0 and positive as the robot tips over.
         fall=config_dict.create(min_height=0.45, max_tilt_gz=-0.4),
         # Two-foot antiphase gait clock (see _PHASE_OFFSETS). freq/
         # swing_height/duty are untuned starting values: only the SHAPE
         # (speed-scaled clock frequency, sinusoidal swing profile, fixed
-        # stance duty) carries over from a 0.21 m four-bar quadruped leg. The
+        # stance duty) carries over from the quadruped predecessor. The
         # numbers have to be re-derived for a human-scale biped leg.
         gait=config_dict.create(
             freq=(1.0, 2.0),  # Hz, speed-scaled between these two bounds
@@ -261,10 +255,8 @@ def default_config() -> config_dict.ConfigDict:
             tracking_rel_sigma=0.25,
             # Floors on the relative denominator, so a near-zero command
             # divides by the floor and never by zero. Both are quadruped
-            # starting points, and a narrow kernel rounds partial tracking to
-            # zero: on terrain, tracking_rel_sigma had to widen to 0.5 and
-            # tracking_rel_floor_ang to 0.7.
-            # Re-derive for asimov rather than trusting these.
+            # starting points, and a narrow kernel rounds partial tracking
+            # to zero; re-derive rather than trusting these.
             tracking_rel_floor_lin=0.3,  # m/s
             tracking_rel_floor_ang=0.4,  # rad/s
             # Far-field mix-in for both tracking kernels (weight 0 = off,
@@ -322,10 +314,10 @@ def default_config() -> config_dict.ConfigDict:
             # touchdown reference is free fall over the band,
             # sqrt(2*9.81*0.03) ~ 0.77 m/s.
             #
-            # Both numbers are untuned starting values for a 0.21 m four-bar
-            # quadruped leg.
-            # RE-DERIVE for asimov's leg: our own gait.swing_height asks for
-            # 0.08 m of swing, so a 0.05 m apex target is not this robot's.
+            # Both numbers are untuned quadruped starting values.
+            # RE-DERIVE for this leg: the env's own gait.swing_height asks
+            # for 0.08 m of swing, so a 0.05 m apex target is not this
+            # robot's.
             # When re-deriving, read docs/lessons/foot-clearance.md first:
             # _foot_clearance is referenced to the reset keyframe, which
             # floats the feet, so both numbers sit about 5 mm (asimov) or
@@ -338,12 +330,10 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity-damping share of stand_still (position share is 1;
             # only the ratio matters, scales.stand_still prices the sum).
             stand_still_vel_weight=0.2,
-            # UNTUNED starting values, carried from a quadruped joystick task
-            # for every term that has a biped analogue
+            # UNTUNED starting values, carried from the quadruped
+            # predecessor for every term that has a biped analogue
             # (rewards/terms.py's module docstring lists what has none).
-            # Do not read these as tuned for asimov: they are the
-            # PLAN.md-mandated starting point for the first CPU smoke run,
-            # nothing more.
+            # Do not read these as tuned for either robot.
             scales=config_dict.create(
                 tracking_lin_vel=1.5,
                 tracking_ang_vel=0.8,
@@ -477,8 +467,8 @@ class Joystick(HumanoidEnv):
         # keys off `fold_in(rng, 0x100 + idx)` with an index of its own rather
         # than taking keys from the split above, so every draw owns an
         # independent stream: enabling one draw moves no other draw's samples,
-        # and enabling none leaves this sampler bit-identical to the pre-1.6
-        # draw (tests/integration/test_golden_baseline.py is the gate).
+        # and enabling none leaves the base sampler untouched
+        # (tests/integration/test_golden_baseline.py is the gate).
         #
         # 0x100 is why that holds. `fold_in(key, i)` is bit-identical to
         # `split(key, n)[i]` for every i < n, so a draw folding in a small
@@ -871,7 +861,7 @@ class Joystick(HumanoidEnv):
             "torque_limit": terms.torque_limit(data.actuator_force, self._torque_cap, cfg.torque_limit_frac),
             # Appended at the END on purpose: the scaled sum below adds the
             # terms in dict order, so a key inserted mid-dict shifts every
-            # later float addition and breaks the pre-port golden.
+            # later float addition and breaks the recorded goldens.
             #
             # feet_apex is in the shape_gate's set (see above): a tall swing
             # while the command goes unserved is the same stand-and-lift

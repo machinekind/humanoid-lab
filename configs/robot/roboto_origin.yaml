@@ -39,6 +39,14 @@ task:
       joint_pos: 0.03
       joint_vel: 1.75
 
+    # RPO stands 0.75 m (robot.yaml's home base_pos z, feet on the floor).
+    # min_height 0.45 is ~60% of the stand; max_tilt_gz is an untuned
+    # starting point. Upstream terminates on torso/thigh contact instead of
+    # height/tilt, so there is no upstream value to map here.
+    fall:
+      min_height: 0.45
+      max_tilt_gz: -0.4
+
     # Partial reward overlay: only the upstream-mapped entries are pinned
     # here. configs/task/joystick.yaml defines no "reward" key (the reward
     # defaults live in envs/joystick.py's default_config()), so this block

@@ -26,3 +26,11 @@ task:
       gyro: 0.01
       joint_pos: 0.01
       joint_vel: 0.1
+
+    # asimov stands ~0.72-0.75 m; robot.yaml's home keyframe base_pos z
+    # (0.636 m) is the floating-base placeholder measured so the feet just
+    # touch the floor, not the standing height. min_height 0.45 is ~60% of
+    # the stand; max_tilt_gz is an untuned starting point.
+    fall:
+      min_height: 0.45
+      max_tilt_gz: -0.4
