@@ -1,6 +1,6 @@
 """CLI: gate-check a robot's built mjx model for NaN divergence.
 
-    JAX_PLATFORMS=cpu python -m humanoid_lab.check_model --robot asimov_v1 --preset sizing_ideal
+    JAX_PLATFORMS=cpu python -m humanoid_lab.check_model --robot roboto_origin --preset deploy_pd
 
 Loads robots/<robot>/mjx/<preset>.xml (building it in-memory via build_spec,
 without writing to disk, if the file doesn't exist yet), then for EVERY

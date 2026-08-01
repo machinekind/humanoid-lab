@@ -9,7 +9,7 @@
 # so one process uses the whole machine.
 #
 # Parameters, all optional:
-#   ROBOT       robot config             (default asimov_v1)
+#   ROBOT       robot config             (REQUIRED, e.g. roboto_origin)
 #   TASK        task config              (default joystick)
 #   ACTUATORS   actuator preset          (default sizing_ideal)
 #   EXPERIMENT  hydra experiment preset  (default unset, no experiment override)
@@ -25,7 +25,7 @@
 # class and scale the two together.
 #
 # A full run:
-#   ROBOT=asimov_v1 SEED=0 NUM_ENVS=32768 BATCH=1024 \
+#   ROBOT=roboto_origin SEED=0 NUM_ENVS=32768 BATCH=1024 \
 #     RUN_ARGS="++ppo.num_timesteps=3e8" ./jobs/train.sh
 #
 # WANDB=true turns the trainer's logging on and nothing else. Where the run
@@ -48,7 +48,7 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
     exit 1
 fi
 
-ROBOT="${ROBOT:-asimov_v1}"
+: "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
 TASK="${TASK:-joystick}"
 ACTUATORS="${ACTUATORS:-sizing_ideal}"
 EXPERIMENT="${EXPERIMENT:-}"

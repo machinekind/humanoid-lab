@@ -3,8 +3,8 @@
 Experiments are Hydra configs (repo-root configs/): pick a robot/task/
 actuators combination and override anything from the CLI, e.g.
 
-    ./run.sh train robot=asimov_v1 task=joystick actuators=sizing_ideal
-    ./run.sh train ppo.num_timesteps=3e8 run_name=asimov_sizing_v1
+    ./run.sh train robot=roboto_origin task=joystick actuators=deploy_pd
+    ./run.sh train ppo.num_timesteps=3e8 run_name=roboto_walk_v1
 
 PPO hyper-parameters start from the playground's tuned Go1 config;
 `task.ppo` then global `ppo` yaml/CLI blocks override them.

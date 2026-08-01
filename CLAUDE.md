@@ -20,7 +20,7 @@ network and experiment groups.
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts (`policy.npz`, `policy_meta.json`) from a checkpoint |
 
-Overrides pass straight through, e.g. `./run.sh train ppo.num_timesteps=3e8 run_name=asimov_v1`.
+Overrides pass straight through, e.g. `./run.sh train ppo.num_timesteps=3e8 run_name=roboto_walk_v1`.
 
 docs/configuration.md's `run.sh` verbs table is the authoritative one and
 lists every flag each verb takes.

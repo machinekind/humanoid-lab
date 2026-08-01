@@ -20,7 +20,7 @@ defaults:
   - actuators: sizing_ideal
   - network: default
   - dr: default
-  - robot: asimov_v1
+  - robot: roboto_origin
   - _self_
   - experiment: null
 

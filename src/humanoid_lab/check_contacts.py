@@ -1,6 +1,6 @@
 """CLI: measure a robot's warp contact and constraint budgets.
 
-    ./run.sh check-contacts --robot asimov_v1 --preset sizing_ideal
+    ./run.sh check-contacts --robot roboto_origin --preset deploy_pd
 
 Builds the joystick env for a robot/preset and rolls three regimes, reporting
 the per-world peak of both budgets and what the robot.yaml `sim_budget`

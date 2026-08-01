@@ -20,7 +20,7 @@
 # Training is most expensive while the policy still falls.
 #
 # Parameters, all optional:
-#   ROBOT       robot config             (default asimov_v1)
+#   ROBOT       robot config             (REQUIRED, e.g. roboto_origin)
 #   TASK        task config              (default joystick)
 #   ACTUATORS   actuator preset          (default sizing_ideal)
 #   EXPERIMENT  hydra experiment preset  (default unset, no experiment override)
@@ -69,7 +69,7 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
     exit 1
 fi
 
-ROBOT="${ROBOT:-asimov_v1}"
+: "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
 TASK="${TASK:-joystick}"
 ACTUATORS="${ACTUATORS:-sizing_ideal}"
 EXPERIMENT="${EXPERIMENT:-}"
