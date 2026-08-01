@@ -926,7 +926,7 @@ done
 A cell that falls over under a harsh perturbation is an expected outcome of
 this probe, not a bug — hence the `|| echo`. A cell that was never written
 prints as `MISSING` in the report rather than crashing it. There is no
-cluster grid job here yet; the loop above is the whole of it.
+remote grid job here yet; the loop above is the whole of it.
 
 ### The gates
 

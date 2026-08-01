@@ -1,5 +1,5 @@
 # @package _global_
-# Diagnostic arm for the asimov flat-curve hypothesis (2026-07 HPC A/B):
+# Diagnostic arm for the asimov flat-curve hypothesis (2026-07 A/B):
 # the generic joystick penalties swamp tracking (per-step reward is net
 # negative while asimov dies at ~1 s, so early termination maximizes
 # reward). This experiment cuts the four dominant penalties to the levels
