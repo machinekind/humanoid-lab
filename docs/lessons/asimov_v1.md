@@ -18,7 +18,9 @@ That measurement showed both keyframes floating the robot in the air:
 0.119 m clear at `home`, 0.061 m clear at `knees_bent`. The corrected,
 measured `home` height is 0.636 m, with the lowest foot bottom about 5 mm
 above the floor. See `robots/asimov_v1/robot.yaml`'s `keyframes` comment and
-`tests/integration/test_asimov_v1.py`'s `test_keyframe_feet_touch_the_floor`.
+`tests/integration/test_robot_conformance.py`'s
+`test_every_keyframe_puts_the_feet_on_the_floor`, which now applies the same
+bound to every robot in the lab.
 
 ## PD setpoints stay unclamped at the actuator
 

@@ -238,8 +238,8 @@ model_patches:
     # caps stay inside the mesh's axis range and clear of the neighboring
     # joint pivots. Left/right pairs mirror in y. None of these reach the
     # floor in any keyframe (the shin capsule, the lowest, clears it by
-    # ~0.034 m at home) -- gated by
-    # tests/integration/test_roboto_origin.py::test_home_settle_contacts_floor_and_feet_only.
+    # ~0.034 m at home) -- gated by test_robot_conformance.py's
+    # test_only_the_feet_touch_the_floor_at_the_reset_keyframe.
     base_collision:
       body: base_link
       type: box

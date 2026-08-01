@@ -105,9 +105,10 @@ your actuator preset injected, set `qpos` to the keyframe, and run
 end-cap centers and subtract its radius. Do not use `geom_rbound`: it
 overestimates badly for a capsule lying flat. Shift `base_pos` z so the
 lowest foot-geom bottom sits about 5 mm above the floor.
-`tests/integration/test_asimov_v1.py`'s `test_keyframe_feet_touch_the_floor` encodes
-this as a `0.0 <= lowest <= 0.02` bound. Write the equivalent test for the
-new robot.
+`tests/integration/test_robot_conformance.py`'s
+`test_every_keyframe_puts_the_feet_on_the_floor` encodes this as a
+`0.0 <= lowest <= 0.02` bound, for every robot and every keyframe. There is
+no per-robot version of it to write.
 
 ## 3. Write at least one actuator preset
 
@@ -143,21 +144,73 @@ silently — see `docs/configuration.md`'s warp contact budgets section. Add
 the new robot to `tests/integration/test_check_contacts.py`'s `ROBOTS` list
 so the guard covers it.
 
-## 5. Add `tests/integration/test_<name>.py`
+## 5. Write no test
 
-Mirror `tests/integration/test_asimov_v1.py`. At minimum:
+There is no per-robot test file. `tests/integration/test_robot_conformance.py`
+globs `robots/*/robot.yaml` at collection time, parametrizes over each
+robot's `actuators/*.yaml` presets, and holds every robot it finds to the
+same bar. A new directory is picked up with no edit to any test file. This is
+the rule the lab is built on: adding a robot means adding a directory.
 
-- `load_robot_spec` parses the new `robot.yaml` and `validate_against_model`
-  passes against the compiled source XML.
-- `build_spec` compiles with your preset. The compiled actuator order
-  matches `robot_spec.actuated_joints`.
-- Every keyframe's compiled `base_pos` z matches what `robot.yaml` says.
-  This guards against the value drifting from the file without the test
-  being updated.
-- Every keyframe's lowest foot-geom bottom sits in the same `0.0`
-  to `0.02` m band as asimov's test.
-- The reset (home) keyframe steps some number of times in plain MuJoCo
-  without producing NaN.
+Run it once the build gates pass:
+
+```bash
+.venv/bin/python -m pytest tests/integration/test_robot_conformance.py -q
+```
+
+What it checks, for the robot and for each of its presets:
+
+- `robot.yaml` parses and `model_xml` resolves. Every joint, site, geom, body
+  and sensor it names exists in the built model.
+- The compiled actuator table is exactly `actuated_joints`, in order.
+- Every kp, kd, effort limit, armature and frictionloss the preset declares
+  reaches the model, together with the gaintype, biastype and ctrl limits the
+  actuator model is supposed to inject.
+- Every passive joint gets the spring `robot.yaml` gives it.
+- Every `model_patches` entry lands: the `<option>` overrides, the injected
+  sites and geoms, the mesh-collision zeroing.
+- Every keyframe is baked in as written, and every keyframe's lowest
+  foot-geom bottom sits in the `0.0`-`0.02` m band (the measurement rule
+  above).
+- Every foot geom resolves to a `foot_sites` entry by body ancestry, and
+  every foot site owns at least one geom.
+- Every surviving actuator sensor names an actuated joint.
+- The reset keyframe steps 2 s in plain MuJoCo without NaN. Under a `pd`
+  preset it also holds the robot up for 0.5 s with nothing but feet touching
+  the floor.
+- A mass-scaled shove lands the robot on the floor rather than through it.
+- A declared `symmetry` map survives `envs/symmetry.py`'s numeric derivation,
+  which is also the proof that the model really is mirror-symmetric.
+- The task env constructs, a jitted reset and step run, and the observation
+  widths match the component lists the config declares.
+
+Three things the generic checks need from a new robot beyond `robot.yaml` and
+a preset:
+
+- A reset keyframe the suite can find: the one named by the task config's
+  `reset_keyframe` (`home`), or the robot's only keyframe if it has exactly
+  one. A robot with several keyframes and no `home` fails with a message
+  saying so.
+- Exactly one free joint and exactly one ground plane. Both are found by
+  type, never by name.
+- Foot geoms that are spheres, capsules or boxes, so their soles can be
+  measured exactly. A mesh foot geom fails with a named error rather than
+  being skipped.
+
+### `conformance.yaml` (optional)
+
+`robots/<name>/conformance.yaml` records the few numbers that are
+measurements **of** the vendored source rather than statements about
+`robot.yaml`. Everything else the suite asserts is derived from the robot's
+own yaml and moves when that yaml moves; these must not. One key is
+recognized:
+
+| Key | Contract |
+|---|---|
+| `total_mass_kg` | A `{min, max}` band for the compiled model's total body mass. Guards against a meshdir or inertial regression silently zeroing or doubling a link's mass. |
+
+Omit the whole file if there is nothing to record.
+`robots/roboto_origin/conformance.yaml` is the worked example.
 
 ## 6. Wire `configs/robot/<name>.yaml`
 
