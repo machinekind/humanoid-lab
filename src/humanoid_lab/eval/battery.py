@@ -11,21 +11,22 @@ splay or saturation, and no commanded-height concept: those are quadruped
 metrics, and asimov has no height command (see envs/joystick.py's module
 docstring).
 
-Scenarios (asimov command envelope from envs/joystick.py's default_config:
-x +-0.8 m/s, y +-0.6 m/s, yaw +-0.6 rad/s), all scripted, fixed seed
-(rollout()'s default seed=0), one episode each. Durations are specified in
-seconds and converted to steps at the caller's ctrl_dt (see
-battery_scenarios), so a run with a non-default ctrl_dt still gets
-scenarios of the documented wall-clock length:
+Scenarios are all scripted, fixed seed (rollout()'s default seed=0), one
+episode each. Magnitudes are fractions of the run's own command envelope
+(the resolved task.env.command box), so a robot is always probed inside
+what it trained under; durations are specified in seconds and converted to
+steps at the caller's ctrl_dt (see battery_scenarios), so a run with a
+non-default ctrl_dt still gets scenarios of the documented wall-clock
+length:
   stand         -- zero command, 6 s.
-  walk_ramp     -- vx ramps 0 -> 0.6 m/s over the first 4 s, holds 0.6 for
-                    the remaining 2 s. 6 s total.
-  turn          -- constant vx=0.3 m/s, wz=0.4 rad/s. 6 s.
-  strafe        -- constant vy=0.3 m/s. 4 s.
-  walk_to_stop  -- vx=0.5 m/s for the first 3 s, then zero for the
+  walk_ramp     -- vx ramps 0 -> 0.75*vx_max over the first 4 s, then
+                    holds. 6 s total.
+  turn          -- constant vx=0.4*vx_max, wz=0.65*wz_max. 6 s.
+  strafe        -- constant vy=0.5*vy_max. 4 s.
+  walk_to_stop  -- vx=0.6*vx_max for the first 3 s, then zero for the
                     remaining 3 s. 6 s total.
-  spin_left     -- pure spin, wz=+0.5 rad/s held. 6 s.
-  spin_right    -- pure spin, wz=-0.5 rad/s held. 6 s.
+  spin_left     -- pure spin, wz=+0.8*wz_max held. 6 s.
+  spin_right    -- pure spin, wz=-0.8*wz_max held. 6 s.
 
 """
 
@@ -53,11 +54,16 @@ from humanoid_lab.eval.gait import gait_metrics
 # rollout() starts recording on the first step after reset, and the opening
 # steps are the robot falling into its pose against a command it has not had
 # time to answer -- charging those to a KPI measures the reset, not the
-# policy. 50 steps is 1 s at asimov's ctrl_dt of 0.02, and it is a step
-# count rather than a duration. The older metrics keep scoring the whole
-# record: changing what they average over would change what an existing
-# battery.json field means.
-SETTLE_STEPS = 50
+# policy. A duration, converted at the caller's ctrl_dt (settle_steps), so a
+# non-default ctrl_dt keeps the same wall-clock window. The older metrics
+# keep scoring the whole record: changing what they average over would
+# change what an existing battery.json field means.
+SETTLE_SEC = 1.0
+
+
+def settle_steps(dt: float) -> int:
+    """`SETTLE_SEC` in control steps at `dt`."""
+    return max(1, round(SETTLE_SEC / dt))
 
 
 def _round_or_none(value: float | None, nd: int) -> float | None:
@@ -148,7 +154,7 @@ def antiphase_score(contact_left, contact_right) -> float:
     return 0.5 * (1.0 - corr)
 
 
-def yaw_progress_deg(wz, dt: float, settle_steps: int = SETTLE_STEPS) -> float | None:
+def yaw_progress_deg(wz, dt: float, settle: int | None = None) -> float | None:
     """Signed yaw swept over the post-settle window, in degrees.
 
     `wz` is the BODY-frame yaw rate (rollout() records the gyro's z channel,
@@ -163,16 +169,19 @@ def yaw_progress_deg(wz, dt: float, settle_steps: int = SETTLE_STEPS) -> float |
     zero did not turn at all. Summing the rate rather than differencing yaw
     angles also needs no unwrapping, so a multi-turn spin cannot alias.
 
-    Returns None (not 0.0) when the record does not outlive `settle_steps`:
-    nothing was measured, and a 0.0 there would read as "did not turn".
+    Returns None (not 0.0) when the record does not outlive the settle
+    window: nothing was measured, and a 0.0 there would read as "did not
+    turn". `settle` defaults to `settle_steps(dt)`.
     """
-    w = np.asarray(wz, dtype=float)[settle_steps:]
+    if settle is None:
+        settle = settle_steps(dt)
+    w = np.asarray(wz, dtype=float)[settle:]
     if w.size == 0:
         return None
     return float(np.degrees(w.sum() * dt))
 
 
-def tracking_error(ctrl_hist, qpos_hist, settle_steps: int = SETTLE_STEPS) -> dict:
+def tracking_error(ctrl_hist, qpos_hist, settle: int) -> dict:
     """RMS and p95 of |ctrl - qpos| over the post-settle window, rad.
 
     `ctrl` is the setpoint the servo was asked to hold and `qpos` the angle
@@ -185,15 +194,15 @@ def tracking_error(ctrl_hist, qpos_hist, settle_steps: int = SETTLE_STEPS) -> di
     error is spread evenly or lives in a few joints -- an RMS over twelve
     joints hides one that has given up.
 
-    Returns {"rms": None, "p95": None} when nothing outlives `settle_steps`.
+    Returns {"rms": None, "p95": None} when nothing outlives `settle`.
 
     Only a position-servo preset makes this a servo error: under
     `ideal_torque`, ctrl is a torque in Nm and the subtraction is
     dimensionally meaningless. run.json's `actuator_gains.model` is what
     tells a reader which one produced the run.
     """
-    c = np.asarray(ctrl_hist, dtype=float)[settle_steps:]
-    q = np.asarray(qpos_hist, dtype=float)[settle_steps:]
+    c = np.asarray(ctrl_hist, dtype=float)[settle:]
+    q = np.asarray(qpos_hist, dtype=float)[settle:]
     if c.size == 0:
         return {"rms": None, "p95": None}
     err = np.abs(c - q)
@@ -272,10 +281,10 @@ def scenario_result(
     # Gait KPIs. Raw metrics, folded into nothing: they are
     # here because velocity tracking error scores a skimming gait and a
     # stand-and-lift farm as healthy.
-    r.update(gait_metrics(rec, settle_steps=SETTLE_STEPS))
+    r.update(gait_metrics(rec, settle_steps=settle_steps(dt)))
 
     # Servo error, also raw.
-    track = tracking_error(rec["ctrl"], rec["qpos"], SETTLE_STEPS)
+    track = tracking_error(rec["ctrl"], rec["qpos"], settle_steps(dt))
     r["tracking_err_rms"] = _round_or_none(track["rms"], 4)
     r["tracking_err_p95"] = _round_or_none(track["p95"], 4)
 
@@ -284,19 +293,34 @@ def scenario_result(
 
 # -- scenario command builders ----------------------------------------------
 
-# Held yaw rate for the spin probes, rad/s. See battery_scenarios.
-_SPIN_WZ = 0.5
+# Scenario magnitudes as fractions of the run's command envelope. Fractions,
+# not absolutes: the envelope is per robot (a robot overlay moves it), and a
+# probe outside the trained box would measure a refusal the training never
+# priced. All below 1.0 with headroom -- a probe pinned to the corner of the
+# envelope would confound "cannot do this" with "was never trained this
+# close to the edge".
+_RAMP_FRAC = 0.75   # walk_ramp target, of vx_max
+_TURN_VX_FRAC = 0.4
+_TURN_WZ_FRAC = 0.65
+_STRAFE_FRAC = 0.5  # of vy_max
+_STOP_VX_FRAC = 0.6
+_SPIN_FRAC = 0.8    # of wz_max
 
 
-def battery_scenarios(dt: float) -> dict:
+def battery_scenarios(dt: float, command) -> dict:
     """name -> (cmd_at(i) -> np.ndarray([vx, vy, wz]), n_steps).
 
     Split out (rather than inlined in run_battery) so eval/video.py's
     --scenario can reuse the exact same scripted trajectories the battery
     measures. `dt` is the env's ctrl_dt: durations are given in seconds
     below and converted to steps here, so a run with a non-default ctrl_dt
-    still gets scenarios of the documented wall-clock length.
+    still gets scenarios of the documented wall-clock length. `command` is
+    the resolved task.env.command box (any mapping with vx/vy/wz ranges);
+    magnitudes are fractions of its positive limits.
     """
+    vx_max = float(command["vx"][1])
+    vy_max = float(command["vy"][1])
+    wz_max = float(command["wz"][1])
 
     def n_steps(seconds: float) -> int:
         return max(1, round(seconds / dt))
@@ -306,38 +330,38 @@ def battery_scenarios(dt: float) -> dict:
 
     ramp_s, ramp_hold_s = 4.0, 2.0
     ramp_steps = n_steps(ramp_s)
+    ramp_vx = _RAMP_FRAC * vx_max
 
     def walk_ramp(i):
-        vx = 0.6 * min(1.0, i / ramp_steps) if ramp_steps else 0.6
+        vx = ramp_vx * min(1.0, i / ramp_steps) if ramp_steps else ramp_vx
         return np.array([vx, 0.0, 0.0])
 
     def turn(_i):
-        return np.array([0.3, 0.0, 0.4])
+        return np.array([_TURN_VX_FRAC * vx_max, 0.0, _TURN_WZ_FRAC * wz_max])
 
     def strafe(_i):
-        return np.array([0.0, 0.3, 0.0])
+        return np.array([0.0, _STRAFE_FRAC * vy_max, 0.0])
 
     stop_s, stop_hold_s = 3.0, 3.0
     stop_switch = n_steps(stop_s)
+    stop_vx = _STOP_VX_FRAC * vx_max
 
     def walk_to_stop(i):
-        vx = 0.5 if i < stop_switch else 0.0
+        vx = stop_vx if i < stop_switch else 0.0
         return np.array([vx, 0.0, 0.0])
 
-    # Spin probes. One held pure-yaw command per direction,
-    # no translation, so the two rows differ in exactly one sign and a
-    # chirality bug has nowhere to hide. 0.5 rad/s sits inside the +-0.6
-    # yaw box with headroom: a probe pinned to the corner of the command
-    # envelope would confound "cannot spin this way" with "was never trained
-    # this close to the edge". Same 6 s as the other held scenarios; at
-    # ctrl_dt 0.02 the post-settle window then asks for 2.5 rad (143 deg),
-    # which is enough turning to see and short of a full revolution, so
-    # nothing depends on the yaw reading unwrapping.
+    # Spin probes. One held pure-yaw command per direction, no translation,
+    # so the two rows differ in exactly one sign and a chirality bug has
+    # nowhere to hide. Same 6 s as the other held scenarios; multi-turn
+    # spins cannot alias because yaw_progress_deg sums the rate rather than
+    # differencing angles.
+    spin_wz = _SPIN_FRAC * wz_max
+
     def spin_left(_i):
-        return np.array([0.0, 0.0, _SPIN_WZ])
+        return np.array([0.0, 0.0, spin_wz])
 
     def spin_right(_i):
-        return np.array([0.0, 0.0, -_SPIN_WZ])
+        return np.array([0.0, 0.0, -spin_wz])
 
     return {
         "stand": (stand, n_steps(6.0)),
@@ -566,7 +590,7 @@ def run_battery(run_dir: Path) -> dict:
         "checkpoint": ckpt.name,
     }
     nacon_seen, nefc_seen = [], []
-    for name, (cmd_at, n_steps) in battery_scenarios(env.dt).items():
+    for name, (cmd_at, n_steps) in battery_scenarios(env.dt, env._config.command).items():
         rec, fell_at, (nacon, nefc) = rollout(env, reset, step, inf, cmd_at, n_steps)
         results[name] = scenario_result(name, rec, fell_at, env.dt, torque_cap, n_steps)
         nacon_seen.append(nacon)

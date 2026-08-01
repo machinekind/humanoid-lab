@@ -14,9 +14,9 @@ import pytest
 
 from humanoid_lab.eval import battery
 from humanoid_lab.eval.battery import (
-    SETTLE_STEPS,
     _measurement_env_overrides,
     peak_over,
+    settle_steps,
     antiphase_score,
     battery_scenarios,
     foot_slip,
@@ -30,7 +30,12 @@ from humanoid_lab.eval.battery import (
 
 # -- vibration_index ---------------------------------------------------------
 
-_DT = 1.0 / 50.0  # asimov ctrl_dt
+_DT = 1.0 / 50.0  # the default ctrl_dt
+SETTLE_STEPS = settle_steps(_DT)  # 50: 1 s at _DT
+
+# The command box the scenario tests probe against (the joystick default
+# envelope's shape; battery_scenarios takes the run's own resolved box).
+_CMD = {"vx": (-0.8, 0.8), "vy": (-0.6, 0.6), "wz": (-0.6, 0.6)}
 
 
 def test_vibration_index_low_frequency_sine_scores_near_zero():
@@ -150,7 +155,7 @@ def test_mech_power_mean_matches_hand_computation():
 
 
 def test_battery_scenarios_have_expected_names():
-    scenarios = battery_scenarios(_DT)
+    scenarios = battery_scenarios(_DT, _CMD)
     assert set(scenarios) == {
         "stand", "walk_ramp", "turn", "strafe", "walk_to_stop",
         "spin_left", "spin_right",
@@ -158,7 +163,7 @@ def test_battery_scenarios_have_expected_names():
 
 
 def test_stand_is_always_zero():
-    cmd_at, n = battery_scenarios(_DT)["stand"]
+    cmd_at, n = battery_scenarios(_DT, _CMD)["stand"]
     for i in (0, n // 2, n - 1):
         cmd = np.asarray(cmd_at(i))
         assert cmd.shape == (3,)
@@ -166,7 +171,7 @@ def test_stand_is_always_zero():
 
 
 def test_walk_ramp_increases_monotonically_then_holds_at_target():
-    cmd_at, n = battery_scenarios(_DT)["walk_ramp"]
+    cmd_at, n = battery_scenarios(_DT, _CMD)["walk_ramp"]
     vx = np.array([float(np.asarray(cmd_at(i))[0]) for i in range(n)])
 
     assert vx[0] == pytest.approx(0.0)
@@ -175,18 +180,18 @@ def test_walk_ramp_increases_monotonically_then_holds_at_target():
     assert vx.max() <= 0.6 + 1e-9
 
 
-def test_turn_commands_stay_within_asimov_envelope():
-    cmd_at, _n = battery_scenarios(_DT)["turn"]
+def test_turn_commands_stay_inside_the_command_box():
+    cmd_at, _n = battery_scenarios(_DT, _CMD)["turn"]
     cmd = np.asarray(cmd_at(0))
 
     assert cmd.shape == (3,)
-    assert abs(cmd[0]) <= 0.8
-    assert abs(cmd[2]) <= 0.6
+    assert abs(cmd[0]) <= _CMD["vx"][1]
+    assert abs(cmd[2]) <= _CMD["wz"][1]
     assert cmd[2] != 0.0  # turn commands nonzero yaw
 
 
 def test_strafe_commands_vy_only():
-    cmd_at, _n = battery_scenarios(_DT)["strafe"]
+    cmd_at, _n = battery_scenarios(_DT, _CMD)["strafe"]
     cmd = np.asarray(cmd_at(0))
 
     assert cmd[0] == pytest.approx(0.0)
@@ -196,17 +201,17 @@ def test_strafe_commands_vy_only():
 
 
 def test_walk_to_stop_switches_to_zero_partway():
-    cmd_at, n = battery_scenarios(_DT)["walk_to_stop"]
+    cmd_at, n = battery_scenarios(_DT, _CMD)["walk_to_stop"]
     vx = np.array([float(np.asarray(cmd_at(i))[0]) for i in range(n)])
 
-    assert vx[0] == pytest.approx(0.5)
+    assert vx[0] == pytest.approx(0.6 * _CMD["vx"][1])
     assert vx[-1] == pytest.approx(0.0)
     assert (vx > 0).sum() < n  # a real switch happens before the end
 
 
 def test_scenario_step_counts_scale_with_dt():
-    n_fast = battery_scenarios(0.02)["stand"][1]
-    n_slow = battery_scenarios(0.04)["stand"][1]
+    n_fast = battery_scenarios(0.02, _CMD)["stand"][1]
+    n_slow = battery_scenarios(0.04, _CMD)["stand"][1]
 
     assert n_fast == 2 * n_slow
 
@@ -218,7 +223,7 @@ def test_scenario_step_counts_scale_with_dt():
 
 
 def test_spin_left_holds_a_pure_positive_yaw_command():
-    cmd_at, n = battery_scenarios(_DT)["spin_left"]
+    cmd_at, n = battery_scenarios(_DT, _CMD)["spin_left"]
 
     for i in (0, n // 2, n - 1):
         cmd = np.asarray(cmd_at(i))
@@ -229,8 +234,8 @@ def test_spin_left_holds_a_pure_positive_yaw_command():
 
 
 def test_spin_right_is_the_exact_mirror_of_spin_left():
-    left_at, n_left = battery_scenarios(_DT)["spin_left"]
-    right_at, n_right = battery_scenarios(_DT)["spin_right"]
+    left_at, n_left = battery_scenarios(_DT, _CMD)["spin_left"]
+    right_at, n_right = battery_scenarios(_DT, _CMD)["spin_right"]
 
     assert n_left == n_right  # same duration, so the two rows compare directly
     for i in (0, n_left // 2, n_left - 1):
@@ -239,17 +244,26 @@ def test_spin_right_is_the_exact_mirror_of_spin_left():
 
 def test_spin_commands_stay_inside_the_yaw_envelope():
     for name in ("spin_left", "spin_right"):
-        cmd_at, n = battery_scenarios(_DT)[name]
+        cmd_at, n = battery_scenarios(_DT, _CMD)[name]
         wz = np.array([float(np.asarray(cmd_at(i))[2]) for i in range(n)])
 
-        assert np.all(np.abs(wz) <= 0.6)  # asimov's yaw command box
+        assert np.all(np.abs(wz) <= _CMD["wz"][1])
         assert np.all(wz == wz[0])  # held, not ramped
 
 
 def test_spin_scenarios_are_six_seconds_at_any_dt():
     for name in ("spin_left", "spin_right"):
-        assert battery_scenarios(0.02)[name][1] == 300
-        assert battery_scenarios(0.04)[name][1] == 150
+        assert battery_scenarios(0.02, _CMD)[name][1] == 300
+        assert battery_scenarios(0.04, _CMD)[name][1] == 150
+
+
+def test_scenario_magnitudes_scale_with_the_command_box():
+    """A robot overlay that widens the envelope widens the probes with it,
+    so every robot is probed at the same fraction of what it trained on."""
+    wide = dict(_CMD, wz=(-1.57, 1.57))
+    narrow_spin = float(battery_scenarios(_DT, _CMD)["spin_left"][0](0)[2])
+    wide_spin = float(battery_scenarios(_DT, wide)["spin_left"][0](0)[2])
+    assert wide_spin == pytest.approx(narrow_spin * 1.57 / 0.6)
 
 
 # -- yaw_progress_deg --------------------------------------------------------

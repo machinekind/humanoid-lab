@@ -171,7 +171,7 @@ def render_video(
 
     reset, step = jax.jit(env.reset), jax.jit(env.step)
 
-    scenarios = battery_scenarios(env.dt)
+    scenarios = battery_scenarios(env.dt, env._config.command)
     if scenario not in scenarios:
         raise KeyError(f"unknown scenario {scenario!r}; have {sorted(scenarios)}")
     cmd_at, n_steps = scenarios[scenario]
