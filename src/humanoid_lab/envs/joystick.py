@@ -335,6 +335,9 @@ def default_config() -> config_dict.ConfigDict:
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
             torque_limit_frac=0.85,
+            # Velocity-damping share of stand_still (position share is 1;
+            # only the ratio matters, scales.stand_still prices the sum).
+            stand_still_vel_weight=0.2,
             # UNTUNED starting values, carried from a quadruped joystick task
             # for every term that has a biped analogue
             # (rewards/terms.py's module docstring lists what has none).
@@ -531,7 +534,7 @@ class Joystick(HumanoidEnv):
 
     def _cmd_speed(self, command):
         """Planar speed the gait clock should serve; turning counts too."""
-        return jp.linalg.norm(command[:2]) + 0.3 * jp.abs(command[2])
+        return jp.linalg.norm(command[:2]) + progress.YAW_SPEED_WEIGHT * jp.abs(command[2])
 
     def _leg_phases(self, info):
         phase = info["phase"] + jp.array(_PHASE_OFFSETS)
@@ -553,7 +556,7 @@ class Joystick(HumanoidEnv):
         speed = self._cmd_speed(command)
         frac = jp.clip(speed / self._cmd_vmax, 0.0, 1.0)
         freq = g.freq[0] + (g.freq[1] - g.freq[0]) * frac
-        return jp.where(speed > 0.05, 2 * jp.pi * self.dt * freq, 0.0)
+        return jp.where(speed > progress.SPEED_DEADBAND, 2 * jp.pi * self.dt * freq, 0.0)
 
     # -- reset / step -------------------------------------------------------
     def reset(self, rng: jax.Array) -> mjx_env.State:
@@ -766,7 +769,7 @@ class Joystick(HumanoidEnv):
         gyro = self._gyro(data)
         gravity = self._gravity_body(data)
         cfg = self._config.reward
-        moving = self._cmd_speed(cmd) > 0.05
+        moving = self._cmd_speed(cmd) > progress.SPEED_DEADBAND
 
         qpos_act = data.qpos[self._qadr]
         qvel_act = data.qvel[self._vadr]
@@ -860,7 +863,10 @@ class Joystick(HumanoidEnv):
             * shape_gate,
             "feet_slip": terms.feet_slip(foot_vel[:, :2], contact) * moving,
             "feet_phase": terms.feet_phase(foot_clearance, target_clearance, cfg.phase_sigma) * moving,
-            "stand_still": terms.stand_still(qpos_act, self._pose_anchor, qvel_act) * (~moving),
+            "stand_still": terms.stand_still(
+                qpos_act, self._pose_anchor, qvel_act,
+                cfg.get("stand_still_vel_weight", 0.2),
+            ) * (~moving),
             "termination": terms.termination(fall),
             "torque_limit": terms.torque_limit(data.actuator_force, self._torque_cap, cfg.torque_limit_frac),
             # Appended at the END on purpose: the scaled sum below adds the

@@ -48,6 +48,15 @@ _DRAW = 0x100
 # exactly (tests/integration/test_randomize.py pins the two together); missing keys fall
 # back to these values.
 _DEFAULT_DR = {
+    # The always-on base set (once DR itself is enabled): floor friction,
+    # base and link mass, and the single gain/kd scalar used when
+    # joint_gains is off. Multiplicative ranges.
+    "base": {
+        "floor_friction": [0.6, 1.2],
+        "base_mass": [0.7, 1.3],
+        "link_mass": [0.9, 1.1],
+        "gain_fallback": [0.8, 1.2],
+    },
     "com_offset": {"enable": False, "xy": 0.02, "z": 0.01},
     "joint_gains": {"enable": False, "gain_pct": 0.2, "kd_pct": 0.2},
     "dof": {
@@ -94,6 +103,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
     fields `enable: False`) reproduces the original 5-field DR (floor
     friction, base/link mass, single gain/kd scale) bitwise.
     """
+    base_cfg = _field_cfg(dr_cfg, "base")
     com_cfg = _field_cfg(dr_cfg, "com_offset")
     joint_cfg = _field_cfg(dr_cfg, "joint_gains")
     dof_cfg = _field_cfg(dr_cfg, "dof")
@@ -130,11 +140,14 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
         @jax.vmap
         def rand(rng):
             r1, r2, r3, r4, r5 = jax.random.split(rng, 5)
-            friction = jax.random.uniform(r1, minval=0.6, maxval=1.2)
+            fr_lo, fr_hi = base_cfg["floor_friction"]
+            friction = jax.random.uniform(r1, minval=fr_lo, maxval=fr_hi)
             geom_friction = model.geom_friction.at[floor_id, 0].set(friction)
 
-            base_scale = jax.random.uniform(r2, minval=0.7, maxval=1.3)
-            link_scale = jax.random.uniform(r3, (model.nbody,), minval=0.9, maxval=1.1)
+            bm_lo, bm_hi = base_cfg["base_mass"]
+            lm_lo, lm_hi = base_cfg["link_mass"]
+            base_scale = jax.random.uniform(r2, minval=bm_lo, maxval=bm_hi)
+            link_scale = jax.random.uniform(r3, (model.nbody,), minval=lm_lo, maxval=lm_hi)
             body_mass = model.body_mass * link_scale
             body_mass = body_mass.at[root_id].set(model.body_mass[root_id] * base_scale)
 
@@ -147,8 +160,9 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             else:
                 # One scalar from r4/r5 broadcast to all joints, matching the
                 # original single-scale code.
-                gain_scale = jnp.full((model.nu,), jax.random.uniform(r4, minval=0.8, maxval=1.2))
-                kd_scale = jnp.full((model.nu,), jax.random.uniform(r5, minval=0.8, maxval=1.2))
+                gf_lo, gf_hi = base_cfg["gain_fallback"]
+                gain_scale = jnp.full((model.nu,), jax.random.uniform(r4, minval=gf_lo, maxval=gf_hi))
+                kd_scale = jnp.full((model.nu,), jax.random.uniform(r5, minval=gf_lo, maxval=gf_hi))
 
             gainprm = model.actuator_gainprm.at[:, 0].multiply(gain_scale)
             biasprm = model.actuator_biasprm.at[:, 1].multiply(gain_scale)

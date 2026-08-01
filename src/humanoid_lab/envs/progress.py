@@ -11,16 +11,22 @@ from __future__ import annotations
 
 import jax.numpy as jp
 
-# A command asking for less than this much speed is a stand command, and
-# standing is what it asked for: the cut never arms below it. Same threshold
-# the joystick task's `moving` mask uses, in the same commanded-speed units
-# (`Joystick._cmd_speed`: planar norm plus 0.3 * |yaw rate|).
-MIN_DEMAND = 0.05
+# The two commanded-speed constants the task, this module, and the deploy
+# contract all share. They live here (not in joystick.py) because joystick
+# imports this module and the deploy contract must ship the same numbers
+# the env trained with -- one definition, three consumers.
+#
+# A command asking for less than SPEED_DEADBAND is a stand command: the
+# gait clock freezes, the `moving` mask opens, and the no-progress cut
+# never arms. Units are commanded speed (`Joystick._cmd_speed`).
+SPEED_DEADBAND = 0.05
 
-# Weight on the yaw rate in the served measure, matching the 0.3 that
-# `_cmd_speed` weights the commanded yaw rate by, so served and demand are
-# blended the same way and their ratio is meaningful.
-_YAW_WEIGHT = 0.3
+# Weight of |yaw rate| in commanded speed -- an effective turning radius in
+# metres. Used identically by `_cmd_speed` (gait-clock speed scaling) and
+# by `served` below, so served and demand blend the same way and their
+# ratio is meaningful. Carried from the quadruped predecessor's 0.21 m
+# leg; re-derive for a robot of this scale.
+YAW_SPEED_WEIGHT = 0.3
 
 
 def served(linvel_xy, gyro_z, command):
@@ -39,7 +45,7 @@ def served(linvel_xy, gyro_z, command):
     direction = jp.maximum(jp.linalg.norm(command[:2]), 1e-6)
     return (
         jp.dot(jp.asarray(linvel_xy), command[:2]) / direction
-        + _YAW_WEIGHT * gyro_z * jp.sign(command[2])
+        + YAW_SPEED_WEIGHT * gyro_z * jp.sign(command[2])
     )
 
 
@@ -56,9 +62,10 @@ def hazard(progress_ratio, risk_below, p_max):
 def armed(demand, steps_since_cmd, dt, grace_sec):
     """Whether the hazard applies at all this step.
 
-    Two conditions: the command asks for real motion (`demand > MIN_DEMAND`),
-    and the command has been standing for at least `grace_sec`. The grace
-    window covers the reset transient and, since `steps_since_cmd` restarts on
-    every resample, the time it takes to turn a gait around for a new command.
+    Two conditions: the command asks for real motion
+    (`demand > SPEED_DEADBAND`), and the command has been standing for at
+    least `grace_sec`. The grace window covers the reset transient and,
+    since `steps_since_cmd` restarts on every resample, the time it takes
+    to turn a gait around for a new command.
     """
-    return (demand > MIN_DEMAND) & (steps_since_cmd * dt >= grace_sec)
+    return (demand > SPEED_DEADBAND) & (steps_since_cmd * dt >= grace_sec)

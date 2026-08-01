@@ -138,6 +138,10 @@ class RobotSpec:
     # block; a warp run then refuses at env construction (envs/base.py)
     # instead of dropping contacts silently.
     sim_budget: dict[str, int] = field(default_factory=dict)
+    # Optional MJCF camera name eval videos render from. None = a free
+    # camera tracking the floating base (eval/video.py); camera names are
+    # never guessed from the model.
+    eval_camera: str | None = None
 
     @property
     def model_xml_path(self) -> Path:
@@ -207,6 +211,7 @@ def load_robot_spec(robot_dir: Path) -> RobotSpec:
         obs_layout=dict(raw.get("obs_layout") or {}),
         sensors=dict(raw.get("sensors") or {}),
         sim_budget=_parse_sim_budget(raw.get("sim_budget") or {}, yaml_path),
+        eval_camera=raw.get("eval_camera"),
     )
 
 
@@ -391,6 +396,8 @@ def validate_against_model(spec: RobotSpec, model: mujoco.MjModel) -> None:
     _check_names_exist(spec.foot_geoms, "geom", model.geom)
     _check_names_exist(spec.termination_bodies, "body", model.body)
     _check_names_exist(spec.sensors.values(), "sensor", model.sensor)
+    if spec.eval_camera is not None:
+        _check_names_exist([spec.eval_camera], "camera", model.camera)
 
     for left, right in spec.symmetry.items():
         _check_names_exist([left, right], "joint", model.joint)

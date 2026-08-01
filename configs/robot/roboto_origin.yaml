@@ -148,11 +148,10 @@ dr:
 #   feet_slide: weight -0.3 -- shape differs: theirs penalizes the linear
 #     norm |v_xy| of each contacting foot; ours (terms.feet_slip) the
 #     squared speed v_xy^2, a different power law.
-#   stand_still: weight -0.2 (pos_weight 1.0, vel_weight 0.04) -- shape
-#     differs: our term (terms.stand_still) mixes position and velocity
-#     at a fixed internal 1.0/0.2 ratio vs. their 1.0/0.04, and theirs
-#     additionally gates on measured body velocity (< 0.5) on top of the
-#     zero-command mask.
+#   stand_still: weight -0.2 (pos_weight 1.0, vel_weight 0.04) -- the
+#     ratio is now mappable (reward.stand_still_vel_weight: 0.04), but
+#     theirs additionally gates on measured body velocity (< 0.5) on top
+#     of the zero-command mask, so the weight still does not transfer 1:1.
 #   undesired_contacts: weight -1.0, any non-ankle-roll body contact
 #   feet_force (mdp.body_force): weight -3e-3, threshold 500, max_reward 400
 #   feet_distance (mdp.body_distance_y, ankle_roll bodies): weight 0.1, min 0.16, max 0.50

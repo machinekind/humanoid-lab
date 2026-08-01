@@ -328,7 +328,13 @@ def build_report(run_dir: Path, motors_name: str | None = "encos") -> tuple[str,
     run = json.loads(run_json_path.read_text())
     hydra = run.get("hydra_config", {})
     preset_name = hydra.get("actuators", {}).get("name", "?")
-    robot_dir = paths.REPO_ROOT / hydra.get("robot", {}).get("dir", "robots/asimov_v1")
+    robot_rel = hydra.get("robot", {}).get("dir")
+    if not robot_rel:
+        raise ValueError(
+            f"{run_json_path} records no robot.dir; refusing to guess which "
+            "robot produced this run"
+        )
+    robot_dir = paths.REPO_ROOT / robot_rel
 
     from humanoid_lab.robot.spec import load_robot_spec
 

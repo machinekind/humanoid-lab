@@ -56,6 +56,8 @@ Optional keys:
 | `obs_layout` | Free-form dict. No code consumes this yet. Leave it `{}` unless a downstream consumer needs it. |
 | `sensors` | A dict with recognized keys `gyro`, `quat`, `linvel`, `acc`, mapping each to an MJCF `<sensor>` name. Envs read the named sensor directly for any key present here, and fall back to a qpos/qvel-derived computation for any key left out. |
 | `model_patches` | Build-time patches for a source XML that isn't MJX-ready as vendored: `<option>` overrides, injected sites, injected collision geoms, and mesh-collision handling. Every sub-key is optional. See "model_patches" below. |
+| `sim_budget` | The robot's measured warp contact budgets (`naconmax_per_env`, `njmax`), from `./run.sh check-contacts` times the headroom rule. Omit until measured; a warp run refuses to construct without one. |
+| `eval_camera` | An MJCF camera name eval videos render from, validated to exist against the compiled model. Omit for a free camera tracking the floating base. |
 
 ### model_patches
 

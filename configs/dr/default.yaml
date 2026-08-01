@@ -1,5 +1,12 @@
 # Domain-randomization switches, off by default. With all disabled, DR is
-# the original set: floor friction, base and link mass, one gain/kd scale.
+# the base set below: floor friction, base and link mass, one gain/kd scale.
+# The always-on base set's multiplicative ranges (gain_fallback is the
+# single gain/kd scalar used when joint_gains is off).
+base:
+  floor_friction: [0.6, 1.2]
+  base_mass: [0.7, 1.3]
+  link_mass: [0.9, 1.1]
+  gain_fallback: [0.8, 1.2]
 com_offset: { enable: false, xy: 0.02, z: 0.01 } # body_ipos on root, +-m
 joint_gains: { enable: false, gain_pct: 0.2, kd_pct: 0.2 } # per-joint, else single scalar
 dof: # multiplicative ranges

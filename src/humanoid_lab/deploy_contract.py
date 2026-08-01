@@ -45,6 +45,7 @@ import jax
 import jax.numpy as jp
 import numpy as np
 
+from humanoid_lab.envs import progress
 from humanoid_lab.robot.presets import effective_gains
 
 SCHEMA_VERSION = 1
@@ -156,41 +157,6 @@ TRAINING_ONLY_KEYS = frozenset(
         "gait.swing_height",
         "gait.duty",
         "gait.air_time_cap",
-        # Every reward knob and every reward scale. Rewards shape what the
-        # network learned; the network is what ships.
-        "reward.tracking_sigma",
-        "reward.tracking_product",
-        "reward.tracking_relative",
-        "reward.tracking_rel_sigma",
-        "reward.tracking_rel_floor_lin",
-        "reward.tracking_rel_floor_ang",
-        "reward.tracking_far_weight",
-        "reward.tracking_far_sigma",
-        "reward.shaping_tracking_gate",
-        "reward.phase_sigma",
-        "reward.orientation_tol_deg",
-        "reward.apex_target",
-        "reward.glide_height",
-        "reward.torque_limit_frac",
-        "reward.scales.tracking_lin_vel",
-        "reward.scales.tracking_ang_vel",
-        "reward.scales.lin_vel_z",
-        "reward.scales.ang_vel_xy",
-        "reward.scales.orientation",
-        "reward.scales.torques",
-        "reward.scales.torque_rate",
-        "reward.scales.action_rate",
-        "reward.scales.action_accel",
-        "reward.scales.energy",
-        "reward.scales.pose",
-        "reward.scales.feet_air_time",
-        "reward.scales.feet_slip",
-        "reward.scales.feet_phase",
-        "reward.scales.stand_still",
-        "reward.scales.termination",
-        "reward.scales.torque_limit",
-        "reward.scales.feet_apex",
-        "reward.scales.feet_landing",
     }
 )
 
@@ -203,6 +169,22 @@ TRAINING_ONLY_KEYS = frozenset(
 # envs/joystick.py's check_pure_draw_ranges refuses that configuration at
 # env construction, and export rebuilds the run's env through the same
 # constructor, so the condition is enforced without a second copy here.
+
+
+# Prefix rule: every `reward.*` leaf is training-only by construction.
+# Rewards shape what the network learned; the network is what ships, and no
+# reward knob is ever consumed by the runtime. A rule instead of one ledger
+# line per scale, so adding a reward term is not a two-file edit.
+TRAINING_ONLY_PREFIXES = ("reward.",)
+
+
+def is_classified(path: str) -> bool:
+    """Whether `path` is covered by the ledger or a prefix rule."""
+    return (
+        path in CONSUMED_KEYS
+        or path in TRAINING_ONLY_KEYS
+        or path.startswith(TRAINING_ONLY_PREFIXES)
+    )
 
 
 def _leaf_paths(config, prefix: str = "") -> set[str]:
@@ -225,7 +207,7 @@ def check_config_covered(env_config) -> None:
     present are checked, so a partial config passes as long as every key in
     it is classified.
     """
-    unknown = sorted(_leaf_paths(env_config) - CONSUMED_KEYS - TRAINING_ONLY_KEYS)
+    unknown = sorted(p for p in _leaf_paths(env_config) if not is_classified(p))
     if unknown:
         raise ValueError(
             f"env config key(s) {unknown} are not classified in "
@@ -338,10 +320,11 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
             "offsets": offsets.tolist(),
             "freq_low": float(gait.freq[0]),
             "freq_high": float(gait.freq[1]),
-            # |v_xy| + turn_weight * |wz|, normalized by cmd_speed_max, is the
-            # speed fraction the frequency lerps over.
-            "turn_weight": 0.3,
-            "speed_deadband": 0.05,
+            # |v_xy| + turn_weight * |wz|, normalized by cmd_speed_max, is
+            # the speed fraction the frequency lerps over. Shipped from the
+            # env's own constants (envs/progress.py), never re-typed here.
+            "turn_weight": progress.YAW_SPEED_WEIGHT,
+            "speed_deadband": progress.SPEED_DEADBAND,
             "cmd_speed_max": float(env._cmd_vmax),
         },
     }

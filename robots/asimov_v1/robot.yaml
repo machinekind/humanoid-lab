@@ -131,6 +131,10 @@ sensors:
   linvel: imu_lin_vel
   acc: imu_lin_acc
 
+# Eval videos render from this MJCF camera (a side-view tracking camera the
+# source XML ships); see eval/video.py's _pick_camera.
+eval_camera: side_camera
+
 # Warp contact/constraint budgets for this robot's collision geometry.
 # Measured worst case across standing/walking/fallen regimes
 # (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 32 contacts

@@ -176,11 +176,12 @@ def feet_phase(foot_clearance, target_clearance, phase_sigma: float):
     return jp.exp(-err / phase_sigma)
 
 
-def stand_still(qpos_actuated, default_pose, qvel_actuated):
+def stand_still(qpos_actuated, default_pose, qvel_actuated, vel_weight: float = 0.2):
     """Position pull to the default pose plus velocity damping, for the
     zero-command (stand) case. L1 position alone causes bang-bang fidgeting
-    around the anchor."""
-    return jp.sum(jp.abs(qpos_actuated - default_pose)) + 0.2 * jp.sum(jp.abs(qvel_actuated))
+    around the anchor. `vel_weight` sets the damping share; only the ratio
+    matters, since `scales.stand_still` prices the sum."""
+    return jp.sum(jp.abs(qpos_actuated - default_pose)) + vel_weight * jp.sum(jp.abs(qvel_actuated))
 
 
 def termination(fall):

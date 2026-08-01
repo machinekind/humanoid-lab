@@ -33,15 +33,15 @@ def leaf_paths(config, prefix: str = "") -> set[str]:
 
 def test_every_default_config_key_is_classified():
     """The completeness walk. A new env option lands here before it ships."""
-    classified = dc.CONSUMED_KEYS | dc.TRAINING_ONLY_KEYS
     keys = leaf_paths(default_config().to_dict())
 
-    unclassified = sorted(keys - classified)
+    unclassified = sorted(k for k in keys if not dc.is_classified(k))
     assert not unclassified, (
-        f"env config key(s) {unclassified} are in neither CONSUMED_KEYS nor "
-        "TRAINING_ONLY_KEYS -- classify them in src/humanoid_lab/deploy_contract.py"
+        f"env config key(s) {unclassified} are neither in the ledger nor "
+        "covered by a prefix rule -- classify them in "
+        "src/humanoid_lab/deploy_contract.py"
     )
-    stale = sorted(classified - keys)
+    stale = sorted((dc.CONSUMED_KEYS | dc.TRAINING_ONLY_KEYS) - keys)
     assert not stale, (
         f"ledger entries {stale} name keys default_config() no longer has -- "
         "the ledger describes a config that does not exist"
@@ -79,10 +79,19 @@ def test_the_headline_classifications_are_the_documented_ones():
         "gait.duty",
         "command.zero_prob",
         "command.pure_back_prob",
-        "reward.scales.tracking_lin_vel",
-        "reward.tracking_product",
     ):
         assert key in dc.TRAINING_ONLY_KEYS, f"{key} should stay in training"
+    for key in ("reward.scales.tracking_lin_vel", "reward.tracking_product"):
+        assert dc.is_classified(key), f"{key} should fall under the reward. prefix rule"
+
+
+def test_a_new_reward_key_needs_no_ledger_edit():
+    """The reward prefix rule: reward terms shape the network, the network
+    ships, so adding one is not a two-file edit."""
+    config = default_config().to_dict()
+    config["reward"]["scales"]["brand_new_term"] = -0.1
+    config["reward"]["brand_new_knob"] = 0.5
+    dc.check_config_covered(config)
 
 
 def test_the_default_config_is_covered():

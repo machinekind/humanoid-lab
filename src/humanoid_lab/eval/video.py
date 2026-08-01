@@ -65,21 +65,13 @@ def push_override(push: bool) -> dict:
     return {"push": {"enable": bool(push)}}
 
 
-def _pick_camera(mj_model: mujoco.MjModel):
-    """Prefer a named MJCF camera already in the model over synthesizing
-    one. source/xmls/asimov.xml ships several `mode="track"` cameras
-    mounted on the pelvis (front_camera, side_camera, ...) -- use the
-    first of a small side-view preference list that exists in this model.
-    If none exist (a future robot's XML has no cameras), fall back to a
-    free MjvCamera tracking the floating-base body instead of editing the
-    XML (out of scope for this module -- generated XML is build output,
-    see PLAN.md's ops rules)."""
-    for name in ("side_camera", "front_camera", "track"):
-        try:
-            mj_model.camera(name)
-            return name
-        except KeyError:
-            continue
+def _pick_camera(mj_model: mujoco.MjModel, preferred: str | None = None):
+    """robot.yaml's `eval_camera` when declared (validated to exist against
+    the compiled model at spec load), else a free MjvCamera tracking the
+    floating-base body. No camera names are guessed from the model: which
+    view a robot's eval videos use is that robot's own call."""
+    if preferred is not None:
+        return preferred
 
     free = [
         i for i in range(mj_model.njnt) if mj_model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
@@ -178,7 +170,7 @@ def render_video(
     if steps is not None:
         n_steps = steps
 
-    camera = _pick_camera(env.mj_model)
+    camera = _pick_camera(env.mj_model, env.robot_spec.eval_camera)
     render_every = max(1, round(1 / (30 * env.dt)))
     fps = 1.0 / (env.dt * render_every)
 
