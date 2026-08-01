@@ -11,10 +11,8 @@ reviewed -- test_golden_baseline.py failing is not by itself a reason to run
 this. See that module's docstring.
 
 Naming cases is the safer default when the reason to re-record is a change
-to ONE robot. The asimov_v1 goldens are the port's off-switch anchor: they
-were recorded from the pre-port code and a change to either is a finding, not
-a refresh. Re-recording only what changed means they cannot be overwritten by
-accident and then "verified" against themselves.
+to ONE robot: re-recording only what changed means the others cannot be
+overwritten by accident and then "verified" against themselves.
 
 Run on CPU. The goldens are compared bit for bit and XLA's GPU kernels do not
 reproduce the CPU backend's reduction orders.

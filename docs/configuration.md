@@ -287,19 +287,20 @@ The physical reference for touchdown softness is free fall over the band:
 penalty on the tracking kernel would relax it exactly when tracking is
 failing, which is when feet are being slammed into the floor.
 
-"At the floor" and "at `glide_height`" are clearance readings, not physical
-heights: `_foot_clearance` is referenced to the reset keyframe, which floats
-the feet a few mm, so both this band and `apex_target` sit about 5 mm
-(asimov) or 3 mm (roboto) below the physical height they name. The
-measurement and the deferred fix are in
-[docs/lessons/foot-clearance.md](lessons/foot-clearance.md).
+"At the floor" and "at `glide_height`" are physical heights:
+`_foot_clearance` reads the sole's height above the floor (a planted foot
+~0), per [docs/lessons/foot-clearance.md](lessons/foot-clearance.md).
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
 | `scales.feet_landing` | `0.0` | Weight of the soft-landing penalty (negative when on). `0` = off. |
-| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for asimov's leg** — this is a starting value for a 0.21 m four-bar quadruped leg, and our own `gait.swing_height` asks for 0.08 m. |
-| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`; a starting value for the same leg. |
+| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for this leg** — a quadruped starting value, and our own `gait.swing_height` asks for 0.08 m. |
+| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`. |
+
+`reward.stand_still_vel_weight` (default `0.2`) sets stand_still's
+velocity-damping share against a position share of 1; only the ratio
+matters, since `scales.stand_still` prices the sum.
 
 ## Settled pose anchor (`task.env.real_pose_ref`)
 
@@ -488,12 +489,14 @@ defaults validate nothing.
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone
-reproduces the original fixed distribution: floor friction, base and link
-mass scale, and one shared gain and kd scale. Each switch below adds an
-independent randomization on top of that, gated by its own `enable`.
+enables the `dr.base` set: floor friction, base and link mass scale, and
+one shared gain and kd scale (`gain_fallback`, used only while
+`dr.joint_gains` is off). Each switch below it adds an independent
+randomization on top, gated by its own `enable`.
 
 | Switch | Tunables | Default range |
 |---|---|---|
+| `dr.base` | `floor_friction`, `base_mass`, `link_mass`, `gain_fallback` (multiplicative; the always-on set, no `enable`) | `[0.6, 1.2]`, `[0.7, 1.3]`, `[0.9, 1.1]`, `[0.8, 1.2]` |
 | `dr.com_offset` | `xy`, `z` (m) | `0.02`, `0.01` |
 | `dr.joint_gains` | `gain_pct`, `kd_pct` | `0.2`, `0.2` |
 | `dr.dof` | `damping`, `armature`, `frictionloss` (multiplicative) | `[0.9, 1.1]` each |
@@ -662,13 +665,9 @@ The metrics work for any foot count. They fold into nothing: velocity
 tracking error scores both a skimming gait and a stand-and-lift farm as
 healthy, which is the gap these two numbers close.
 
-**Read the apex against the offset.** `_foot_clearance` is measured from the
-reset keyframe's site height, not the floor, and the keyframes float the
-robot by 4.92 mm on `asimov_v1` and 3.11 mm on `roboto_origin`. So the 5 mm
-airborne band sits about 10 mm above the floor on asimov, and every apex here
-reads low by that offset. `docs/lessons/foot-clearance.md` owns the numbers
-and the deferred fix; nothing in these KPIs is worth calibrating before it
-lands.
+Apexes and the 5 mm airborne band are physical heights above the floor
+(`_foot_clearance` reads sole height; see
+`docs/lessons/foot-clearance.md`).
 
 ### Servo tracking error
 

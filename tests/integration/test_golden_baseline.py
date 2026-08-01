@@ -1,10 +1,8 @@
-"""The pre-port bit-exactness gate.
+"""The stock-rollout bit-exactness gate.
 
 With every optional mechanism off, an env rollout has to stay bit-exact
-against the recorded baseline. These goldens were recorded from the code as
-it stood before the first mechanism landed, so this test is that requirement,
-mechanically. Any commit that shifts a single float in a stock rollout fails
-here.
+against the recorded baseline. Any commit that shifts a single float in a
+stock rollout fails here.
 
 A failure is not a "regenerate the goldens" prompt. It means a
 default-off mechanism changed behavior while off -- usually by consuming an
@@ -51,7 +49,7 @@ def _recorded():
 
 
 @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
-def test_rollout_is_bit_exact_against_the_pre_port_golden(case, _recorded):
+def test_rollout_is_bit_exact_against_the_recorded_golden(case, _recorded):
     if not case.path.exists():
         pytest.fail(
             f"missing golden {case.path}. Record it with "

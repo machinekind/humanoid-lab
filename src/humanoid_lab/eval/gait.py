@@ -18,16 +18,12 @@ from __future__ import annotations
 
 import numpy as np
 
-# Clearance above which a foot counts as airborne, metres. An inherited
-# 5 mm ground band, unchanged.
-#
-# One caveat: _foot_clearance is measured
-# against the RESET KEYFRAME's site height, not the floor, and the keyframes
-# float the robot a few mm (4.92 mm on asimov_v1, 3.11 mm on roboto_origin).
-# A planted foot therefore reads about -5 mm, so this 5 mm band sits ~10 mm
-# above the floor on asimov and every apex here reads low by that offset.
-# See docs/lessons/foot-clearance.md, which owns the numbers and the
-# deferred fix; nothing in this module is worth re-deriving before it lands.
+# Clearance above which a foot counts as airborne, metres. A physical
+# height: _foot_clearance reads the sole's height above the floor (a
+# planted foot ~0), so this is a real 5 mm band. A biped foot is an
+# extended plate that rolls heel-to-toe while the per-foot site is a single
+# point, so partial contact near the band edge classifies by the site's
+# height; treat swing counts near the threshold with care.
 AIRBORNE_M = 0.005
 
 # Shortest run of airborne steps that counts as a swing. A single step over

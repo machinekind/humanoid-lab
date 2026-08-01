@@ -194,24 +194,25 @@ class HumanoidEnv(mjx_env.MjxEnv):
             )
         self._foot_geom_foot_idx = jp.array(foot_idx)
 
-        # Foot-site height at the reset keyframe pose. foot_sites are named
-        # MJCF sites, not the sole surface itself, so they sit a few mm above
-        # the geoms that actually touch the ground; a planted foot's raw site
-        # z never reaches 0. Computed once here (mj_forward on the CPU model
-        # at construct time, plain numpy -- never traced) and subtracted from
-        # site z wherever gait clearance is scored.
-        #
-        # This is the KEYFRAME's site height, not the floor-referenced one.
-        # The keyframe deliberately floats the robot a few mm up (5 mm on
-        # asimov, 3 mm on roboto), so that margin is baked in and a planted
-        # foot reads that much NEGATIVE, not 0 -- see _foot_clearance and
-        # docs/lessons/foot-clearance.md. Deliberately not corrected during
-        # the port: feet_phase is a pre-port term at scale 1.0, so moving
-        # this shifts stock rewards and needs a golden regeneration.
+        # Vertical distance from each foot site to the lowest point of that
+        # foot's own collision geoms (capsule bottoms), measured once at the
+        # reset keyframe (mj_forward on the CPU model at construct time,
+        # plain numpy -- never traced). foot_sites are named MJCF sites, not
+        # the sole surface, so they sit a few mm above the geoms that touch
+        # the ground; subtracting this offset makes _foot_clearance read the
+        # sole's height above the floor -- ~0 for a planted foot, and
+        # independent of how far the keyframe floats the robot (see
+        # docs/lessons/foot-clearance.md for the bug this replaced).
         rest_data = mujoco.MjData(m)
         rest_data.qpos[:] = home_qpos_np
         mujoco.mj_forward(m, rest_data)
-        self._foot_site_rest_z = jp.array(rest_data.site_xpos[self._foot_site_ids, 2])
+        site_z = rest_data.site_xpos[self._foot_site_ids, 2]
+        geom_bottom = rest_data.geom_xpos[self._foot_geom_ids, 2] - np.asarray(
+            m.geom_size[self._foot_geom_ids, 0]
+        )
+        sole_z = np.full(self._n_feet, np.inf)
+        np.minimum.at(sole_z, foot_idx, geom_bottom)
+        self._foot_site_sole_offset = jp.array(site_z - sole_z)
 
         # Sensor addresses declared by robot.yaml's `sensors` map (gyro,
         # quat, linvel, acc); absent keys fall back to a qpos/qvel-derived
@@ -430,23 +431,17 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return data.site_xpos[self._foot_site_ids]
 
     def _foot_clearance(self, data):
-        """Per-foot site height, referenced to the RESET KEYFRAME's site
-        height.
+        """Per-foot sole height above the floor: site z minus the measured
+        site-to-sole offset.
 
-        Not floor-referenced, and not a geom-bottom reading: a
-        `geom_z - FOOT_RADIUS` measure would read exactly 0 for a resting
-        sphere at any orientation. Here `_foot_site_rest_z` is measured at
-        the reset keyframe, whose base height deliberately floats the lowest
-        sole a few mm above the floor, so every reading is biased low by that
-        margin: measured 4.92 mm on asimov_v1 and 3.11 mm on roboto_origin.
-
-        A planted foot therefore reads about -5 mm (asimov) or -3 mm
-        (roboto), never 0, and a swing apex reads low by the same offset --
-        which shifts what `feet_phase`'s stance target of 0, `apex_target`
-        and `glide_height` mean in physical metres. The numbers and the
-        deferred fix are in docs/lessons/foot-clearance.md.
+        A planted foot reads ~0 (up to solver penetration), a swing apex
+        reads its physical height, and the reading does not move with the
+        reset keyframe's float margin -- so `feet_phase`'s stance target of
+        0, `apex_target` and `glide_height` mean physical metres. Assumes
+        capsule foot geoms (geom_size[0] is the radius), the same
+        assumption `_foot_contact` makes.
         """
-        return self._foot_site_pos(data)[:, 2] - self._foot_site_rest_z
+        return self._foot_site_pos(data)[:, 2] - self._foot_site_sole_offset
 
     def _foot_linvel(self, data):
         """Per-foot linear velocity at the foot_sites points (world frame)."""

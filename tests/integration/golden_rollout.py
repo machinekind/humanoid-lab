@@ -76,6 +76,16 @@ CASES = (
         robot_dir=paths.ROBOTS_DIR / "asimov_v1",
         preset="deploy_pd",
     ),
+    GoldenCase(
+        name="roboto_origin__sizing_ideal",
+        robot_dir=paths.ROBOTS_DIR / "roboto_origin",
+        preset="sizing_ideal",
+    ),
+    GoldenCase(
+        name="roboto_origin__deploy_pd",
+        robot_dir=paths.ROBOTS_DIR / "roboto_origin",
+        preset="deploy_pd",
+    ),
 )
 
 CASE_IDS = tuple(c.name for c in CASES)
