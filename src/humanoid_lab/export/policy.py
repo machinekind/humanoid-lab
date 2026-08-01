@@ -142,9 +142,9 @@ def load_for_export(run_dir) -> Loaded:
 
     The env is the run's own, rebuilt through eval/battery.py's loader so
     the robot, preset, actuator overrides and PPO network shape all come
-    from run.json. Its measurement overrides (pushes off, mirror off, the
-    no-progress cut off, the command resampler idle) touch training-only
-    keys, so no contract field moves.
+    from run.json. Its measurement overrides (pushes off, the no-progress
+    cut off, the command resampler idle) touch training-only keys, so no
+    contract field moves.
     """
     from humanoid_lab import policy_io
     from humanoid_lab.deploy_contract import build_contract, check_config_covered

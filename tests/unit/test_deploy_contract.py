@@ -77,7 +77,6 @@ def test_the_headline_classifications_are_the_documented_ones():
         "obs_noise.gyro",
         "push.enable",
         "no_progress.enable",
-        "symmetry.enable",
         "fall.min_height",
         "gait.swing_height",
         "gait.duty",

@@ -47,7 +47,6 @@ import numpy as np
 from ml_collections import config_dict
 
 from humanoid_lab import paths
-from humanoid_lab.envs import symmetry
 
 
 def _load_run(run_dir: Path) -> dict:
@@ -104,15 +103,11 @@ def make_env_for_run(run: dict):
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    # The run's own env, with one measurement-only change: the mirror
-    # augmentation forced off by the deployment-frame rule (see
-    # envs/symmetry.py's deployment_frame_overrides). This collector's whole
-    # output is per-JOINT torque and speed, and a mirrored rollout would
-    # report the left leg's numbers against the right leg's motor. Pushes and
-    # the env's own command sampling deliberately stay ON, unlike the
-    # battery's: sizing wants the distribution the trained gait actually
-    # produces under its own command envelope.
-    env_overrides = symmetry.deployment_frame_overrides(hydra["task"].get("env") or {})
+    # The run's own env, unchanged. Pushes and the env's own command
+    # sampling deliberately stay ON, unlike the battery's: sizing wants the
+    # distribution the trained gait actually produces under its own command
+    # envelope.
+    env_overrides = dict(hydra["task"].get("env") or {})
     env = registry.make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     return env, robot_dir, preset_name, actuator_overrides
 

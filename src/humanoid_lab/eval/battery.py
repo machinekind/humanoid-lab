@@ -49,7 +49,6 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from humanoid_lab import sim_budget
-from humanoid_lab.envs import symmetry
 from humanoid_lab.eval import grid
 from humanoid_lab.eval.gait import gait_metrics
 
@@ -408,15 +407,7 @@ def _measurement_env_overrides(run: dict) -> dict:
     control steps; left at its default that would clobber this battery's
     own scripted command trajectories mid-scenario, since rollout() drives
     the command by mutating state.info["command"] every step rather than
-    through the env's own sampler), the no-progress cut disabled, and the
-    mirror augmentation disabled.
-
-    The mirror is off by the deployment-frame rule (see
-    envs/symmetry.py's deployment_frame_overrides, which owns it): a
-    measurement describes the frame the robot will be deployed in, and a
-    battery that drew the coin the other way would report a policy's
-    spin_left as its spin_right. Any future training-only stochastic
-    augmentation stored in run config gets the same treatment.
+    through the env's own sampler), and the no-progress cut disabled.
 
     The cut is off for two reasons. A probabilistic termination is not a
     fall, and rollout() reports every `done` as one (`fell_at`), so a run
@@ -432,7 +423,7 @@ def _measurement_env_overrides(run: dict) -> dict:
     and zero info["steps_since_cmd"] itself whenever cmd_at changes the
     command."""
     hydra = run.get("hydra_config") or {}
-    overrides = symmetry.deployment_frame_overrides((hydra.get("task") or {}).get("env") or {})
+    overrides = dict((hydra.get("task") or {}).get("env") or {})
     overrides["push"] = {**(overrides.get("push") or {}), "enable": False}
     overrides["command"] = {**(overrides.get("command") or {}), "resample_steps": 10_000_000}
     overrides["no_progress"] = {**(overrides.get("no_progress") or {}), "enable": False}

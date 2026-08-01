@@ -149,12 +149,6 @@ TRAINING_ONLY_KEYS = frozenset(
         "no_progress.ema_sec",
         "no_progress.risk_below",
         "no_progress.p_max",
-        # Mirror augmentation: an env-internal frame flip drawn per episode
-        # during training. Measurement and deployment always run in the real
-        # frame (envs/symmetry.py's deployment-frame rule), so the deployed
-        # policy only ever sees unmirrored observations.
-        "symmetry.enable",
-        "symmetry.mirror_prob",
         # Episode termination thresholds. A fall ends a training episode; it
         # does not change the mapping from observation to ctrl. A deploy-side
         # safety cutout is a robot-side decision, not this policy's.

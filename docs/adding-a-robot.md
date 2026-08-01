@@ -50,7 +50,7 @@ Optional keys:
 
 | Field | Contract |
 |---|---|
-| `symmetry` | A dict mapping a left joint name to its right counterpart, for symmetry augmentation. |
+| `symmetry` | A dict mapping a left joint name to its right counterpart. Validated for joint-name existence; no trainer consumes it yet -- it records the pairing for future tooling that needs one. |
 | `keyframes` | A dict of named poses: `base_pos` (a required 3-vector), `base_quat` (a 4-vector, defaults to identity), `joints` (a sparse map of joint name to angle, defaulting anything unlisted to `0.0`). See the measurement rule below before writing `base_pos`'s z value. |
 | `termination_bodies` | MJCF body names, validated to exist against the compiled model. Fall detection currently uses base height and tilt only, so the joystick and sizing envs do not read this field yet. Validate what you list here anyway. |
 | `obs_layout` | Free-form dict. No code consumes this yet. Leave it `{}` unless a downstream consumer needs it. |
@@ -179,8 +179,6 @@ What it checks, for the robot and for each of its presets:
   preset it also holds the robot up for 0.5 s with nothing but feet touching
   the floor.
 - A mass-scaled shove lands the robot on the floor rather than through it.
-- A declared `symmetry` map survives `envs/symmetry.py`'s numeric derivation,
-  which is also the proof that the model really is mirror-symmetric.
 - The task env constructs, a jitted reset and step run, and the observation
   widths match the component lists the config declares.
 

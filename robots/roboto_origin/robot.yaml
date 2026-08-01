@@ -81,12 +81,10 @@ foot_geoms:
   - right_foot2_collision
   - right_foot3_collision
 
-# All 11 left/right joint pairs, plus torso_joint paired with ITSELF:
-# it sits on the mirror plane, so its mirror image is the same joint turning
-# the other way (envs/symmetry.py derives that sign, -1, from the model like
-# every other one). The map has to cover every actuated joint -- a joint left
-# out would be mirrored in place with sign +1, which is a wrong mirror rather
-# than a missing one, so envs/symmetry.py raises on an unlisted joint instead.
+# All 11 left/right joint pairs, plus torso_joint paired with ITSELF: it
+# sits on the mirror plane, so its mirror image is the same joint turning
+# the other way. Validated for joint-name existence; nothing consumes the
+# map yet.
 symmetry:
   left_thigh_yaw_joint: right_thigh_yaw_joint
   left_thigh_roll_joint: right_thigh_roll_joint

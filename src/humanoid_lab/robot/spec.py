@@ -3,8 +3,8 @@ step reads instead of naming joints/sites/bodies directly.
 
 A robot directory (e.g. robots/asimov_v1/) carries a single robot.yaml that
 this module parses into a RobotSpec. Everything downstream (actuator
-injection, observations, terminations, symmetry augmentation, export) reads
-the RobotSpec; nothing downstream should hardcode a joint name.
+injection, observations, terminations, export) reads the RobotSpec;
+nothing downstream should hardcode a joint name.
 """
 
 from __future__ import annotations

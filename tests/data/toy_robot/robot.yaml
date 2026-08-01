@@ -29,10 +29,8 @@ passive_joints:
 foot_sites: [left_foot, right_foot]
 foot_geoms: [left_foot_geom, right_foot_geom]
 
-# Both hinges are pitch joints (axis 0 1 0, identical on the two sides), so
-# both mirror with sign +1 -- envs/symmetry.py derives that from the model
-# rather than reading it off the axes. The standing keyframe below gives the
-# two sides equal angles, which is what makes the probe pose its own mirror.
+# Left/right pairing, recorded for tooling that needs one; nothing
+# consumes it yet.
 symmetry:
   left_hip_pitch_joint: right_hip_pitch_joint
   left_knee_joint: right_knee_joint

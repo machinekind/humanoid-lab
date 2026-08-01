@@ -43,8 +43,8 @@ foot_geoms:
   - <left_foot_collision_geom>
   - <right_foot_collision_geom>
 
-# Optional: left joint name -> right joint name, for symmetry augmentation.
-# Leave {} if unused.
+# Optional: left joint name -> right joint name. Validated for joint-name
+# existence; nothing consumes it yet. Leave {} if unused.
 symmetry:
   <left_hip_pitch_joint>: <right_hip_pitch_joint>
 

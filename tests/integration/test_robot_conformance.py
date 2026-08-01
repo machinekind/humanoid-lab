@@ -41,7 +41,6 @@ import pytest
 import yaml
 
 from humanoid_lab import paths
-from humanoid_lab.envs import symmetry
 from humanoid_lab.envs.joystick import Joystick, default_config
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale, load_actuator_preset, resolve
@@ -365,40 +364,6 @@ def test_every_actuator_preset_resolves_onto_every_actuated_joint(_cache, robot_
             assert np.isfinite(scale) and scale > 0.0, (preset_name, joint_name, scale)
 
 
-@pytest.mark.parametrize("robot_dir", ROBOT_DIRS, ids=ROBOT_IDS)
-def test_symmetry_map_derives_a_valid_mirror(_cache, robot_dir):
-    """A declared `symmetry` map has to survive the numeric derivation.
-
-    envs/symmetry.py does not read signs off axis conventions: it perturbs
-    each joint of a pair and asks which sign of the partner reproduces the
-    mirrored motion, requiring the winner to fit within MAX_FIT_RESIDUAL and
-    to beat the loser by MIN_DISCRIMINATION. Passing therefore proves the
-    compiled model really IS mirror-symmetric under robot.yaml's pairing --
-    which is the only condition under which the augmentation means anything.
-
-    A robot with no symmetry map skips: the map is optional, and
-    `symmetry.enable` is unavailable to that robot until it has one.
-    """
-    spec = robot_spec(_cache, robot_dir)
-    if not spec.symmetry:
-        pytest.skip(f"robot '{spec.name}' declares no symmetry map")
-
-    presets = sorted(p.stem for p in (robot_dir / "actuators").glob("*.yaml"))
-    model = built_model(_cache, RobotCase(robot_dir, presets[0]))
-    qpos = np.array(model.key(_reset_keyframe(spec)).qpos)
-
-    tables = symmetry.derive(model, spec, qpos)
-
-    n_joints, n_feet = len(spec.actuated_joints), len(spec.foot_sites)
-    assert tables.joint_perm.shape == (n_joints,)
-    assert tables.joint_sign.shape == (n_joints,)
-    assert tables.foot_perm.shape == (n_feet,)
-    assert set(np.unique(tables.joint_sign)) <= {-1.0, 1.0}
-    # An involution: mirroring twice is the identity, on joints and on feet.
-    assert tables.joint_perm[tables.joint_perm].tolist() == list(range(n_joints))
-    assert tables.foot_perm[tables.foot_perm].tolist() == list(range(n_feet))
-
-
 # -- build/compile checks (per robot x preset) --------------------------------
 
 
@@ -436,8 +401,8 @@ def test_actuators_are_the_actuated_joints_in_canonical_order(_cache, case):
 def test_the_model_has_exactly_one_floating_base(_cache, case):
     """One free joint, everything else a 1-dof hinge or slide.
 
-    envs/base.py, envs/symmetry.py and this file all locate the base by
-    finding the single free joint; a second one (or none) breaks all three.
+    envs/base.py and this file both locate the base by finding the single
+    free joint; a second one (or none) breaks both.
     The qpos-width check is the same statement from the other side: 7 for the
     free joint plus one per remaining joint means nothing hides a ball joint.
     """
@@ -848,16 +813,15 @@ def test_the_env_constructs_and_a_jitted_reset_and_step_run(_cache, case):
 def test_observation_widths_match_the_declared_component_lists(_cache, case):
     """The obs vectors are exactly what the config's ordered lists build.
 
-    Sizes are measured on THIS env's own catalog, never a static table -- the
-    same rule envs/symmetry.py's docstring insists on, and for the same
-    reason: a table cannot notice a robot whose joint or foot count differs
-    from it. The per-component identities below are what tie the catalog back
-    to the robot: one entry per actuated joint, one per foot.
+    Sizes are measured on THIS env's own catalog, never a static table: a
+    table cannot notice a robot whose joint or foot count differs from it.
+    The per-component identities below are what tie the catalog back to the
+    robot: one entry per actuated joint, one per foot.
     """
     spec = robot_spec(_cache, case.robot_dir)
     env = built_env(_cache, case)
 
-    catalog = env._obs_catalog(env._make_data(), env._mirror_probe_info())
+    catalog = env._obs_catalog(env._make_data(), env._catalog_probe_info())
     sizes = {name: int(np.prod(value.shape)) for name, value in catalog.items()}
 
     state = jax.jit(env.reset)(jax.random.PRNGKey(0))
