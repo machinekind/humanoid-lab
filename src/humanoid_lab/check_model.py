@@ -16,7 +16,7 @@ jax/warp convention this repo uses elsewhere.
 Fails on NaN in qpos/qvel OR on |qvel| exceeding --max-qvel (default 100
 rad/s): MuJoCo's bad-qacc auto-reset keeps a diverging simulation
 huge-but-finite, so an isfinite check alone waves through gross
-instability. Adapted from w01-tek's training/wojtek_rl/check_model_mjx.py.
+instability.
 """
 
 from __future__ import annotations

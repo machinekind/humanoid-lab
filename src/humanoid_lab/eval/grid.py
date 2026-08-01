@@ -1,4 +1,4 @@
-"""Robustness grid: eval-only plant perturbations (port item 4.4).
+"""Robustness grid: eval-only plant perturbations.
 
 Three sim2real risks, probed by mutating a run's BUILT, customized model
 inside the eval process. No training code changes: `envs/` never imports
@@ -17,10 +17,8 @@ this module, and nothing here is reachable from `train.py`.
 branches on `lag_tau > 0 or torque_envelope is not None`, and that branch is
 where the two pipelines diverge: an unperturbed cell steps `env.step`
 itself, exactly as `./run.sh battery` does. There is no shared code path
-through a tiny lag value, and w01-tek's `hpc/stiff_grid.job` comment
-claiming every cell "runs through the SAME battery.py code path" is false in
-that sense -- verified against `wojtek_rl/battery.py:911`, which carries the
-same branch.
+through a tiny lag value, so any claim that every cell runs through the same
+rollout code is false in that sense.
 
 What IS true, and what `tests/integration/test_grid_env.py` proves, is the
 weaker property that makes the grid's numbers comparable: the explicit-PD
@@ -28,13 +26,9 @@ path reproduces the native pipeline within a stated tolerance as the lag
 goes to zero. See docs/configuration.md's "Robustness grid (eval-only)" for
 this repo's measured number.
 
-Ported from w01-tek's `training/wojtek_rl/battery.py:570-882`
-(`apply_kt_miscalibration`, `lag_coeff`, `lag_update`,
-`torque_envelope_limit`, `apply_torque_envelope`, `parse_torque_envelope`,
-`_torque_mode_model`, `_explicit_pd_substeps`, `make_lagged_rollout_fns`),
-split into its own module here rather than bolted onto `eval/battery.py`:
-the battery's job is the fixed number table, and 250 lines of plant
-surgery inside it would bury that.
+The plant surgery lives in its own module rather than bolted onto
+`eval/battery.py`: the battery's job is the fixed number table, and 250
+lines of plant surgery inside it would bury that.
 """
 
 from __future__ import annotations
@@ -208,9 +202,8 @@ def envelope_tag(torque_envelope) -> str:
 def cell_name(alpha: float, lag_tau: float, torque_envelope=None) -> str:
     """The filename one grid cell's battery JSON goes under.
 
-    `battery_a<alpha>_lag<ms>ms_env<tag>.json`, w01-tek's own convention
-    (`hpc/stiff_grid.job`). This function is the single writer of it and
-    `eval/grid_report.py::parse_cell_name` the single reader;
+    `battery_a<alpha>_lag<ms>ms_env<tag>.json`. This function is the single
+    writer of it and `eval/grid_report.py::parse_cell_name` the single reader;
     `tests/unit/test_grid.py` round-trips them so the two cannot drift.
 
     The lag is written in whole milliseconds, so two lags under 0.5 ms apart
@@ -276,7 +269,8 @@ def explicit_pd_substeps(
     `ctrl` is one control step's position setpoint, held for every substep:
     this env has no action-delay or latency machinery (see
     `envs/joystick.py`'s module docstring), so there is no mid-period ctrl
-    switch to reproduce the way w01-tek's `_step_with_latency` needs.
+    switch to reproduce. Adding latency machinery to the env means adding it
+    here too.
     """
 
     def _substep(carry, _):
@@ -409,8 +403,7 @@ def make_explicit_pd_rollout_fns(env, lag_tau: float, torque_envelope=None):
         # there (mjx_env.step writes the position target to ctrl every
         # substep, never a torque). rollout() reads rec["ctrl"] as a
         # setpoint to diff against qpos; left as a torque, tracking_err_rms
-        # comes out inflated by the kp ratio -- the symptom w01-tek's own
-        # comment records from validating against its native battery.
+        # comes out inflated by the kp ratio.
         data = data.replace(ctrl=motor_targets)
 
         contact = env._foot_contact(data)

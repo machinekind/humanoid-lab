@@ -1,5 +1,5 @@
 """Aggregate the robustness grid's per-cell battery JSONs into one markdown
-comparison table (port item 4.4).
+comparison table.
 
 Run: `./run.sh grid-report --runs runs/<name> [runs/<other> ...] [--out FILE]`
 
@@ -13,17 +13,15 @@ crashed, or was never submitted -- prints as MISSING rather than crashing
 the report. A cell that falls over under a harsh perturbation is an expected
 outcome of this probe, not a bug.
 
-Ported from w01-tek's `training/wojtek_rl/grid_report.py`. Two deliberate
-divergences from it, both about not inventing numbers:
+Two choices here, both about not inventing numbers:
 
-- w01-tek hardcodes a keeper's per-scenario vibration table as the reference.
-  This repo has no keeper yet, so the reference is the grid's OWN baseline
-  cell (alpha 1.0, lag 0, envelope none). With no baseline cell present the
-  vibration gate is not applied, and the report says so per cell.
-- w01-tek ranks runs by a scalar `kp` stamp to name the "stiffest surviving
-  run". There is no stiffness ladder here, and `run.json`'s
-  `actuator_gains.kp` is per-actuator, so there is no single number to rank
-  by. That summary is not ported.
+- The vibration reference is the grid's OWN baseline cell (alpha 1.0, lag 0,
+  envelope none), because this repo has no keeper policy to hardcode a
+  per-scenario table from. With no baseline cell present the vibration gate
+  is not applied, and the report says so per cell.
+- There is no "stiffest surviving run" summary. That needs a scalar
+  stiffness stamp to rank by, and `run.json`'s `actuator_gains.kp` is
+  per-actuator.
 """
 
 from __future__ import annotations
@@ -36,29 +34,26 @@ from pathlib import Path
 
 # -- gates -------------------------------------------------------------------
 #
-# W01-TEK QUADRUPED GATES, RE-DERIVE FOR A BIPED BEFORE TRUSTING.
+# QUADRUPED GATES, RE-DERIVE FOR A BIPED BEFORE TRUSTING.
 #
-# These four numbers come from w01-tek's stiffness-ladder gates (its
-# `hpc/stiff_ladder.job` run_gates, applied per grid cell by its
-# grid_report.py). They were derived on a 0.21 m four-bar quadruped that is
+# These four numbers were derived on a 0.21 m four-bar quadruped that is
 # statically stable standing still. Nothing about them has been re-derived
 # for a biped, whose velocity error, joint-velocity spectrum and torque
-# headroom all live on different scales. They are carried verbatim so the
-# grid produces a verdict on day one, and they are named and documented so
-# that verdict is readable as "w01-tek's bar", not "our bar". Re-derive each
+# headroom all live on different scales. They are here so the grid produces
+# a verdict on day one, and every report carries the caveat. Re-derive each
 # one against a keeper before a PASS here is allowed to mean anything.
 
-#: Mean |commanded - achieved| linear velocity per axis, m/s. w01-tek gated
-#: its `vel_err_overall` and strafe `vy_err` on this.
+#: Mean |commanded - achieved| linear velocity per axis, m/s. Gates
+#: `vel_err_overall` and the strafe scenario's `vy_err`.
 VEL_ERR_LIMIT = 0.20
 
 #: Multiple of the reference cell's per-scenario vibration index a cell may
-#: reach. w01-tek's reference was a named keeper's numbers; here it is the
-#: grid's own baseline cell (see the module docstring).
+#: reach. The reference is the grid's own baseline cell (see the module
+#: docstring).
 VIBRATION_MULT = 1.3
 
 #: Fraction of (step, joint) samples over 95% of the torque cap, pooled over
-#: every scenario. w01-tek gated its per-joint-group saturation on this.
+#: every scenario.
 SATURATION_LIMIT = 0.05
 
 #: The cell whose numbers the vibration gate is measured against: no
@@ -141,8 +136,8 @@ def gate_cell(battery: dict, reference_vibration: dict | None = None) -> CellVer
     1. No scenario fell.
     2. Every scenario's mean linear velocity error is under `VEL_ERR_LIMIT`
        on both axes. The YAW error is reported by the battery but NOT gated:
-       w01-tek's 0.20 is metres per second, there is no ported rad/s limit,
-       and inventing one would bless a number nobody derived.
+       `VEL_ERR_LIMIT` is metres per second, no rad/s limit has been
+       derived, and inventing one would bless a number nobody measured.
     3. Every scenario's vibration index is at most `VIBRATION_MULT` times
        the reference cell's number for that same scenario. Skipped, visibly,
        where no reference covers the scenario.
@@ -241,7 +236,7 @@ def _env_sort_key(tag: str):
 _HEADER = [
     "# Robustness grid report",
     "",
-    "Eval-only sim2real plant perturbations, port item 4.4. `alpha` is a Kt "
+    "Eval-only sim2real plant perturbations. `alpha` is a Kt "
     "miscalibration (the built model's PD gains and torque cap scaled "
     "together); `lag` is the actuator-bandwidth first-order torque lag, in "
     "milliseconds; `envelope` is the speed-dependent DRIVING-torque cap, "
@@ -262,7 +257,7 @@ _HEADER = [
     f"number per scenario; worst torque saturation < {SATURATION_LIMIT}. "
     "MISSING = the cell's battery run crashed or was never submitted.",
     "",
-    "**These are w01-tek quadruped gates. Re-derive them for a biped before "
+    "**These are quadruped gates. Re-derive them for a biped before "
     "trusting a PASS.** They were tuned on a statically stable 0.21 m "
     "four-bar quadruped; nothing here has been re-derived. See "
     "`eval/grid_report.py`'s gate constants.",

@@ -1,15 +1,15 @@
 """Fixed evaluation battery for a biped locomotion policy: one number-table
 per run so iterations are comparable. Run: ./run.sh battery --run runs/<name>
 
-Ported from w01-tek's wojtek_rl/battery.py (skeleton: load_checkpoint_policy
--> rollout -> scenario_result -> run_battery). Adapted from a 4-leg
-quadruped to asimov_v1's 2-foot biped and this repo's env contract
-(registry.make_env with robot_dir/preset_name/task.env read back from
-run.json's hydra_config, mirroring sizing/collect.py's _load_run/
-make_env_for_run pattern, rather than w01-tek's env_config-only rebuild).
-Dropped entirely: w01-tek's 4-leg diag/lateral foot-pair correlation,
-per-leg-joint-group splay/saturation, and the commanded-height concept
-(asimov has no height command -- see envs/joystick.py's module docstring).
+Shape: load_checkpoint_policy -> rollout -> scenario_result -> run_battery.
+The env is rebuilt through this repo's env contract (registry.make_env with
+robot_dir/preset_name/task.env read back from run.json's hydra_config,
+mirroring sizing/collect.py's _load_run/make_env_for_run pattern).
+
+There is no diagonal or lateral foot-pair correlation, no per-leg-joint-group
+splay or saturation, and no commanded-height concept: those are quadruped
+metrics, and asimov has no height command (see envs/joystick.py's module
+docstring).
 
 Scenarios (asimov command envelope from envs/joystick.py's default_config:
 x +-0.8 m/s, y +-0.6 m/s, yaw +-0.6 rad/s), all scripted, fixed seed
@@ -27,8 +27,8 @@ scenarios of the documented wall-clock length:
   spin_left     -- pure spin, wz=+0.5 rad/s held. 6 s.
   spin_right    -- pure spin, wz=-0.5 rad/s held. 6 s.
 
-Robustness grid (port item 4.4): --alpha, --lag-tau and --torque-envelope
-perturb the plant for one measurement. Any of them requires --out, so a
+Robustness grid: --alpha, --lag-tau and --torque-envelope perturb the
+plant for one measurement. Any of them requires --out, so a
 perturbed measurement cannot reach the canonical battery.json even by
 forgetting the flag. The mechanisms live in eval/grid.py and the
 aggregator in eval/grid_report.py; run_battery below holds the one branch
@@ -58,14 +58,14 @@ from humanoid_lab.eval.gait import gait_metrics
 # needed, so these are unit-tested directly in tests/unit/test_battery.py
 # (mirrors sizing/report.py's own pure-reducer pattern).
 
-# The reset transient every metric added by port items 4.1 to 4.3 excludes.
+# The reset transient the spin probes, gait KPIs and tracking error exclude.
 # rollout() starts recording on the first step after reset, and the opening
 # steps are the robot falling into its pose against a command it has not had
 # time to answer -- charging those to a KPI measures the reset, not the
-# policy. 50 steps is 1 s at asimov's ctrl_dt of 0.02 (it is a step count,
-# not a duration, exactly as w01-tek's TRACK_SETTLE_STEPS is). The pre-4.1
-# metrics keep scoring the whole record: changing what they average over
-# would change what an existing battery.json field means.
+# policy. 50 steps is 1 s at asimov's ctrl_dt of 0.02, and it is a step
+# count rather than a duration. The older metrics keep scoring the whole
+# record: changing what they average over would change what an existing
+# battery.json field means.
 SETTLE_STEPS = 50
 
 
@@ -82,9 +82,8 @@ def vibration_index(qvel_hist, dt: float, cutoff_hz: float = 5.0) -> float:
     velocity but vibrates (fast motor oscillation) is a reward problem, and
     it has a number. Measure the fraction of joint-velocity FFT power above
     5 Hz over an eval rollout" -- fbb_v2 scored 0.972 buzzing, 0.168 after
-    the reward fix that removed it). Same construction as w01-tek
-    wojtek_rl/battery.py's vibration_index; works on a (T,) single-joint
-    signal or a (T, n_joints) array pooled across joints.
+    the reward fix that removed it). Works on a (T,) single-joint signal or
+    a (T, n_joints) array pooled across joints.
     """
     v = np.asarray(qvel_hist, dtype=float)
     v = v - v.mean(axis=0, keepdims=True)
@@ -198,8 +197,8 @@ def tracking_error(ctrl_hist, qpos_hist, settle_steps: int = SETTLE_STEPS) -> di
 
     Only a position-servo preset makes this a servo error: under
     `ideal_torque`, ctrl is a torque in Nm and the subtraction is
-    dimensionally meaningless. run.json's `actuator_gains.model` (port item
-    4.3) is what tells a reader which one produced the run.
+    dimensionally meaningless. run.json's `actuator_gains.model` is what
+    tells a reader which one produced the run.
     """
     c = np.asarray(ctrl_hist, dtype=float)[settle_steps:]
     q = np.asarray(qpos_hist, dtype=float)[settle_steps:]
@@ -253,8 +252,8 @@ def scenario_result(
     r["vel_err_vy"] = round(float(err[1]), 4)
     r["vel_err_wz"] = round(float(err[2]), 4)
 
-    # Yaw actually swept against yaw asked for, over the post-settle window
-    # (port item 4.1). Reported on every row, not just the two spin probes:
+    # Yaw actually swept against yaw asked for, over the post-settle
+    # window. Reported on every row, not just the two spin probes:
     # it is a raw reading of the same body gyro every row already records,
     # and `turn`'s yaw budget is worth the same look. The pair is what makes
     # a spin row diagnosable -- progress alone cannot say whether a policy
@@ -278,12 +277,12 @@ def scenario_result(
             antiphase_score(rec["contact"][:, 0], rec["contact"][:, 1]), 3
         )
 
-    # Gait KPIs (port item 4.2). Raw metrics, folded into nothing: they are
+    # Gait KPIs. Raw metrics, folded into nothing: they are
     # here because velocity tracking error scores a skimming gait and a
     # stand-and-lift farm as healthy.
     r.update(gait_metrics(rec, settle_steps=SETTLE_STEPS))
 
-    # Servo error (port item 4.3), also raw.
+    # Servo error, also raw.
     track = tracking_error(rec["ctrl"], rec["qpos"], SETTLE_STEPS)
     r["tracking_err_rms"] = _round_or_none(track["rms"], 4)
     r["tracking_err_p95"] = _round_or_none(track["p95"], 4)
@@ -338,7 +337,7 @@ def battery_scenarios(dt: float) -> dict:
         vx = 0.5 if i < stop_switch else 0.0
         return np.array([vx, 0.0, 0.0])
 
-    # Spin probes (port item 4.1). One held pure-yaw command per direction,
+    # Spin probes. One held pure-yaw command per direction,
     # no translation, so the two rows differ in exactly one sign and a
     # chirality bug has nowhere to hide. 0.5 rad/s sits inside the +-0.6
     # yaw box with headroom: a probe pinned to the corner of the command
@@ -403,8 +402,7 @@ def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
 def _measurement_env_overrides(run: dict) -> dict:
     """The run's own task.env overrides, plus three measurement-only
     changes: pushes disabled (they contaminate vibration/slip/stand
-    metrics -- robustness is trained, not measured here, same rationale as
-    w01-tek wojtek_rl/battery.py's load_checkpoint_policy), the
+    metrics -- robustness is trained, not measured here), the
     command auto-resample effectively disabled (envs/joystick.py's
     step() resamples a random command every `command.resample_steps`
     control steps; left at its default that would clobber this battery's
@@ -502,8 +500,7 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
 
     `reset`/`step` are jax.jit(env.reset)/jax.jit(env.step) -- passed in
     (rather than jitted here) so callers compile once and reuse the same
-    jitted callables across every scenario (mirrors w01-tek
-    wojtek_rl/battery.py's rollout()).
+    jitted callables across every scenario.
 
     Returns (rec, fell_at, budget): `rec` maps signal name -> np.ndarray over
     the steps taken (through and including the step that trips `done`, if
@@ -543,8 +540,8 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         rec["contact"].append(contact)
         rec["foot_speed"].append(foot_speed)
         rec["tau"].append(np.asarray(d.actuator_force))
-        # Per-foot clearance and vertical velocity, for the gait KPIs (port
-        # item 4.2). foot_vel is already in hand for foot_speed above, so
+        # Per-foot clearance and vertical velocity, for the gait KPIs.
+        # foot_vel is already in hand for foot_speed above, so
         # its z channel costs nothing extra. Both are WORLD frame: clearance
         # is a height above the ground and touchdown speed is how hard the
         # foot hits it, and the ground does not rotate with the robot. (See
@@ -552,8 +549,8 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         # keyframe, not the floor.)
         rec["foot_clear"].append(np.asarray(env._foot_clearance(d)))
         rec["foot_vz"].append(foot_vel[:, 2])
-        # Setpoint and angle over the actuated joints, for the servo KPI
-        # (port item 4.3). d.ctrl is nu-long and env._qadr is the same
+        # Setpoint and angle over the actuated joints, for the servo KPI.
+        # d.ctrl is nu-long and env._qadr is the same
         # canonical actuated-joint order (robot/build.py injects actuators in
         # robot_spec.actuated_joints order), so the two line up column for
         # column.

@@ -55,8 +55,7 @@ def record_eval(metrics: dict, num_steps: int, eval_rewards: list, last_eval: di
     free-form override away, and its EpisodeMetricsLogger calls would read as
     NaN rewards -- NaN never beats the running best, so a few of them would
     fake a plateau and stop the run. A training call must therefore leave both
-    the reward history and the last-eval record untouched. w01-tek carries the
-    same guard for the same reason.
+    the reward history and the last-eval record untouched.
 
     The history is appended whether or not early stopping is enabled: it costs
     a float per eval, and keeping the filter and the recording as one unit is
@@ -113,7 +112,7 @@ def build_ppo_params(overrides, smoke: bool):
     return p
 
 
-# Contact-budget preflight (port item 2.2). Deliberately smaller than
+# Contact-budget preflight. Deliberately smaller than
 # check_contacts' own defaults (200 steps x 5 seeds): this runs in front of
 # every training job, and three seeds is what the fallen sweep's three
 # attitudes need. It is a warning system, not the sizing measurement -- use
@@ -260,7 +259,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # cfg.dr composes here (configs/dr); domain_rand gates whether it is
-    # actually applied, mirroring w01-tek's wojtek_rl/train.py.
+    # actually applied.
     dr_cfg = OmegaConf.to_container(cfg.dr, resolve=True)
     if cfg.domain_rand:
         training_params["randomization_fn"] = make_domain_randomize(
@@ -377,7 +376,7 @@ def main(cfg: DictConfig) -> None:
                 # What the BUILT model got, next to the `actuators` block
                 # above, which is what the config asked for. The two differ
                 # whenever actuators.overrides patches a gain: the override
-                # never appears in the preset yaml (port item 4.3).
+                # never appears in the preset yaml.
                 "actuator_gains": gains,
             },
             indent=2,

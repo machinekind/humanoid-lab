@@ -1,6 +1,6 @@
-"""Mirror augmentation against real models and a real env (port item 3.1).
+"""Mirror augmentation against real models and a real env.
 
-Two layers, mirroring w01-tek's training/tests/integration/test_symmetry.py.
+Two layers.
 
 1. Derivation. The joint signs are measured on the compiled model, never read
    off axis names, so this file pins what the measurement returns for both
@@ -145,7 +145,7 @@ def test_a_robot_with_no_symmetry_map_cannot_build_one(asimov):
 
 # -- the physical assumption -------------------------------------------------
 #
-# w01-tek's test_model_is_statically_mirror_symmetric, adapted. The
+# The
 # augmentation is only semantically right if the two sides of the robot are
 # each other's mirror image; the numbers below are what these two models
 # actually measure, so a re-export that breaks symmetry is visible here.
@@ -246,8 +246,8 @@ def test_the_flag_is_false_at_probability_zero(env_real):
 
 
 def test_the_maps_are_as_wide_as_the_observations_the_env_actually_builds(env_mirror):
-    """The validation w01-tek's docstring claims: the maps are sized from this
-    env's own catalog, so an obs list change cannot leave them stale."""
+    """The maps are sized from this env's own catalog, so an obs list change
+    cannot leave them stale."""
     state = env_mirror.reset(jax.random.PRNGKey(0))
 
     assert env_mirror._state_perm.shape == state.obs["state"].shape

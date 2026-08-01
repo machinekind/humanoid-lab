@@ -46,9 +46,9 @@ SCHEMA_KEYS = {
 )
 def test_rows_per_contact_matches_mujocos_own_accounting(cone, dim, rows):
     """A pyramidal cone costs 2*(dim-1) rows per contact and never fewer than
-    one; an elliptic cone costs dim. These are the numbers njmax is spent in,
-    and w01-tek's note that "one contact costs 6 rows at condim=4 with a
-    pyramidal cone" is the dim=4 row of this table."""
+    one; an elliptic cone costs dim. These are the numbers njmax is spent
+    in: one contact costs 6 rows at condim=4 with a pyramidal cone, the
+    dim=4 row of this table."""
     assert sim_budget.rows_per_contact(cone, dim) == rows
 
 
@@ -166,8 +166,8 @@ def test_budget_report_keeps_missing_peaks_as_null():
 
 
 def test_recommend_budget_clears_the_peak_at_the_stated_headroom():
-    """w01-tek sized its own pool at about 7x the measured peak. The rounding
-    is upward, so the recommendation never lands under the headroom it
+    """The sizing rule is about 7x the measured peak, and the rounding is
+    upward, so the recommendation never lands under the headroom it
     claims."""
     assert sim_budget.recommend_budget(12, headroom=7.0, step=8) >= 12 * 7.0
     assert sim_budget.recommend_budget(12, headroom=7.0, step=8) % 8 == 0

@@ -1,4 +1,4 @@
-"""The no-progress termination wired into the env (port item 1.5).
+"""The no-progress termination wired into the env.
 
 `envs/progress.py`'s math is unit-tested model-free in
 tests/unit/test_no_progress.py. What is tested here is the wiring: the info

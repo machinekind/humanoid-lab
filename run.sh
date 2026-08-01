@@ -8,12 +8,12 @@ case "${1:-}" in
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
-  # Warp contact/constraint budget measurement (port item 2.2). Forced onto
+  # Warp contact/constraint budget measurement. Forced onto
   # CPU like `check`: it is a sizing probe, and the jax backend is where the
   # active-contact count is readable without a GPU box. Passthrough args:
   # --robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out path.json].
   check-contacts) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_contacts "$@" ;;
-  # The split (port item 0.1, tests/unit/test_suite_split.py guards it):
+  # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
   test)  shift; "$PY" -m pytest tests/unit -q "$@" ;;
@@ -75,7 +75,7 @@ case "${1:-}" in
   # [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0].
   #
   # The last three are the robustness grid's eval-only plant perturbations
-  # (port item 4.4, see src/humanoid_lab/eval/grid.py). Any of them requires
+  # (see src/humanoid_lab/eval/grid.py). Any of them requires
   # --out and the CLI refuses without it: a perturbed measurement must never
   # overwrite the run's canonical battery.json. Cell filenames come from eval/grid.py's
   # cell_name, which is what `grid-report` aggregates, e.g.
@@ -83,7 +83,7 @@ case "${1:-}" in
   #     --out runs/r/grid/battery_a1.58_lag5ms_envnone.json
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
   # Aggregates runs/<name>/grid/*.json into a markdown table with PASS/FAIL
-  # per cell (port item 4.4). Passthrough args:
+  # per cell. Passthrough args:
   # --runs runs/<name> [runs/<other> ...] [--out path.md].
   grid-report) shift; "$PY" -m humanoid_lab.eval.grid_report "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
@@ -121,7 +121,7 @@ case "${1:-}" in
   # [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
-  # latest checkpoint (port items 5.1 and 5.2, see docs/deploy.md). Forced
+  # latest checkpoint (see docs/deploy.md). Forced
   # onto CPU like `battery`: the export runs mjx.forward once and no
   # physics. Both round-trip validations run against a temp directory, so a
   # failed export leaves the destination as it found it.

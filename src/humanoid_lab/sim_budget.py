@@ -5,9 +5,9 @@ config says it is.
 
 `naconmax_per_env` sizes ONE shared contact pool for the whole batch:
 `mjx.make_data(..., naconmax=naconmax_per_env * num_envs)` allocates it up
-front, so the product is a real device-memory line item -- w01-tek's 256-per-
-env pool is what ran a 4096-env job out of device memory. Contacts past the
-pool are dropped SILENTLY.
+front, so the product is a real device-memory line item. A 256-per-env pool
+has run a 4096-env job out of device memory. Contacts past the pool are
+dropped SILENTLY.
 
 `njmax` sizes the constraint rows of a single world and never multiplies by
 the env count. Rows past it apply no force, with no warning anywhere: no
@@ -22,10 +22,7 @@ ncon 499, nefc 2025 = 2 friction + 27 limit + 499*4 contact rows), identical
 whatever the robot is doing. What IS measurable there is the number of
 contacts actually penetrating, `active_contacts` below.
 
-Ported from w01-tek's wojtek_rl/terrain_scan.py (`nacon_of`/`nefc_of` at
-:520-535 and the `result["contacts"]` block at :940-965). One deliberate
-divergence: w01-tek's `nacon` counter is batch-wide, so it compares against
-the whole pool. Every peak here is PER WORLD, so `overflow` compares against
+Every peak reported here is PER WORLD, so `overflow` compares against
 `naconmax_per_env` and `rows_overflow` against `njmax`. `pool` is reported
 alongside as the memory number, not as a threshold.
 """
@@ -43,7 +40,7 @@ def rows_per_contact(cone: int, dim: int) -> int:
     """Constraint rows one contact of condim `dim` costs under `cone`.
 
     A pyramidal cone linearizes the friction cone into 2*(dim-1) rows -- 4 at
-    condim 3, 6 at condim 4 (w01-tek's own example), 10 at condim 6 -- and a
+    condim 3, 6 at condim 4, 10 at condim 6 -- and a
     frictionless contact (dim 1) still costs its one normal row. An elliptic
     cone costs dim rows flat.
     """
@@ -57,7 +54,7 @@ def rows_per_contact(cone: int, dim: int) -> int:
 def recommend_budget(peak: int, headroom: float, step: int) -> int:
     """A budget that clears `peak` by `headroom`, rounded up to `step`.
 
-    w01-tek sized its own pool at about 7x its measured peak (12 contacts ->
+    The inherited sizing rule is about 7x the measured peak (12 contacts ->
     88). Rounding is upward so the returned number never sits under the
     headroom it claims, and a zero peak still returns one full step: a
     zero-length buffer would drop every contact there is.
@@ -84,9 +81,8 @@ def live_peaks(data) -> tuple[int | None, int | None]:
     worlds. The jax impl carries an `nefc` too, but as a 0-d buffer size that
     never moves -- reporting it as a peak would make every jax run look like
     it had overflowed, so a 0-d value reads as "not measured" (None), never as
-    a number. w01-tek's `nefc_of` makes the same ndim check and returns 0; None
-    is used here so "no measurement" and "measured zero" stay distinguishable
-    in the json.
+    a number. None rather than 0, so "no measurement" and "measured zero"
+    stay distinguishable in the json.
     """
     impl = getattr(data, "_impl", None)
     if impl is None:

@@ -64,20 +64,21 @@ Everything else shapes training only.
 
 Two classifications carry an argument.
 
-`gait.freq` is consumed because the actor observes the gait clock. w01-tek
-refuses to export a phase-observing policy: its clock blends a walk and a
-trot over speed, and its runtime has no faithful copy. Ours is a fixed
-antiphase two-foot clock whose frequency is a lerp over the commanded speed
-fraction, so it ships in `gait_clock` and the runtime integrates it.
+`gait.freq` is consumed because the actor observes the gait clock. This
+clock is a fixed antiphase two-foot clock whose frequency is a lerp over the
+commanded speed fraction, so it ships in `gait_clock` and the runtime
+integrates it. A clock that blended a walk and a trot over speed would have
+no faithful runtime copy, and a phase-observing policy would have to be
+refused.
 `gait.swing_height`, `gait.duty` and `gait.air_time_cap` feed the reward's
 clearance targets, and the observation reads none of them.
 
 The pure command draws are training-only on a condition the code checks. An
 armed draw whose range leaves the trained box raises, because
 `command_low`/`command_high` would then understate what the policy trained
-under. w01-tek set its own fast range above its box deliberately, to pull a
-policy past a speed it deadlocked at. A run that wants that here widens
-`command.vx` to match.
+under. Setting a fast range above the box is a known way to pull a policy
+past a speed it deadlocks at; a run that wants that here widens `command.vx`
+to match.
 
 ### Refusals
 
@@ -106,11 +107,10 @@ The verb writes two files, by default into `runs/<name>/deploy/`:
   `hidden_<i>_bias` pairs of the actor MLP, as float32 numpy arrays.
 - `policy_meta.json` holds the contract above.
 
-The names are w01-tek's. PLAN.md records that keeper policies publish to a
-private HF repo under <hf-org> with the established flat layout, and names no
-artifact files, so these two carry over from w01-tek. The value network
-stays behind: the critic reads privileged observations the robot does not
-have.
+The filenames are inherited. PLAN.md records that keeper policies publish
+to a private HF repo under <hf-org> with the established flat layout and names
+no artifact files, so nothing downstream pins them. The value network stays
+behind: the critic reads privileged observations the robot does not have.
 
 The export runs on CPU. It builds the run's env through `eval/battery.py`'s
 loader, so the robot, preset, actuator overrides and network shape all come
@@ -138,8 +138,8 @@ carrying the measured error and the bound. The check is an explicit raise
 rather than an assert on purpose: `python -O` strips asserts, and a stripped
 check would ship unvalidated artifacts. On a joint target in radians 1e-4 is
 0.006 degrees, three orders below the 0.01 rad encoder noise the policy
-trains under. The residual is float32 reassociation between JAX and numpy. w01-tek
-measured 3.9e-5 on a policy with large weights. Measured here on
+trains under. The residual is float32 reassociation between JAX and numpy;
+a policy with large weights has measured 3.9e-5. Measured here on
 `runs/hpc_smoke_roboto`, a 512-256-128 actor: 4.9e-06 for validation one
 and 8.1e-07 for validation two. Every export prints its own numbers.
 

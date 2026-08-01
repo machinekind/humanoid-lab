@@ -6,9 +6,6 @@ tests/unit builds or steps a model: compiling an MjSpec, uploading a model to
 the device, constructing a task env, or stepping MJX costs anywhere from
 hundreds of milliseconds to tens of seconds each. A test that needs any of
 those belongs in tests/integration, which `./run.sh test-slow` runs.
-
-Ported from w01-tek's training/tests/unit/test_suite_split.py, with this
-repo's names substituted for w01-tek's.
 """
 
 import re

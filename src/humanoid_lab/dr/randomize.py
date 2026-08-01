@@ -1,9 +1,9 @@
 """Domain randomization, brax randomization_fn convention.
 
-Ported from w01-tek's wojtek_rl/randomize.py: a vmapped function builds
-per-environment copies of the physics fields, then tree_replace produces a
-batched model plus an in_axes template. Name-parametrized instead of
-hardcoded to one robot: the floor geom is found by searching the model for
+A vmapped function builds per-environment copies of the physics fields,
+then tree_replace produces a batched model plus an in_axes template.
+Nothing is hardcoded to one robot: the floor geom is found by searching the
+model for
 the plane type (error if none/multiple, overridable by name), the base body
 is whichever body holds the model's one free joint, and the foot geoms come
 from the RobotSpec instead of a robot-specific name list.

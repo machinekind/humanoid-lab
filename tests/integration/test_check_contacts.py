@@ -1,4 +1,4 @@
-"""Tests for check_contacts.py, the contact-budget measurement (port item 2.2).
+"""Tests for check_contacts.py, the contact-budget measurement.
 
 The measurement itself builds a model and steps MJX, so it lives here. The
 pure arithmetic it reports against (`sim_budget.recommend_budget`) is unit

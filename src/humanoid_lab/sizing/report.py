@@ -16,9 +16,8 @@ checkpoint: this module needs neither). Writes `<run>/sizing_report.md` and
 group_metrics, match_catalog_to_groups, render_percentile_table,
 render_report_markdown) take plain numpy arrays / dicts in, dict/str out --
 no npz file, matplotlib or robot model needed, so these are unit-tested
-directly in test_sizing_report.py (w01-tek report.py's own pattern: see
-PLAN.md's pointer at ~/git/machinekind/w01-tek/training/wojtek_rl/report.py).
-plot_torque_speed_scatter is the one function that touches matplotlib.
+directly in test_sizing_report.py. plot_torque_speed_scatter is the one
+function that touches matplotlib.
 """
 
 from __future__ import annotations
@@ -41,8 +40,7 @@ _PERCENTILES = (50, 90, 95, 99)
 def abs_percentiles(values) -> dict:
     """P50/P90/P95/P99/max of |values|, flattened over every axis.
 
-    Empty input -> every field None (matches w01-tek's torque_percentiles
-    convention for "no samples" rather than raising).
+    Empty input -> every field None ("no samples" rather than raising).
     """
     a = np.abs(np.asarray(values, dtype=float)).ravel()
     if a.size == 0:
@@ -74,9 +72,9 @@ def group_metrics(tau, omega, joint_names, joint_groups: dict) -> dict:
     """group_name -> {"tau", "omega", "mech_power": abs_percentiles(...),
     "n_samples": pooled sample count (steps * joints in the group)}.
 
-    mech_power is |tau*omega| per (step, joint) sample, matching w01-tek
-    report.py's power_percentiles element-wise convention -- NOT the env's
-    sizing/mech_power metric (a per-step scalar summed over every joint);
+    mech_power is |tau*omega| per (step, joint) sample, element-wise --
+    NOT the env's sizing/mech_power metric (a per-step scalar summed over
+    every joint);
     this report reduces the raw per-joint rollout, not the env's own
     running metrics, so it can be re-sliced per joint group.
     """

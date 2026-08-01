@@ -1,9 +1,5 @@
 """plateau_stop and record_eval: the early-stopping rule, model-free.
 
-Port item 2.1 (see docs/port-details.md). Ported from w01-tek's
-training/tests/unit/test_early_stop.py, with the boundary and
-patience-off-by-one cases added.
-
 The decision is a pure function of a list of eval rewards, so the whole rule
 is tested here on synthetic numbers. What feeds that list is record_eval,
 which drops the progress calls that carry no eval reward -- also a pure

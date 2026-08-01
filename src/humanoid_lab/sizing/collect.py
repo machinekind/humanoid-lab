@@ -10,10 +10,10 @@ same task/robot/preset/env overrides, read back from run.json's
 hydra_config -- the one part of run.json that carries the un-resolved
 per-run knobs train.py itself passed to make_env), loads the checkpoint's
 policy via policy_io.load_policy, and rolls CPU episodes using the env's
-own command sampling (Joystick._sample_command / command.resample_steps --
-no scripted battery here, unlike w01-tek's battery.py: sizing wants the
-torque/speed distribution the trained gait actually produces under its own
-command envelope, not a handful of scripted scenarios).
+own command sampling (Joystick._sample_command / command.resample_steps).
+There is no scripted scenario list here, unlike eval/battery.py: sizing
+wants the torque/speed distribution the trained gait actually produces
+under its own command envelope.
 
 Deviation from train.py's exact env construction: train.py additionally
 overrides env_overrides["sim"]["num_envs"] to the PPO batch size, to size

@@ -1,4 +1,4 @@
-"""The key ledger of the fail-closed deploy contract (port item 5.1).
+"""The key ledger of the fail-closed deploy contract.
 
 These are the tests that ARE the feature: an env option nobody classified
 must not be able to ship. The completeness walk below fails the moment

@@ -51,9 +51,9 @@ BATTERY = {
 }
 
 
-# The grid block eval/battery.py stamps on every battery.json (port item
-# 4.4). It is not a scenario, and a report rendered from a perturbed cell
-# has to say which plant produced its numbers.
+# The grid block eval/battery.py stamps on every battery.json. It is not a
+# scenario, and a report rendered from a perturbed cell has to say which
+# plant produced its numbers.
 NATIVE_GRID = {"alpha": 1.0, "lag_tau": 0.0, "torque_envelope": None, "path": "native"}
 PERTURBED_GRID = {
     "alpha": 1.58, "lag_tau": 0.005, "torque_envelope": [5.0, 15.0], "path": "explicit_pd",
@@ -204,7 +204,7 @@ def test_a_battery_without_a_contacts_block_still_renders():
     assert "# Eval report" in md
 
 
-# -- the spin probes (port item 4.1) -----------------------------------------
+# -- the spin probes ---------------------------------------------------------
 
 _SPIN_LEFT = {
     **GOOD_ROW, "completed": True,
@@ -244,12 +244,12 @@ def test_the_spin_section_reports_yaw_asked_for_next_to_yaw_delivered():
 
 
 def test_a_battery_without_spin_rows_renders_no_spin_section():
-    """battery.json files written before port item 4.1."""
+    """battery.json files written before the spin probes existed."""
     md = render_markdown(BATTERY)
     assert "## Spin probes" not in md
 
 
-# -- the gait KPIs (port item 4.2) -------------------------------------------
+# -- the gait KPIs -----------------------------------------------------------
 
 _WALKED = {
     **GOOD_ROW,
@@ -293,11 +293,11 @@ def test_a_scenario_that_never_swung_renders_dashes_not_zeros():
 
 
 def test_a_battery_without_gait_kpis_renders_no_gait_section():
-    """battery.json files written before port item 4.2."""
+    """battery.json files written before the gait KPIs existed."""
     assert "## Gait KPIs" not in render_markdown(BATTERY)
 
 
-# -- the servo tracking error (port item 4.3) --------------------------------
+# -- the servo tracking error ------------------------------------------------
 
 _TRACKED = {**GOOD_ROW, "tracking_err_rms": 0.0412, "tracking_err_p95": 0.0930}
 _UNTRACKED = {**GOOD_ROW, "tracking_err_rms": None, "tracking_err_p95": None}
@@ -322,5 +322,5 @@ def test_a_scenario_that_never_settled_renders_a_dash():
 
 
 def test_a_battery_without_a_tracking_error_renders_no_servo_section():
-    """battery.json files written before port item 4.3."""
+    """battery.json files written before the tracking error existed."""
     assert "## Servo tracking" not in render_markdown(BATTERY)

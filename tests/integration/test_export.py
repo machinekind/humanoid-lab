@@ -1,4 +1,4 @@
-"""The validating exporter, end to end (port item 5.2).
+"""The validating exporter, end to end.
 
 The checkpoint here is a real one: a PPO network initialized at random,
 saved with brax's own checkpoint machinery and loaded back through
@@ -6,10 +6,10 @@ saved with brax's own checkpoint machinery and loaded back through
 eval` use. Only the weights are untrained, so every shape, every
 serialization quirk and every load-time workaround is the production one.
 
-The destination assertions are the point of the item: w01-tek's exporter
-writes its artifacts and validates afterwards, so a failure leaves bad
-files on disk. Ours validates against a temp directory, and a failed
-export leaves the destination untouched.
+The destination assertions are the point. The exporter validates against a
+temp directory, so a failed export leaves the destination untouched. Writing
+the artifacts first and validating afterwards would leave bad files on
+disk.
 """
 
 from __future__ import annotations

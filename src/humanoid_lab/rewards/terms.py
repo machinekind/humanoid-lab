@@ -1,17 +1,15 @@
 """Reward term library: one pure function per reward component.
 
-Ported from w01-tek's wojtek_rl/env.py `_get_reward`. Each function reads
-only generic arrays (sensor readings, qpos/qvel slices already gathered by
-the caller, actions, precomputed spec-derived indices) -- never a joint,
-site or body name -- so the same library works for any robot/task that
-assembles its own inputs.
+Each function reads only generic arrays (sensor readings, qpos/qvel slices
+already gathered by the caller, actions, precomputed spec-derived indices)
+-- never a joint, site or body name -- so the same library works for any
+robot/task that assembles its own inputs.
 
-Dropped (quadruped/w01-tek-only, do not port): contact_match (diagonal-pair
-matching), high_step, height_tracking (variable stand height + its height
-table), splay/knee terms. feet_phase's gait clock is a biped two-foot
-antiphase clock instead of w01-tek's 4-leg walk/trot blend; that clock lives
-in envs/joystick.py, not here -- this module only scores the resulting
-clearance error.
+Absent on purpose, because they are quadruped-only: contact_match
+(diagonal-pair matching), high_step, height_tracking (variable stand height
+plus its height table), and the splay/knee terms. feet_phase's gait clock is
+a biped two-foot antiphase clock; that clock lives in envs/joystick.py, not
+here -- this module only scores the resulting clearance error.
 
 The two velocity-tracking terms are the one exception to one-function-per-
 component: they split into a squared error, a width, and the exp kernel that
@@ -138,10 +136,10 @@ def feet_apex(swing_apex, first_contact, apex_target: float):
     """Pay each completed swing for how close its PEAK clearance came to
     `apex_target`, once, on the step the foot lands.
 
-    The duration-averaged clearance terms (feet_phase here, high_step in
-    w01-tek) tolerate a long 1.5-2 cm skim that collects nearly as much as a
-    crisp arc, so the optimizer skims. Pricing the peak instead got w01-tek 3
-    to 5 cm swings and 30 to 70% better grip. Clipped at the target: the term
+    A duration-averaged clearance term such as feet_phase tolerates a long
+    1.5-2 cm skim that collects nearly as much as a crisp arc, so the
+    optimizer skims. Pricing the peak instead has measured 3 to 5 cm swings
+    and 30 to 70% better grip. Clipped at the target: the term
     asks for an apex, it does not pay for exceeding it.
 
     `swing_apex` is the caller's running maximum over the swing (the env
@@ -163,7 +161,7 @@ def feet_landing(foot_vz, foot_clearance, glide_height: float):
     above the floor scores 0 whatever its speed.
 
     The physical reference for touchdown softness is free fall over the glide
-    band: sqrt(2*9.81*0.03) ~ 0.77 m/s at w01-tek's 0.03 m.
+    band: sqrt(2*9.81*0.03) ~ 0.77 m/s at a 0.03 m band.
     """
     return jp.sum(
         jp.square(jp.clip(foot_vz, None, 0.0))

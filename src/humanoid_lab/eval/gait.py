@@ -1,8 +1,7 @@
 """Swing-apex and touchdown-softness KPIs from a battery rollout record.
 
-Ported from w01-tek's wojtek_rl/courses/scoring.py::gait_metrics (port
-item 4.2). Pure numpy: per-foot clearance and vertical velocity arrays in, a
-dict of numbers out, so this is unit-tested directly in
+Pure numpy: per-foot clearance and vertical velocity arrays in, a dict of
+numbers out, so this is unit-tested directly in
 tests/unit/test_gait_metrics.py with no env, model or checkpoint.
 
 These are RAW METRICS. Nothing here folds into a score, a gate, or the
@@ -19,10 +18,10 @@ from __future__ import annotations
 
 import numpy as np
 
-# Clearance above which a foot counts as airborne, metres. w01-tek's 5 mm
-# ground band, kept as-is.
+# Clearance above which a foot counts as airborne, metres. An inherited
+# 5 mm ground band, unchanged.
 #
-# One caveat this repo has and w01-tek does not: _foot_clearance is measured
+# One caveat: _foot_clearance is measured
 # against the RESET KEYFRAME's site height, not the floor, and the keyframes
 # float the robot a few mm (4.92 mm on asimov_v1, 3.11 mm on roboto_origin).
 # A planted foot therefore reads about -5 mm, so this 5 mm band sits ~10 mm

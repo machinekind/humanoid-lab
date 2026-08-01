@@ -1,4 +1,4 @@
-"""feet_apex and feet_landing wired into the env (port item 1.7).
+"""feet_apex and feet_landing wired into the env.
 
 The two terms' math is unit-tested model-free in tests/unit/test_rewards.py.
 What is tested here is the wiring: where the swing-apex tracker sits in
@@ -151,9 +151,9 @@ def test_the_new_terms_are_off_by_default(env):
     assert r.scales.feet_landing == 0.0
 
 
-def test_the_new_tuning_keys_carry_w01tek_starting_values(env):
-    """0.05 m of apex and a 0.03 m glide band are w01-tek's numbers for a
-    0.21 m four-bar leg. Re-derive both for asimov's leg."""
+def test_the_new_tuning_keys_carry_their_starting_values(env):
+    """0.05 m of apex and a 0.03 m glide band are untuned starting values
+    for a 0.21 m four-bar quadruped leg. Re-derive both for asimov's leg."""
     r = env._config.reward
     assert r.apex_target == 0.05
     assert r.glide_height == 0.03

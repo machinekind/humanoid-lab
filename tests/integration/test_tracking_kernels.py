@@ -1,7 +1,7 @@
 """The velocity-tracking kernel block of `Joystick._compute_rewards`.
 
-Port items 1.1 to 1.4 (see docs/port-details.md): `tracking_product`,
-`tracking_relative`, `tracking_far_weight`, and `shaping_tracking_gate`. All
+Four flags: `tracking_product`, `tracking_relative`,
+`tracking_far_weight`, and `shaping_tracking_gate`. All
 four are static config read at trace time, so a test flips the flag on the
 live env and calls `_compute_rewards` again -- no rebuild, one model for the
 whole file.
@@ -265,13 +265,11 @@ def test_tracking_far_is_live_under_absolute_kernels(env, reset_state):
 
 
 def test_tracking_far_is_live_under_relative_kernels(env, reset_state):
-    """The regression test, ported from w01-tek
-    (training/tests/integration/test_env.py:151, commit 042ada4). The far
-    mix-in must blend into the relative kernels too. It used to apply only in
-    the absolute branch, so terrain_blind_v3 (tracking_relative with
-    tracking_far dropped as inert) lost the far-field gradient that fixed
-    stiff_b's dead spin. A robot at rest under a pure-spin command must score
-    visibly higher tracking_ang_vel with the blend on."""
+    """The far mix-in must blend into the relative kernels too. Applied only
+    in the absolute branch, a run using tracking_relative loses the far-field
+    gradient entirely, which is what cures a dead spin. A robot at rest under
+    a pure-spin command must score visibly higher tracking_ang_vel with the
+    blend on."""
     spin = (0.0, 0.0, 1.5)
     with reward_flags(env, tracking_relative=True):
         bare = rewards_for(env, reset_state, spin)
@@ -342,7 +340,7 @@ def test_the_gate_multiplies_feet_air_time_by_the_linear_kernel(env, reset_state
 
 
 def test_the_gate_multiplies_feet_apex_by_the_linear_kernel(env, reset_state):
-    """feet_apex (port item 1.7) joins the gated set: paying for a tall
+    """feet_apex joins the gated set: paying for a tall
     swing while the command goes unserved is the same stand-and-lift income
     the gate exists to remove."""
     ungated = landing_rewards_for(env, reset_state, _MIXED_CMD)
@@ -355,10 +353,10 @@ def test_the_gate_multiplies_feet_apex_by_the_linear_kernel(env, reset_state):
 
 
 def test_the_gate_pays_nothing_for_lifting_legs_while_not_tracking(env, reset_state):
-    """The stand-and-lift strategy the gate exists to kill: w01-tek's v3
-    forensics found standing with one leg raised earning about 1.8 reward per
-    step against honest walking's 0.25, because the shaping terms paid on the
-    command alone."""
+    """The stand-and-lift strategy the gate exists to kill. Standing with one
+    leg raised has been measured earning about 1.8 reward per step against
+    honest walking's 0.25, because the shaping terms paid on the command
+    alone."""
     ungated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD)
     gated = landing_rewards_for(env, reset_state, _UNTRACKED_CMD, shaping_tracking_gate=True)
 

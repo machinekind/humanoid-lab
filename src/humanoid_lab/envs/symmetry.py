@@ -1,15 +1,15 @@
-"""Left/right mirror maps for the observation and action spaces (port 3.1).
+"""Left/right mirror maps for the observation and action spaces.
 
 Mirroring is about the robot's own xz-plane (y -> -y). Left and right joints
 swap; vectors mirror as (x,-y,z) and pseudo-vectors (angular rates) as
 (-x,y,-z); the command mirrors as (vx,-vy,-wz); the gait clock's feet swap.
 
-Ported from w01-tek's wojtek_rl/symmetry.py with two deliberate changes.
+Two properties this module holds to.
 
 1. The joint SIGNS are derived numerically from the compiled model instead of
-   being read off axis conventions. w01-tek's module hardcodes a per-leg
-   JOINT_SIGN triple justified by its XML's axes; no naming or axis rule
-   survives both of our robots. Measured 2026-07-31: asimov_v1 mirrors with
+   being read off axis conventions. A hardcoded per-leg sign triple justified
+   by one robot's XML axes does not survive both of our robots: no naming or
+   axis rule fits them both. Measured 2026-07-31: asimov_v1 mirrors with
    sign -1 on all twelve leg joints (its left/right pitch hinges carry
    opposite local y-axes), while roboto_origin needs -1 on the thigh
    yaw/roll and ankle roll and +1 on the thigh pitch, knee and ankle pitch
@@ -17,10 +17,9 @@ Ported from w01-tek's wojtek_rl/symmetry.py with two deliberate changes.
    yaw/roll pair). A rule fitted to either robot is wrong on the other.
 
 2. The assembled observation map is validated against the env's OWN
-   component sizes, not a static size table. w01-tek's docstring claims that
-   check; its code compares against a hardcoded COMPONENT_SIZES dict, which
-   cannot notice a robot whose joint count or foot count differs from the
-   table's.
+   component sizes. A hardcoded COMPONENT_SIZES dict would be the
+   alternative, and it cannot notice a robot whose joint count or foot count
+   differs from the table's.
 
 Everything below is plain numpy over names and shapes, so the algebra half
 is unit-testable with no model (tests/unit/test_symmetry.py) and the
@@ -50,10 +49,11 @@ PROBE_DELTA = 0.05
 # export is asymmetric by 1.0e-4 m (a right ankle-pitch link offset 0.1 mm in
 # y) and its worst fit residual is 5.0e-6 m, twenty times inside the budget;
 # roboto_origin measures 5.9e-7 m static and 1.8e-6 m of fit. The
-# discrimination floor of 100 is w01-tek's. The worst margin measured on
-# either robot is 290, on roboto_origin's centerline torso yaw, whose probe
-# point (the subtree centre of mass below it) sits close to its own axis;
-# asimov_v1's tightest is 770, at the hip yaw, for the same reason.
+# discrimination floor of 100 is an inherited starting value. The worst
+# margin measured on either robot is 290, on roboto_origin's centerline
+# torso yaw, whose probe point (the subtree centre of mass below it) sits
+# close to its own axis; asimov_v1's tightest is 770, at the hip yaw, for
+# the same reason.
 MAX_FIT_RESIDUAL = 1e-4
 MIN_DISCRIMINATION = 100.0
 
@@ -331,7 +331,7 @@ def component_maps(jperm, jsign, foot_perm) -> dict:
         # the joint's own sign.
         "actuator_force": joint,
         # (vx, vy, wz). Fixed at three channels: a task that adds a fourth
-        # (w01-tek commands a stand height) fails the size check in
+        # (a commanded stand height, say) fails the size check in
         # obs_mirror rather than mirroring the wrong slots.
         "command": (np.arange(3), np.array([1.0, -1.0, -1.0], dtype=np.float32)),
         # cos(feet) ++ sin(feet): swapping the feet swaps which foot owns

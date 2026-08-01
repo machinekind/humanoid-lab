@@ -235,14 +235,14 @@ exactly.
 | Key | Default | Meaning |
 |---|---:|---|
 | `tracking_sigma` | `0.25` | Width of the absolute kernel, in (m/s)² and (rad/s)². |
-| `tracking_product` | `false` | Multiply the two kernels into each other: `k_lin, k_ang = k_lin*k_ang, k_ang*k_lin`. Additive tracking pays the easy half of a command — a robot that ignores a pure-spin command still earns the full `tracking_lin_vel`, since standing still tracks the zero linear command perfectly (w01-tek measured that at about 63% of an ideal spin's payout). With the product, full pay needs the whole command tracked. |
-| `tracking_relative` | `false` | Score the fraction of the command tracked instead of the absolute error: the width becomes `tracking_rel_sigma * max(\|cmd\|, floor)²`. The absolute kernel pays only within about `√tracking_sigma` of the target whatever the target's size, so a fast command's reward cliff is out of exploration's reach — w01-tek's policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under a 1.0 one. |
-| `tracking_rel_sigma` | `0.25` | Dimensionless width of the relative kernel. A w01-tek quadruped starting point: its terrain presets later widened this to `0.5` because the narrow kernel rounded partial tracking to zero. |
+| `tracking_product` | `false` | Multiply the two kernels into each other: `k_lin, k_ang = k_lin*k_ang, k_ang*k_lin`. Additive tracking pays the easy half of a command — a robot that ignores a pure-spin command still earns the full `tracking_lin_vel`, since standing still tracks the zero linear command perfectly (measured at about 63% of an ideal spin's payout). With the product, full pay needs the whole command tracked. |
+| `tracking_relative` | `false` | Score the fraction of the command tracked instead of the absolute error: the width becomes `tracking_rel_sigma * max(\|cmd\|, floor)²`. The absolute kernel pays only within about `√tracking_sigma` of the target whatever the target's size, so a fast command's reward cliff is out of exploration's reach — one measured policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under a 1.0 one. |
+| `tracking_rel_sigma` | `0.25` | Dimensionless width of the relative kernel. A quadruped starting point; a narrow kernel rounds partial tracking to zero, and on terrain this had to widen to `0.5`. |
 | `tracking_rel_floor_lin` | `0.3` | Floor on the linear relative denominator, m/s. Keeps a near-zero command from sharpening the kernel to a point and dividing by zero. |
-| `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role. w01-tek's terrain presets later widened this to `0.7`. |
+| `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role; on terrain this had to widen to `0.7`. |
 | `tracking_far_weight` | `0.0` | Mix a wide exponential into both kernels: `(1-w)*kernel + w*exp(-err²/tracking_far_sigma)`. Applies in the absolute and the relative branch alike, and the far kernel stays absolute in both. `exp(-err²/σ)` is gradient-free a few sigma out, so a capability the policy never explored gets no pull toward the command; the wide kernel keeps a usable gradient at range without moving the optimum or leaving `[0, 1]`. **This term alone creates a standing deadlock**: at a yaw rate error of 0.8 rad/s it pays `0.25*exp(-0.64/2.5)`, about 19% of the maximum angular reward, for standing still, and that gradient is weaker than the penalties a pivot attempt incurs. Turn it on only together with `tracking_product` or `tracking_relative`. |
 | `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
-| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which made stand-and-lift the top income under a command in w01-tek's `terrain_blind_v3`: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
+| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which has made stand-and-lift the top income under a command on a quadruped run: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
 
 ## Orientation tolerance cone (`task.env.reward`)
 
@@ -255,8 +255,8 @@ penalty's own slope.
 Tilt here is measured against **gravity**, not against the local surface. A
 flat-referenced penalty therefore taxes the body pitch that locomotion needs
 — leaning into an acceleration, or climbing — while a real nosedive stays far
-outside any cone worth setting. w01-tek runs 20 degrees and rejected 10 for
-that reason.
+outside any cone worth setting. 20 degrees is a workable cone; 10 was
+measured too tight for that reason.
 
 | Key | Default | Meaning |
 |---|---:|---|
@@ -270,9 +270,9 @@ Two terms shape what a swing looks like, both at weight 0 by default.
 **peak** clearance came to `apex_target`. The env tracks that peak in
 `info["swing_apex"]`: a running maximum while the foot is airborne, read at
 first contact, cleared afterwards. Duration-averaged clearance terms —
-`feet_phase` here, `high_step` in w01-tek — tolerate a long 1.5 to 2 cm skim
+`feet_phase` here — tolerate a long 1.5 to 2 cm skim
 that collects nearly as much as a crisp arc, so the optimizer skims. Pricing
-the peak got w01-tek 3 to 5 cm swings and 30 to 70% better grip. The term is
+the peak has measured 3 to 5 cm swings and 30 to 70% better grip. The term is
 in the `shaping_tracking_gate` set.
 
 `feet_landing` is a penalty on downward foot speed weighted by closeness to
@@ -298,8 +298,8 @@ measurement and the deferred fix are in
 |---|---:|---|
 | `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
 | `scales.feet_landing` | `0.0` | Weight of the soft-landing penalty (negative when on). `0` = off. |
-| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for asimov's leg** — this is w01-tek's number for a 0.21 m four-bar leg, and our own `gait.swing_height` asks for 0.08 m. |
-| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`; w01-tek's number, same leg. |
+| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for asimov's leg** — this is a starting value for a 0.21 m four-bar quadruped leg, and our own `gait.swing_height` asks for 0.08 m. |
+| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`; a starting value for the same leg. |
 
 ## Settled pose anchor (`task.env.real_pose_ref`)
 
@@ -307,8 +307,8 @@ Off by default. `pose` and `stand_still` both score a deviation from
 `_default_pose` — the reset keyframe's **commanded** joint values. Under
 gravity and finite gains the robot comes to rest below that command, so the
 deviation never reaches zero and both terms charge a floor no policy can
-remove. w01-tek measured 0.343 rad of summed sag, about 97% of its entire
-standing residual. `roboto_origin`'s `home` keyframe settles 0.065 rad off
+remove. Measured on the quadruped predecessor: 0.343 rad of summed sag,
+about 97% of its entire standing residual. `roboto_origin`'s `home` keyframe settles 0.065 rad off
 its command (0.015 rad at the knee), which at the stock `scales.stand_still`
 of `-0.5` is 0.032 of standing penalty per step that exists only because the
 anchor is wrong. Each actuator preset sags differently, so the floor also
@@ -335,8 +335,7 @@ the flag is on.
 `ctrl_from_action` centers on and what the `joint_pos` observation subtracts.
 Only the reward reference and the reset pose change. Re-centering the action
 space on a sagged pose would silently change what a zero action commands and
-what the policy reads back; w01-tek keeps the same separation between its ctrl
-anchor and its pose reference.
+what the policy reads back.
 
 Two details are load-bearing:
 
@@ -351,8 +350,8 @@ Two details are load-bearing:
   radian target against them does nothing at all. Reading the angle envelope
   directly is what keeps the two models on the same anchor.
 - The settle forces each actuator's `gaintype`/`biastype`/`ctrllimited` as
-  well as its gain and bias parameters. This diverges from w01-tek, whose
-  actuators are always position servos. An `ideal_torque` preset injects
+  well as its gain and bias parameters, because a torque preset's params are
+  not a servo's. An `ideal_torque` preset injects
   `biastype NONE` actuators whose ctrl is a torque; overwriting the parameter
   arrays alone would leave `force = 400*ctrl` and settle a different robot.
 
@@ -368,10 +367,9 @@ snapshot. **Turn this on only for a robot whose reset keyframe is a standing
 equilibrium**; `roboto_origin`'s `home` is (base height flat to 1e-5 m out to
 ten simulated seconds), and asimov_v1's are not, pending a balanced keyframe.
 
-w01-tek's version settles one rung per commanded stand height and interpolates
-the anchor on the command. This repo has no height command, so the table
-degenerates to the single settle above. If a height command ever lands here,
-that table is the extension.
+This repo has no height command, so one settle is enough. If a height
+command ever lands here, the extension is a grid: settle a rung per
+commanded stand height and interpolate the anchor on the command.
 
 | Key | Default | Meaning |
 |---|---:|---|
@@ -413,7 +411,7 @@ and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
 | Key | Default | Meaning |
 |---|---:|---|
 | `enable` | `false` | Off changes nothing: no info state, no metrics, and no RNG key is split, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
-| `grace_sec` | `2.0` | No hazard for this long after a reset or a command resample. **Re-derive for a biped.** w01-tek's number, and the one most likely wrong here: turning a two-legged gait around takes longer than turning a 0.21 m four-bar quadruped's. |
+| `grace_sec` | `2.0` | No hazard for this long after a reset or a command resample. **Re-derive for a biped.** A quadruped starting value, and the one most likely wrong here: turning a two-legged gait around takes longer than turning a 0.21 m four-bar quadruped's. |
 | `ema_sec` | `1.0` | Smoothing horizon of the progress measure, seconds. Long enough that one bad stride does not arm the cut. |
 | `risk_below` | `0.5` | The hazard starts below this fraction of the commanded speed. **Re-derive for a biped**, together with `grace_sec`: 50% of demand may be a lot to ask of a humanoid inside the grace window. |
 | `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
@@ -428,10 +426,10 @@ armed on its first step, and dead again within a second. `envs/wrappers.py`'s
 `ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
 `steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
 `no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
-`wrap_for_brax_training` itself, unchanged. w01-tek does this in its terrain
-respawn wrapper, and reseeds only the EMA; zeroing the counter, so the grace
-window comes back too, is a deliberate improvement. Any other wrapper that
-restarts an episode in place owns the same reseed.
+`wrap_for_brax_training` itself, unchanged. Reseeding only the EMA and
+carrying the counter over would re-arm the cut on the respawn's first step,
+so the counter is zeroed too. Any other wrapper that restarts an episode in
+place owns the same reseed.
 
 ## Pure command draws (`task.env.command`)
 
@@ -440,9 +438,9 @@ almost never produces a clean corner: a backward command arrives with random
 lateral and yaw contamination attached, and under `tracking_product` or
 `tracking_relative` a contaminated corner pays about nothing however well the
 robot serves it. The skill is then never profitable to learn, and the policy
-settles on refusing it — w01-tek's `terrain_blind_v2c` held 0.000 m/s under a
-commanded -0.4 backward, and five isolating probes confirmed the refusal was
-learned rather than mechanical.
+settles on refusing it — a quadruped policy trained this way held 0.000 m/s
+under a commanded -0.4 backward, and five isolating probes confirmed the
+refusal was learned rather than mechanical.
 
 The five draws below rewrite the base sample into a clean single-axis
 command with the given probability. They apply in the order `wz, vy, slow,
@@ -465,17 +463,17 @@ key. The offset puts every draw's key out of reach of any split of `rng`,
 whatever width that split later grows to.
 
 Every range is a **starting value to re-derive**, taken from this repo's own
-envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`), not from w01-tek's quadruped.
+envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`).
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `pure_wz_prob` | `0.0` | Keep the drawn `wz`, zero the linear part: spin-in-place training. |
 | `pure_vy_prob` | `0.0` | Keep the drawn `vy`, zero `vx` and `wz`: pure-strafe training. |
 | `pure_slow_prob` | `0.0` | Redraw `vx` from `slow_vx`, zero `vy` and `wz`: clean slow straight walking, so the gait learns to scale down instead of having one speed. |
-| `slow_vx` | `(0.1, 0.35)` | Range of the slow redraw, m/s. w01-tek's own numbers, which sit inside our `vx` range unchanged. |
+| `slow_vx` | `(0.1, 0.35)` | Range of the slow redraw, m/s. Sits inside our `vx` range. |
 | `pure_fast_prob` | `0.0` | Redraw `vx` from `fast_vx`, zero `vy` and `wz`: clean fast straight walking. |
-| `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. w01-tek deliberately set its own `fast_vx` to `(0.8, 1.2)` — **above** its box — to pull the policy past the speed it deadlocked at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
-| `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal w01-tek actually measured. |
+| `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. Setting `fast_vx` **above** the box is a known way to pull a policy past a speed it deadlocks at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
+| `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal described above. |
 | `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside asimov_v1's negative `vx` range. **Not inside roboto_origin's**, whose overlay narrows `vx` to `[-0.6, 1.0]` — arming `pure_back_prob` there without narrowing `back_vx` is refused at construction (see below). |
 
 Every armed redraw is checked against the **composed** `command` box when the
@@ -512,12 +510,12 @@ unobservable to the learner: for any policy, however asymmetric, a mirrored
 env's policy-frame `(obs, action, reward)` stream is *identical* to a plain
 env's, so PPO gets exactly zero gradient toward `pi(mirror s) = mirror pi(s)`.
 World mirroring cancels the chirality of the **world**; it cannot symmetrize
-the **policy**. That is not a guess: w01-tek's `terrain_blind_v3` trained with
-this on and provably correct maps — mirror-wrapping the checkpoint swapped
-its spin scores exactly, `-33/+124` degrees became `+127/-35` — and still
-could not turn one way. Its asymmetric turning was fixed by the reward
-mechanics of port items 1.1 to 1.6, and its v4 turns 360 degrees both ways
-with no equivariant network. `tests/unit/test_symmetry.py`'s
+the **policy**. That is not a guess: a quadruped policy trained with this on
+and provably correct maps — mirror-wrapping the checkpoint swapped its spin
+scores exactly, `-33/+124` degrees became `+127/-35` — still could not turn
+one way. Its asymmetric turning was fixed by the tracking kernels,
+no-progress termination and pure command draws, and the next policy turned
+360 degrees both ways with no equivariant network. `tests/unit/test_symmetry.py`'s
 `test_fixed_flag_world_mirror_is_invisible_to_the_policy` pins the algebra.
 
 **The maps.** `src/humanoid_lab/envs/symmetry.py`, built once at construction
@@ -565,8 +563,8 @@ count fails at construction, naming the component. Vectors mirror as
 `(x,-y,z)`, angular rates as `(-x,y,-z)`, the command as `(vx,-vy,-wz)`; the
 gait clock's two feet swap in both the cos and the sin half.
 
-Observations are noised in the real frame and mirrored afterwards, the order
-w01-tek uses. The noise is i.i.d. within each component with one scale per
+Observations are noised in the real frame and mirrored afterwards. The
+noise is i.i.d. within each component with one scale per
 component, and the mirror never moves a value across a component boundary, so
 mirroring the noisy vector samples the same distribution as noising the
 mirrored one.
@@ -598,8 +596,8 @@ pi(s) = (f(s) + mirror_act(f(mirror_obs(s)))) / 2
 wired through the network factory, using the same two maps this module
 already derives. That couples the two frames inside the learner, which is
 exactly what the world mirror cannot do. It is documented here and
-deliberately **not built** — w01-tek needed no such thing once its rewards
-were right.
+deliberately **not built**: a healthy reward landscape has been enough
+without it.
 
 The sensor for that decision is the battery's `spin_left` / `spin_right`
 pair (see [Spin probes](#spin-probes)). Read the two `yaw_progress_deg`
@@ -671,17 +669,17 @@ rows:
 
 Worst case 32 contacts and 157 rows, both on `asimov_v1`, whose 20 foot geoms
 put up to two contacts each on the floor plane the moment both feet are flat.
-At w01-tek's ~7× headroom that is 224 and 1120. The previous defaults, 32 and
-320, carried from w01-tek's quadruped, put `naconmax_per_env` exactly **on**
+At the ~7× headroom rule that is 224 and 1120. The previous defaults, 32 and
+320, inherited from a quadruped, put `naconmax_per_env` exactly **on**
 asimov's standing peak.
 
-The fallen regime does not dominate here, unlike w01-tek's. A neutral action
+The fallen regime does not dominate here. A neutral action
 holds neither robot's home keyframe up under the stock preset gains, so
 "standing" is itself a collapse and its opening steps carry the highest count.
 
 Two facts for the debugging that follows a resize. The pool is a real
 device-memory line item: 224 at 4096 envs is a 917,504-contact allocation, and
-w01-tek ran a 4096-env job out of device memory on a 256 pool. And one MJX step
+a 4096-env job has run out of device memory on a 256 pool. And one MJX step
 is not batch-shape invariant on the jax CPU backend, so a batched-versus-
 sequential parity check has to compare integer outcomes, never floats.
 
@@ -753,8 +751,8 @@ yaw budget is worth the same look. The two spin rows are the ones that exist
 to be read side by side.
 
 Why per-direction rows: a policy that turns 140 degrees left and 12 right
-averages to a healthy-looking 76. w01-tek's `stiff_b` keeper shipped unable to
-spin right because every scenario that turned at all turned left. These rows
+averages to a healthy-looking 76. A policy has shipped unable to spin right
+because every scenario that turned at all turned left. These rows
 are also the sensor for the escalation decision in
 [Mirror augmentation](#mirror-augmentation-taskenvsymmetry): asymmetry that
 survives a healthy reward landscape is what would justify a
@@ -766,11 +764,10 @@ upright gets the honest number — it cannot spin about an axis it is not
 standing on. At `ctrl_dt` 0.02 the post-settle window asks for 2.5 rad
 (143 deg), short of a full revolution.
 
-Not ported: w01-tek's second probe world, which replays the DR-patched contact
+**Not built:** a second probe world that replays the DR-patched contact
 physics (feet at `geom_priority = 1`) to tell "the policy unlearned turning"
 from "the policy turns only in the physics it trained in". That distinction
-only exists once foot-friction DR is actually on in a keeper run. See
-[docs/port-details.md](port-details.md#41-spin-probes).
+only exists once foot-friction DR is actually on in a keeper run.
 
 ### Gait KPIs
 
@@ -893,9 +890,8 @@ is not None`. An unperturbed cell steps `env.reset` / `env.step` themselves
 — bit for bit what `./run.sh battery` has always run. A cell with a lag or
 an envelope steps the explicit-PD substitute instead. **The two are not the
 same code**, and no tiny lag value routes the baseline through the
-substitute. w01-tek's `hpc/stiff_grid.job` claims every cell "runs through
-the SAME battery.py code path"; that is false, and its own `battery.py:911`
-carries the same branch.
+substitute. Any claim that every cell runs through the same rollout code is
+false in that sense.
 
 What ties the two paths together is a measured property, not shared code:
 as the lag goes to zero the explicit-PD path reproduces the native pipeline.
@@ -903,9 +899,8 @@ as the lag goes to zero the explicit-PD path reproduces the native pipeline.
 explicit 0.05827960; `roboto_origin` / `sizing_ideal`, 80 control steps, CPU
 backend, `lag_tau = 1e-4` s where the filter coefficient is 1.0 to machine
 precision). `tests/integration/test_grid_env.py` asserts `1e-4` — a
-hundredfold margin for float-ordering drift across platforms, and a
-hundredfold tighter than w01-tek's own "under 1%" claim for the same
-property. What is left at that limit is float ordering: MuJoCo sums
+hundredfold margin for float-ordering drift across platforms. What is left
+at that limit is float ordering: MuJoCo sums
 `gain*ctrl + bias·(1, qpos, qvel)` inside `mj_fwdActuation`, the explicit
 loop computes `kp*(ctrl - qpos) - kd*qvel` in JAX.
 
@@ -930,19 +925,17 @@ done
 
 A cell that falls over under a harsh perturbation is an expected outcome of
 this probe, not a bug — hence the `|| echo`. A cell that was never written
-prints as `MISSING` in the report rather than crashing it. w01-tek's
-`hpc/stiff_grid.job` is not ported: there is no cluster grid job here yet,
-and the loop above is the whole of it.
+prints as `MISSING` in the report rather than crashing it. There is no
+cluster grid job here yet; the loop above is the whole of it.
 
 ### The gates
 
-**These are w01-tek quadruped gates. Re-derive them for a biped before
-trusting a PASS.** They were tuned on a statically stable 0.21 m four-bar
-quadruped, whose velocity error, joint-velocity spectrum and torque headroom
-all live on different scales from a biped's. They are carried verbatim so
-the grid produces a verdict on day one, and they are named in
-`eval/grid_report.py` and re-stated in every report so that verdict reads as
-"w01-tek's bar", not "ours".
+**These are quadruped gates. Re-derive them for a biped before trusting a
+PASS.** They were tuned on a statically stable 0.21 m four-bar quadruped,
+whose velocity error, joint-velocity spectrum and torque headroom all live
+on different scales from a biped's. They are here so the grid produces a
+verdict on day one, and they are named in `eval/grid_report.py` and
+re-stated in every report so nobody reads a PASS as this robot's bar.
 
 | Gate | Constant | Rule |
 |---|---|---|
@@ -951,25 +944,24 @@ the grid produces a verdict on day one, and they are named in
 | Vibration | `VIBRATION_MULT = 1.3` | Every scenario's `vibration` is at most 1.3× the reference cell's number for that same scenario. |
 | Saturation | `SATURATION_LIMIT = 0.05` | The worst `torque_sat_frac` over every scenario is under it. |
 
-Two divergences from w01-tek, both about not inventing numbers.
+Two choices here, both about not inventing numbers.
 
-The **yaw error is reported but not gated**. w01-tek's 0.20 is metres per
-second; there is no ported rad/s limit and this repo does not make one up.
+The **yaw error is reported but not gated**. `VEL_ERR_LIMIT` is metres per
+second; no rad/s limit has been derived and this repo does not make one up.
 
 The **vibration reference is the grid's own baseline cell** (alpha 1.0, lag
-0, envelope none), not a hardcoded keeper table. w01-tek hardcoded one
-keeper's four numbers; there is no keeper here yet. With no baseline cell in
-the grid the vibration gate is **not applied**, and the report says so under
-"Gates not applied" — a gate with no data behind it is never counted as a
-pass. w01-tek's "stiffest surviving run" summary is also not ported: there is
-no stiffness ladder here, and `actuator_gains.kp` is per-actuator, so there
-is no single number to rank runs by.
+0, envelope none), not a hardcoded keeper table, because there is no keeper
+policy here yet. With no baseline cell in the grid the vibration gate is
+**not applied**, and the report says so under "Gates not applied" — a gate
+with no data behind it is never counted as a pass. There is no "stiffest
+surviving run" summary either: that needs a scalar stiffness stamp to rank
+by, and `actuator_gains.kp` is per-actuator.
 
 ### Choosing the numbers
 
-`--alpha 1.58` is w01-tek's own rung (its X8-32 vs AK80-9 Kt mismatch).
-`--lag-tau` 5 and 10 ms are its sweep. The **envelope has no carried-over
-numbers**: `OMEGA_B` / `OMEGA_0` describe one motor's torque-speed curve and
+`--alpha 1.58` is a carried-over rung (an X8-32 versus AK80-9 Kt mismatch)
+and `--lag-tau` 5 and 10 ms the usual sweep. The **envelope has no
+carried-over numbers**: `OMEGA_B` / `OMEGA_0` describe one motor's torque-speed curve and
 have to come from a datasheet. Two sanity checks before reading a result: a
 plateau that ends above the joint speeds the policy actually reaches clamps
 nothing at all (on `roboto_origin` / `sizing_ideal` the joints reach about
@@ -1038,12 +1030,12 @@ Patience counts evals, not steps, so `ppo.num_evals` sets how much training
 each unit of patience buys. At the default 100M-step budget with brax's
 `num_evals`, one eval is several million steps.
 
-**Calibrate `min_delta` above the eval noise before trusting it.** w01-tek's
-eval noise was about ±1.5 reward, so `min_delta=0.5` let noise reset the
-patience clock, and they raised it to 1.0. They also raised `patience` to 8
-for overnight runs. The defaults here are w01-tek's starting numbers and have
-not been calibrated against our eval noise. Measure that noise first by
-evaluating one checkpoint repeatedly.
+**Calibrate `min_delta` above the eval noise before trusting it.** On the
+quadruped predecessor the eval noise was about ±1.5 reward, so `min_delta=0.5`
+let noise reset the patience clock and it had to go to 1.0, with `patience`
+raised to 8 for overnight runs. The defaults here are those starting numbers
+and have not been calibrated against our eval noise. Measure that noise
+first by evaluating one checkpoint repeatedly.
 
 ## `run.sh` verbs
 

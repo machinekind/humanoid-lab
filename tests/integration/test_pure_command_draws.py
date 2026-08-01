@@ -1,4 +1,4 @@
-"""Pure command draws wired into the env (port item 1.6).
+"""Pure command draws wired into the env.
 
 The five draws (wz, vy, slow, fast, back) are RNG-coupled sampling logic with
 no piece worth extracting, so everything is tested through the env's own
@@ -162,7 +162,7 @@ def test_a_draw_leaves_the_rows_it_did_not_redraw_untouched(env, prob_key):
     """A draw at p=0.5 rewrites about half the keys and must leave the other
     half exactly as the all-off sampler drew them. Those surviving rows are
     the only window onto the base split there is: a draw that took a key out
-    of the base split -- w01-tek's own pattern for pure_wz/pure_vy -- moves
+    of the base split unconditionally would move
     every base sample, including the ones it does not overwrite.
 
     The probability has to be below 1 for this to see anything. At p=1 the

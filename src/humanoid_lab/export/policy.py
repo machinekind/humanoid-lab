@@ -26,14 +26,13 @@ written `not error < TOLERANCE` so a NaN error fails it too.
 Both compare at `TOLERANCE`, 1e-4. On a joint target in radians that is
 0.006 degrees, three orders below the 0.01 rad encoder noise the policy
 trains under. The residual is float32 reassociation between JAX and
-numpy: w01-tek measured 3.9e-5 on a policy with large weights, and the
-measured numbers here are printed by every export.
+numpy; a policy with large weights has measured 3.9e-5, and the measured
+numbers here are printed by every export.
 
-w01-tek's exporter writes both artifacts first and validates afterwards,
-so a failed validation leaves bad files on disk while its docstring
-claims the opposite. This one validates against a temp directory and
-moves the artifacts into place only after both checks pass. A failed
-export leaves the destination as it found it, including absent.
+Validation runs against a temp directory and the artifacts move into place
+only after both checks pass. A failed export leaves the destination as it
+found it, including absent. Writing the artifacts first and validating
+afterwards would leave bad files on disk.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ from humanoid_lab.export import runtime
 
 # Radians of joint target, or Nm under an ideal-torque preset.
 TOLERANCE = 1e-4
-# Random observations per validation. w01-tek's number.
+# Random observations per validation.
 SAMPLES = 32
 
 # What the numpy runtime implements. A checkpoint trained with anything

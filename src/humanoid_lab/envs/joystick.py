@@ -1,24 +1,21 @@
 """Joystick velocity-tracking task, robot-agnostic (biped).
 
-Ported from w01-tek's wojtek_rl/env.py (w01-tekJoystick / default_config),
-adapted from a 4-leg quadruped to a 2-foot biped: the gait clock is a fixed
-antiphase (offsets [0, pi]) two-foot clock instead of w01-tek's walk/trot
-blend, there is no commanded stand height (asimov has one static standing
-height, not a quadruped's adjustable crouch), and the quadruped-only reward
-terms (contact_match, high_step, height_tracking, stand_feet_down) are
-dropped -- see rewards/terms.py's module docstring and PLAN.md step 6.
+The gait clock is a fixed antiphase (offsets [0, pi]) two-foot clock, there
+is no commanded stand height (asimov has one static standing height, not an
+adjustable crouch), and the quadruped-only reward terms (contact_match,
+high_step, height_tracking, stand_feet_down) do not exist here -- see
+rewards/terms.py's module docstring and PLAN.md step 6.
 
 Actor observations use only signals the real robot has (IMU + joint
 encoders + own history + the commanded velocity + the env's own gait
 clock); everything else (world-frame linvel, base height, contacts,
 actuator force) is privileged (critic-only).
 
-Deferred (not yet ported):
-- w01-tek's action_delay/latency/encoder-offset/action-filter machinery is
-  deliberately NOT ported yet. w01-tek defaulted to a 1-step action delay, so
-  this port applies actions one control step earlier than w01-tek did.
-  PLAN.md's v1 sysid row (action delay 0-1 control steps) means this
-  machinery must return before sim2real-fidelity training.
+Deferred (not built yet):
+- No action_delay/latency/encoder-offset/action-filter machinery. Actions
+  apply on the control step they are computed, with no delay stage in
+  between. PLAN.md's v1 sysid row (action delay 0-1 control steps) means
+  this machinery has to exist before sim2real-fidelity training.
 """
 
 from __future__ import annotations
@@ -35,8 +32,8 @@ from humanoid_lab.envs.base import HumanoidEnv
 from humanoid_lab.rewards import terms
 
 # Per-foot gait clock offset, robot_spec.foot_sites order: antiphase (one
-# foot swings while the other stances), the only sensible clock for a biped
-# -- w01-tek's quadruped walk/trot blend has no biped analogue.
+# foot swings while the other stances), the only sensible clock for a biped:
+# a quadruped's walk/trot blend has no two-foot analogue.
 _PHASE_OFFSETS = (0.0, np.pi)
 
 
@@ -72,16 +69,16 @@ def default_config() -> config_dict.ConfigDict:
             #
             # Worst case 32 contacts / 157 rows, both on asimov_v1, whose 20
             # foot geoms (10 sole + 10 toe capsules) put up to 2 contacts each
-            # on the plane the moment both feet are flat. At w01-tek's ~7x
-            # headroom that is 224 and 1120, rounded up to a multiple of 8 and
+            # on the plane the moment both feet are flat. At the ~7x headroom
+            # rule that is 224 and 1120, rounded up to a multiple of 8 and
             # 32. The row peak is DERIVED on the jax backend (29 constant rows
             # + 4 per contact at asimov's condim 3 and a pyramidal cone; 46 +
             # 6 on roboto) -- see check_contacts.py. Re-measure both on a GPU
             # box, where they are live counters.
             #
-            # The fallen regime does not dominate here, unlike w01-tek's. A
-            # neutral action holds neither robot's home keyframe up under the
-            # stock preset gains, so "standing" is itself a collapse, and its
+            # The fallen regime does not dominate here. A neutral action
+            # holds neither robot's home keyframe up under the stock preset
+            # gains, so "standing" is itself a collapse, and its
             # first few steps -- both feet flat, every sole capsule loaded --
             # carry the highest count. The old 32 was therefore sitting
             # exactly ON asimov's standing peak: a warp run would have been
@@ -90,14 +87,14 @@ def default_config() -> config_dict.ConfigDict:
             # Two facts for the debugging that follows a resize. Warp
             # allocates the contact pool at make_data time, sized
             # naconmax_per_env * num_envs, so this number is a device-memory
-            # line item: 224 at 4096 envs is a 917,504-contact pool, and
-            # w01-tek ran a 4096-env job out of device memory on a 256 pool
-            # (1,048,576). A big-batch job that OOMs lowers this or lowers
-            # num_envs, and run.json's `contacts` block is what says whether
-            # it can afford to. And one MJX step is not batch-shape invariant
-            # on the jax CPU backend, so a batched-vs-sequential parity check
-            # has to compare integer outcomes (contact counts, done flags),
-            # never floats.
+            # line item: 224 at 4096 envs is a 917,504-contact pool, and on
+            # the quadruped predecessor a 4096-env job ran out of device
+            # memory on a 256 pool (1,048,576). A big-batch job that OOMs
+            # lowers this or lowers num_envs, and run.json's `contacts` block
+            # is what says whether it can afford to. And one MJX step is not
+            # batch-shape invariant on the jax CPU backend, so a
+            # batched-vs-sequential parity check has to compare integer
+            # outcomes (contact counts, done flags), never floats.
             #
             # Overflow is silent in both directions: contacts past naconmax
             # are dropped, and constraint rows past njmax apply no force with
@@ -113,7 +110,7 @@ def default_config() -> config_dict.ConfigDict:
         # anchor (see envs/base.py). Validated to exist in the model at
         # construct time.
         reset_keyframe="home",
-        # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) added
+        # Reset pose noise: uniform +-reset_noise (rad) added
         # to every actuated joint's qpos at reset, so the policy never sees
         # the exact same start pose twice. 0.0 disables it.
         reset_noise=0.05,
@@ -125,13 +122,13 @@ def default_config() -> config_dict.ConfigDict:
         # the keyframe TELLS the joints to do. Under gravity and finite gains
         # the robot comes to rest below that command, so the deviation never
         # reaches zero and both terms charge a floor no policy can remove.
-        # w01-tek measured 0.343 rad of summed sag, about 97% of its whole
-        # standing residual; roboto_origin's home keyframe settles 0.065 rad
-        # off its command (0.015 rad at the knee), which at the stock
-        # scales.stand_still of -0.5 is 0.032 of standing penalty per step
-        # that exists only because the anchor is wrong. Each actuator preset
-        # sags differently, so the floor also moves with a config axis that
-        # has nothing to do with the task.
+        # Measured on the quadruped predecessor: 0.343 rad of summed sag,
+        # about 97% of its whole standing residual. roboto_origin's home
+        # keyframe settles 0.065 rad off its command (0.015 rad at the knee),
+        # which at the stock scales.stand_still of -0.5 is 0.032 of standing
+        # penalty per step that exists only because the anchor is wrong.
+        # Each actuator preset sags differently, so the floor also moves with
+        # a config axis that has nothing to do with the task.
         #
         # On, the env settles a QUASI-RIGID copy of the model once at
         # construction (see HumanoidEnv._settle_pose) and anchors on the
@@ -151,8 +148,7 @@ def default_config() -> config_dict.ConfigDict:
         real_pose_ref=False,
         # Per-joint vector from the actuator preset's action_scale() by
         # default (0.0 sentinel = "use the preset"). A scalar or per-joint
-        # list here overrides it uniformly, mirroring w01-tek's action_scale
-        # knob.
+        # list here overrides it uniformly.
         action_scale=0.0,
         # asimov docs (PLAN.md): gyro +-0.01, joint_pos +-0.01 rad,
         # joint_vel +-0.1 rad/s. No gravity noise figure was published;
@@ -194,10 +190,9 @@ def default_config() -> config_dict.ConfigDict:
             vx=(-0.8, 0.8),
             vy=(-0.6, 0.6),
             wz=(-0.6, 0.6),
-            resample_steps=250,  # 5 s at ctrl_dt=0.02, carried from w01-tek
-            # Velocity zeroes with this prob (stand training). Carried
-            # from w01-tek's joystick task as a starting value, untuned for
-            # a biped.
+            resample_steps=250,  # 5 s at ctrl_dt=0.02
+            # Velocity zeroes with this prob (stand training). An untuned
+            # starting value for a biped.
             zero_prob=0.15,
             # Pure command draws (see _sample_command). Each redraws the
             # base uniform sample into a CLEAN single-axis command with the
@@ -209,13 +204,13 @@ def default_config() -> config_dict.ConfigDict:
             # tracking_product/tracking_relative a contaminated corner pays
             # ~0 no matter how well the robot serves it, so the skill is
             # never profitable to learn and the policy settles on refusing
-            # it. w01-tek's terrain_blind_v2c held 0.000 m/s under a
-            # commanded -0.4 backward and five isolating probes confirmed
+            # it. A quadruped policy trained this way held 0.000 m/s under a
+            # commanded -0.4 backward, and five isolating probes confirmed
             # the refusal was learned, not mechanical.
             #
             # Every range below is a STARTING VALUE to re-derive for asimov,
             # derived here from our own envelope (vx +-0.8, vy +-0.6,
-            # wz +-0.6) rather than carried from w01-tek's quadruped.
+            # wz +-0.6).
             #
             # Keep wz, zero the linear part: spin-in-place training.
             pure_wz_prob=0.0,
@@ -223,20 +218,19 @@ def default_config() -> config_dict.ConfigDict:
             pure_vy_prob=0.0,
             # Redraw vx from slow_vx, zero vy and wz: clean slow straight
             # walking, so the gait learns to scale down instead of having
-            # one speed. w01-tek's own slow_vx, which sits inside our vx
-            # range unchanged.
+            # one speed. slow_vx sits inside our vx range.
             pure_slow_prob=0.0,
             slow_vx=(0.1, 0.35),
             # Redraw vx from fast_vx, zero vy and wz: clean fast straight
             # walking. Ours tops out at 0.8, the top of our commanded vx
-            # box. w01-tek deliberately set fast_vx=(0.8, 1.2) ABOVE its own
-            # box to pull the policy past the speed it deadlocked at; our
+            # box. Setting fast_vx ABOVE the commanded box is a known way to
+            # pull a policy past a speed it deadlocks at; our
             # envelope is capped pending sysid, so commanding past it is a
             # decision for later, not a default.
             pure_fast_prob=0.0,
             fast_vx=(0.5, 0.8),
             # Redraw vx from back_vx, zero vy and wz: clean backward
-            # walking, the refusal w01-tek actually measured. Sits inside
+            # walking, the refusal described above. Sits inside
             # asimov_v1's negative vx range -- but NOT inside
             # roboto_origin's, whose overlay narrows vx to [-0.6, 1.0].
             # Arming pure_back_prob there without narrowing back_vx is
@@ -244,8 +238,7 @@ def default_config() -> config_dict.ConfigDict:
             pure_back_prob=0.0,
             back_vx=(-0.8, -0.2),
         ),
-        # Carried from w01-tek's joystick task, untuned for asimov's mass/leg
-        # length.
+        # Untuned starting values for asimov's mass and leg length.
         push=config_dict.create(enable=True, interval_steps=200, vel=0.4),
         # No-progress termination, CaT-style (arXiv 2403.18765): an env whose
         # measured progress keeps falling short of its command is cut
@@ -258,11 +251,11 @@ def default_config() -> config_dict.ConfigDict:
         # commands never arm the cut, and a command change re-arms it only
         # after grace_sec. The math is in envs/progress.py.
         #
-        # Every number here is w01-tek's, tuned for a 0.21 m four-bar
-        # quadruped. grace_sec and risk_below are the two to re-derive for a
-        # biped: turning a two-legged gait around takes longer than turning a
-        # four-legged one, so 2 s of grace may be short and 50% of demand may
-        # be a lot to ask inside it.
+        # Every number here is an untuned starting value from a 0.21 m
+        # four-bar quadruped leg. grace_sec and risk_below are the two to
+        # re-derive for a biped: turning a two-legged gait around takes
+        # longer than turning a four-legged one, so 2 s of grace may be short
+        # and 50% of demand may be a lot to ask inside it.
         no_progress=config_dict.create(
             enable=False,
             grace_sec=2.0,   # no hazard this long after a reset or a resample
@@ -270,7 +263,7 @@ def default_config() -> config_dict.ConfigDict:
             risk_below=0.5,  # hazard starts below this fraction of demand
             p_max=0.02,      # per-step hazard at zero progress
         ),
-        # Mirror augmentation (port item 3.1). At reset each env draws a
+        # Mirror augmentation. At reset each env draws a
         # coin; the ones that come up heads see every observation mirrored
         # left-to-right and have their action un-mirrored before the physics,
         # so the world they actually live in is the ordinary one.
@@ -282,11 +275,11 @@ def default_config() -> config_dict.ConfigDict:
         # What it does NOT buy: symmetric BEHAVIOR. The flag is fixed for the
         # whole episode (and, under brax's auto-reset, for the whole run), so
         # a mirrored env's policy-frame stream is identical to a plain env's
-        # and PPO gets no gradient toward pi(mirror s) = mirror pi(s). w01-tek
-        # proved that the hard way: its terrain_blind_v3 trained with this on
-        # and provably correct maps and still could not turn one way. Its
-        # asymmetric turning was fixed by the reward mechanics of items 1.1
-        # to 1.6. tests/unit/test_symmetry.py pins the algebra; the escalation
+        # and PPO gets no gradient toward pi(mirror s) = mirror pi(s). A
+        # quadruped policy trained with this on and provably correct maps
+        # still could not turn one way; its asymmetric turning was fixed by
+        # the tracking kernels, no-progress termination and pure command
+        # draws. tests/unit/test_symmetry.py pins the algebra; the escalation
         # if asymmetry ever survives a healthy reward landscape is a
         # mirror-equivariant network, documented in docs/configuration.md and
         # deliberately not built.
@@ -297,15 +290,15 @@ def default_config() -> config_dict.ConfigDict:
         # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
         # (0.636 m) is not this: it's the floating-base placeholder measured
         # so the feet just touch the floor, not the robot's standing height.
-        # max_tilt_gz ported from w01-tek's form (gravity_body z component,
-        # near -1 upright, rises toward 0/positive as the robot tips over);
-        # -0.4 is w01-tek's own untuned value, carried as a starting point.
+        # max_tilt_gz is the gravity_body z component (near -1 upright, rising
+        # toward 0 and positive as the robot tips over); -0.4 is an untuned
+        # starting value.
         fall=config_dict.create(min_height=0.45, max_tilt_gz=-0.4),
         # Two-foot antiphase gait clock (see _PHASE_OFFSETS). freq/
-        # swing_height/duty are untuned starting values: w01-tek's numbers
-        # were tuned for a 0.21 m four-bar leg, not a human-scale biped leg,
-        # so only the SHAPE (speed-scaled clock frequency, sinusoidal swing
-        # profile, fixed stance duty) is carried, not the numbers.
+        # swing_height/duty are untuned starting values: only the SHAPE
+        # (speed-scaled clock frequency, sinusoidal swing profile, fixed
+        # stance duty) carries over from a 0.21 m four-bar quadruped leg. The
+        # numbers have to be re-derived for a human-scale biped leg.
         gait=config_dict.create(
             freq=(1.0, 2.0),  # Hz, speed-scaled between these two bounds
             swing_height=0.08,  # target peak foot clearance, m
@@ -318,8 +311,8 @@ def default_config() -> config_dict.ConfigDict:
             # Additive tracking pays the easy half of a command: a robot
             # that deadlocks under a pure-spin command still earns the FULL
             # tracking_lin_vel, because its commanded linear velocity is 0
-            # and standing still "tracks" it perfectly. w01-tek measured that
-            # payout at about 63% of an ideal spin's. With tracking_product
+            # and standing still "tracks" it perfectly. That payout has been
+            # measured at about 63% of an ideal spin's. With tracking_product
             # both terms are gated by the product of the two kernels: full
             # pay only when the WHOLE command is tracked, and a deadlocked
             # spin earns ~0.
@@ -327,7 +320,7 @@ def default_config() -> config_dict.ConfigDict:
             # Command-relative tracking error (off = legacy absolute). The
             # absolute kernel pays only within ~sqrt(tracking_sigma) of the
             # target regardless of the target's size, so a fast command puts
-            # the whole reward cliff out of exploration's reach: w01-tek's
+            # the whole reward cliff out of exploration's reach: one measured
             # policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under
             # a 1.0 one. Relative mode divides the squared error by the
             # squared commanded magnitude, so 80% of target pays the same at
@@ -335,10 +328,10 @@ def default_config() -> config_dict.ConfigDict:
             tracking_relative=False,
             tracking_rel_sigma=0.25,
             # Floors on the relative denominator, so a near-zero command
-            # divides by the floor and never by zero. Both are w01-tek
-            # quadruped starting points: its terrain presets later widened
-            # tracking_rel_sigma to 0.5 and tracking_rel_floor_ang to 0.7,
-            # because the narrow kernel rounded partial tracking to zero.
+            # divides by the floor and never by zero. Both are quadruped
+            # starting points, and a narrow kernel rounds partial tracking to
+            # zero: on terrain, tracking_rel_sigma had to widen to 0.5 and
+            # tracking_rel_floor_ang to 0.7.
             # Re-derive for asimov rather than trusting these.
             tracking_rel_floor_lin=0.3,  # m/s
             tracking_rel_floor_ang=0.4,  # rad/s
@@ -362,14 +355,14 @@ def default_config() -> config_dict.ConfigDict:
             tracking_far_sigma=2.5,
             # Gate the positive gait-shaping terms by the linear tracking
             # kernel, post-product when tracking_product is on. Those terms
-            # pay on a commanded env whether or not it translates, which made
-            # stand-and-lift the top income under a command in w01-tek's
-            # terrain_blind_v3 (2026-07-29 post-mortem: standing with one leg
-            # raised earned ~1.8 reward per step against honest walking's
-            # ~0.25). Gated, a stride pays in proportion to how well the
-            # command is being served and standing pays nothing for lifting
-            # legs. Gated set: feet_air_time and feet_apex. Not feet_phase,
-            # and not the feet_landing penalty -- see _compute_rewards.
+            # pay on a commanded env whether or not it translates, which has
+            # made stand-and-lift the top income under a command on a
+            # quadruped run: standing with one leg raised earned ~1.8 reward
+            # per step against honest walking's ~0.25. Gated, a stride pays
+            # in proportion to how well the command is being served and
+            # standing pays nothing for lifting legs. Gated set:
+            # feet_air_time and feet_apex. Not feet_phase, and not the
+            # feet_landing penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
             # Tolerance cone around upright for the orientation penalty,
@@ -380,13 +373,13 @@ def default_config() -> config_dict.ConfigDict:
             # against gravity, not against the local surface, so a
             # flat-referenced penalty taxes the body pitch that locomotion
             # needs (leaning into an acceleration) while a real nosedive
-            # stays far outside any cone worth setting. w01-tek runs 20
-            # degrees and rejected 10 for exactly that reason.
+            # stays far outside any cone worth setting. 20 degrees is a
+            # workable cone; 10 was measured too tight for that reason.
             orientation_tol_deg=0.0,
             # Per-swing apex target for feet_apex, m. The duration-averaged
             # clearance terms tolerate a 1.5-2 cm skim that collects nearly
             # as much as a crisp arc, so the optimizer skims; paying the
-            # swing's PEAK instead got w01-tek 3-5 cm swings and 30-70%
+            # swing's PEAK instead measured 3-5 cm swings and 30-70%
             # better grip. Height band of the feet_landing penalty, m:
             # downward foot speed is priced in proportion to how far INSIDE
             # this band the foot is (1 at the floor, 0 at glide_height and
@@ -397,7 +390,8 @@ def default_config() -> config_dict.ConfigDict:
             # touchdown reference is free fall over the band,
             # sqrt(2*9.81*0.03) ~ 0.77 m/s.
             #
-            # Both numbers are w01-tek's, tuned for a 0.21 m four-bar leg.
+            # Both numbers are untuned starting values for a 0.21 m four-bar
+            # quadruped leg.
             # RE-DERIVE for asimov's leg: our own gait.swing_height asks for
             # 0.08 m of swing, so a 0.05 m apex target is not this robot's.
             # When re-deriving, read docs/lessons/foot-clearance.md first:
@@ -409,10 +403,10 @@ def default_config() -> config_dict.ConfigDict:
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
             torque_limit_frac=0.85,
-            # UNTUNED starting values, ported from wojtek_rl/env.py's
-            # joystick default_config for every term that carries over to a
-            # biped (rewards/terms.py's module docstring lists what was
-            # dropped). Do not read these as tuned for asimov: they are the
+            # UNTUNED starting values, carried from a quadruped joystick task
+            # for every term that has a biped analogue
+            # (rewards/terms.py's module docstring lists what has none).
+            # Do not read these as tuned for asimov: they are the
             # PLAN.md-mandated starting point for the first CPU smoke run,
             # nothing more.
             scales=config_dict.create(
@@ -464,9 +458,9 @@ def check_pure_draw_ranges(command) -> None:
 
     A pure draw's range is a re-draw of one axis, not a widening of it: the
     box is what the policy is told it was trained for, and every commanded
-    velocity the env can produce has to sit inside it. w01-tek deliberately
-    set its own fast range ABOVE its box to pull a policy past a speed it
-    deadlocked at, which is exactly the state this refuses.
+    velocity the env can produce has to sit inside it. Setting a fast range
+    ABOVE the box to pull a policy past a speed it deadlocks at is exactly
+    the state this refuses.
 
     Symmetric with deploy_contract.check_config_covered, which refuses the
     same configuration at export. Refusing it here too means a run that
@@ -523,11 +517,11 @@ class Joystick(HumanoidEnv):
         self._orientation_tol = float(
             np.square(np.sin(np.radians(self._config.reward.get("orientation_tol_deg", 0.0))))
         )
-        # Pose-deviation weight: uniform. w01-tek's abduction/leg-joint split
-        # (full weight on the ab/adduction joint, lighter on the other two)
-        # doesn't map cleanly onto asimov's 6-joint leg (hip_pitch, hip_roll,
-        # hip_yaw, knee, ankle_pitch, ankle_roll); an explicit deviation,
-        # left uniform rather than guessing a split.
+        # Pose-deviation weight: uniform. A quadruped's abduction/leg-joint
+        # split (full weight on the ab/adduction joint, lighter on the other
+        # two) doesn't map cleanly onto asimov's 6-joint leg (hip_pitch,
+        # hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll); an explicit
+        # deviation, left uniform rather than guessing a split.
         self._pose_weight = jp.ones(self.action_size)
 
         c = self._config.command
@@ -577,13 +571,12 @@ class Joystick(HumanoidEnv):
         # tests/integration/test_pure_command_draws.py pins this.
         #
         # The index table is fixed: 1 wz, 2 vy, 3 slow, 4 fast, 5 back. 0 is
-        # reserved and 6 up are free for future draws -- w01-tek's `arc` is not
-        # ported, and it does NOT get index 1 if it ever is.
+        # reserved and 6 up are free for future draws. A new draw takes the
+        # next free index and never reuses one.
         #
-        # Deliberate divergence from w01-tek: its pure_wz/pure_vy predate its
-        # own stream discipline and take two keys out of the base split
-        # unconditionally, so switching them off there still shifts every
-        # other sample. Ours are fold_in-gated like its slow/fast/back are.
+        # Every draw is fold_in-gated, pure_wz and pure_vy included. A draw
+        # that took its key out of the base split unconditionally would shift
+        # every other sample whenever it was switched off.
         wz_p = c.get("pure_wz_prob", 0.0)
         if wz_p:
             # r_b is unused: pure_wz keeps the wz the base draw already made
@@ -658,7 +651,7 @@ class Joystick(HumanoidEnv):
             r_mirror = None
         command = self._sample_command(r_cmd)
 
-        # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) on
+        # Reset pose noise: uniform +-reset_noise (rad) on
         # every actuated joint's qpos. reset_noise=0.0 degenerates to the
         # old exact-pose reset (still draws/consumes r_pose either way, so
         # the rng split discipline doesn't depend on the config value).
@@ -668,7 +661,8 @@ class Joystick(HumanoidEnv):
         # pose the episode starts at rest, base height and residual tilt
         # included, instead of dropping into its own sag over the first
         # control steps. ctrl still holds the ctrl-space neutral, which the
-        # anchor never moves -- w01-tek's reset makes the same split.
+        # anchor never moves: the pose anchor and the ctrl anchor are
+        # separate by design (see envs/base.py).
         reset_noise = self._config.get("reset_noise", 0.0)
         pose_noise = jax.random.uniform(r_pose, (self.action_size,), minval=-1.0, maxval=1.0)
         qpos = self._reset_qpos.at[self._qadr].add(pose_noise * reset_noise)
@@ -698,8 +692,8 @@ class Joystick(HumanoidEnv):
             # with full_reset=False, the same wrapper the no-progress reseed
             # works around) `info` survives a respawn, so this flag is in
             # practice fixed per env for the whole run. That is acceptable for
-            # bias insurance and matches w01-tek; it is also exactly why the
-            # augmentation cannot teach symmetric behavior (see default_config).
+            # bias insurance, and it is also exactly why the augmentation
+            # cannot teach symmetric behavior (see default_config).
             info["mirror"] = jax.random.bernoulli(r_mirror, sym.mirror_prob)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
@@ -834,8 +828,7 @@ class Joystick(HumanoidEnv):
             # and a steps_since_cmd well past grace, and die again inside
             # what should have been its grace window. envs/wrappers.py's
             # ProgressReseedWrapper does that reseed, and train.py layers it
-            # on whenever this flag is set -- the same job w01-tek's terrain
-            # respawn wrapper does there. Any other wrapper that restarts an
+            # on whenever this flag is set. Any other wrapper that restarts an
             # episode in place owns the same reseed.
             info["progress_ema"] = jp.where(
                 resample, self._cmd_speed(info["command"]), info["progress_ema"]

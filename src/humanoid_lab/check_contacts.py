@@ -1,4 +1,4 @@
-"""CLI: measure a robot's warp contact and constraint budgets (port item 2.2).
+"""CLI: measure a robot's warp contact and constraint budgets.
 
     ./run.sh check-contacts --robot asimov_v1 --preset sizing_ideal
 
@@ -45,10 +45,6 @@ bound on the rows a warp run of the same state would allocate. The result
 carries `nefc_derived` so a reader never reads the derivation as a
 measurement. Confirm both peaks on a GPU box before trusting the row number
 to the metre.
-
-Adapted from w01-tek's wojtek_rl/terrain_scan.py, which records the same
-two peaks as a by-product of its terrain scan rather than as a standalone
-probe.
 """
 
 from __future__ import annotations
@@ -67,7 +63,7 @@ from humanoid_lab import paths, sim_budget
 
 REGIMES = ("standing", "walking", "fallen")
 
-# w01-tek's own sizing rule: about 7x the measured peak. Sized against the
+# The inherited sizing rule: about 7x the measured peak. Sized against the
 # fallen peak, which is the worst case early training spends most of its time
 # in, so this is headroom over a bad state, not over a good one.
 HEADROOM = 7.0

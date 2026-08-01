@@ -1,4 +1,4 @@
-"""The gain stamp run.json carries (port item 4.3).
+"""The gain stamp run.json carries.
 
 `effective_gains` reads kp and kd back off a BUILT model's actuator params,
 so what run.json records is what the physics ran with -- after preset

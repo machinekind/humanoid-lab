@@ -39,7 +39,7 @@ def test_tracking_kernel_decays_with_error():
     assert terms.tracking_kernel(0.25, sigma=0.25) < 1.0
 
 
-# -- relative kernel width (port item 1.2) ---------------------------------
+# -- relative kernel width -------------------------------------------------
 
 
 def test_tracking_rel_sigma_scales_with_the_squared_command():
@@ -80,7 +80,7 @@ def test_tracking_rel_sigma_floors_a_small_command():
     assert float(smaller) == pytest.approx(0.25 * 0.09)
 
 
-# -- far-field blend (port item 1.3) ---------------------------------------
+# -- far-field blend -------------------------------------------------------
 
 
 def test_far_blend_at_weight_zero_returns_the_kernel():
@@ -181,7 +181,7 @@ def test_feet_air_time_cap_bounds_reward():
     assert capped == pytest.approx(0.5 - 0.1)
 
 
-# -- feet_apex / feet_landing (port item 1.7) ------------------------------
+# -- feet_apex / feet_landing ----------------------------------------------
 
 
 def test_feet_apex_pays_the_fraction_of_the_target_each_swing_reached():

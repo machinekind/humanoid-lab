@@ -24,21 +24,19 @@ new env option with deploy implications gets a contract field and runtime
 support before a policy trained with it can ship. Keys are full dotted
 paths into `envs/joystick.py::default_config()`, one entry per leaf.
 
-Ported from w01-tek's `training/wojtek_rl/deploy_contract.py`. Three
-differences, each forced by our env rather than chosen:
+Three properties of the classification, each forced by this env:
 
-- w01-tek classifies whole top-level blocks (`reward`, `command` gets a
-  second two-tier set of its own). We classify leaf paths, so a new key
+- Classification is by LEAF PATH, not by top-level block, so a new key
   inside an already-classified block still fails the guard.
-- w01-tek refuses to export a policy that observes its gait clock: its
-  clock is a speed-blended walk/trot the runtime cannot reproduce. Ours
-  is a fixed antiphase two-foot clock with a speed-scaled frequency, a
-  closed form of ctrl_dt, the command and `gait.freq` -- so it ships in
-  `gait_clock` and the runtime advances it (export/runtime.py).
-- w01-tek's `real_pose_ref` is consumed because it re-measures the
-  height->anchor table its runtime needs. Ours has no height command and
-  leaves both the ctrl anchor and the obs anchor where they were, so it
-  is training-only.
+- A policy that observes its gait clock can still ship. This clock is a
+  fixed antiphase two-foot clock with a speed-scaled frequency, a closed
+  form of ctrl_dt, the command and `gait.freq`, so it ships in `gait_clock`
+  and the runtime advances it (export/runtime.py). A speed-blended
+  walk/trot clock would not be reproducible on the robot and would have to
+  be refused.
+- `real_pose_ref` is training-only. It leaves both the ctrl anchor and the
+  obs anchor where they were, and this env has no height command, so no
+  contract field moves with it.
 """
 
 from __future__ import annotations
@@ -112,9 +110,7 @@ TRAINING_ONLY_KEYS = frozenset(
         # Moves the `pose`/`stand_still` reward reference and the reset qpos
         # onto the settled pose. envs/base.py holds the ctrl anchor
         # (`_default_pose`) and the obs anchor fixed under it on purpose, so
-        # no contract field moves. This is where we diverge from w01-tek,
-        # whose real_pose_ref re-measures the height->anchor table its
-        # runtime needs (see the module docstring).
+        # no contract field moves.
         "real_pose_ref",
         # The critic's observation list. It exists so the value function can
         # see what the actor cannot; none of it is ever computed on the robot.
@@ -211,10 +207,9 @@ TRAINING_ONLY_KEYS = frozenset(
 
 # (probability key, range key, command box axis) for each pure command draw.
 # The draws are training-only on one condition: each redraws its axis INSIDE
-# the box the contract ships. w01-tek deliberately set its own fast range
-# above its box to pull a policy past a speed it deadlocked at, which would
-# make the reported box a lie here -- so the condition is checked, not
-# assumed.
+# the box the contract ships. Setting a fast range above the box (a known
+# way to pull a policy past a speed it deadlocks at) would make the reported
+# box a lie, so the condition is checked rather than assumed.
 #
 # envs/joystick.py's PURE_DRAW_RANGES is the same table, and its
 # check_pure_draw_ranges refuses the same configuration at env construction:
@@ -350,8 +345,8 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
         "ctrl_dt": float(env._config.ctrl_dt),
         # -- what the plant has to be able to do ------------------------------
         # Per-actuator torque envelope and the gains the policy trained
-        # against, both read back off the compiled model (port item 4.3's
-        # effective_gains, the same block run.json stamps). The driver on the
+        # against, both read back off the compiled model (effective_gains,
+        # the same block run.json stamps). The driver on the
         # robot runs these numbers; the contract is what says which.
         "torque_low": forcerange[:, 0].tolist(),
         "torque_high": forcerange[:, 1].tolist(),
@@ -364,8 +359,8 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
         ),
         # -- the operator's command box ---------------------------------------
         # (vx, vy, wz), the order the `command` observation is packed in.
-        # Every dimension has a /cmd_vel source on the robot, so unlike
-        # w01-tek's 4-D box there is no dimension the runtime has to fill.
+        # Every dimension has a /cmd_vel source on the robot, so there is no
+        # dimension the runtime has to fill in itself.
         "command_low": [float(c.vx[0]), float(c.vy[0]), float(c.wz[0])],
         "command_high": [float(c.vx[1]), float(c.vy[1]), float(c.wz[1])],
         # -- the clock the actor observes -------------------------------------

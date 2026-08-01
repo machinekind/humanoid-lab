@@ -1,4 +1,4 @@
-"""The settled-pose anchor (port item 1.9).
+"""The settled-pose anchor.
 
 `pose` and `stand_still` anchor on `_default_pose`, the reset keyframe's
 COMMANDED joint values. Under gravity and finite gains the robot settles
@@ -244,7 +244,7 @@ def test_the_settle_ctrl_is_the_soft_joint_limit_clip(anchored_envs, preset):
 
 
 def test_the_settle_ctrl_is_not_the_raw_ctrlrange_clip(anchored_envs):
-    """w01-tek's documented trap. A `pd` preset's actuators are deliberately
+    """A `pd` preset's actuators are deliberately
     ctrllimited=False, so their raw ctrlrange is [0, 0]: clipping the settle
     targets to it would command every joint to zero and settle a different
     robot. The runtime bounds -- the soft limits step() clips motor targets
@@ -279,9 +279,8 @@ def test_the_settle_clips_its_targets_to_the_soft_joint_limits():
 def test_the_default_pose_still_centers_the_action(anchored_envs, preset):
     """HARD CONTRACT. The settled pose is a REWARD anchor. What a zero action
     commands, and what the joint_pos observation subtracts, stay on
-    `_default_pose` -- w01-tek keeps its ctrl anchor separate from its pose
-    reference for the same reason. Moving them would silently re-center the
-    policy's action space on a sagged pose."""
+    `_default_pose`. Moving them would silently re-center the policy's
+    action space on a sagged pose."""
     env = anchored_envs[preset]
     legacy = build(preset)
 

@@ -1,10 +1,10 @@
 """The pre-port bit-exactness gate.
 
-PORT.md's CR checklist requires that with every ported mechanism off, an env
-rollout is bit-exact against the pre-port commit. These goldens were recorded
-from the code as it stood before the first mechanism landed, so this test is
-that requirement, mechanically. Any port commit that shifts a single float in
-a stock rollout fails here.
+With every optional mechanism off, an env rollout has to stay bit-exact
+against the recorded baseline. These goldens were recorded from the code as
+it stood before the first mechanism landed, so this test is that requirement,
+mechanically. Any commit that shifts a single float in a stock rollout fails
+here.
 
 A failure is not a "regenerate the goldens" prompt. It means a
 default-off mechanism changed behavior while off -- usually by consuming an

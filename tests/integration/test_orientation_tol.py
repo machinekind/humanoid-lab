@@ -1,12 +1,12 @@
-"""The tolerance cone on the orientation penalty (port item 1.8).
+"""The tolerance cone on the orientation penalty.
 
 `reward.orientation` is `sum(gravity_xy²)`, which is `sin²` of the base's
 tilt from vertical. With `reward.orientation_tol_deg` set it becomes
 `max(sin²(tilt) - sin²(tol), 0)`: free inside the cone, and rising
 continuously from its edge. A flat-referenced tilt penalty taxes the body
-pitch that locomotion needs, such as leaning into acceleration. w01-tek runs
-20 degrees, and rejected 10 because tilt is measured against gravity rather
-than the local surface.
+pitch that locomotion needs, such as leaning into acceleration. 20 degrees
+is a workable cone; 10 was measured too tight, because tilt is measured
+against gravity rather than the local surface.
 
 Unlike the tracking-kernel tests, these build one env per tolerance instead
 of flipping a flag on a live config: `sin²(radians(tol))` is precomputed in
@@ -35,7 +35,7 @@ from humanoid_lab.rewards import terms
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 PRESET = "sizing_ideal"
 
-TOL_DEG = 20.0  # w01-tek's own tolerance
+TOL_DEG = 20.0  # the workable cone (see the module docstring)
 COMMAND = jp.array([0.5, 0.0, 0.0])
 
 

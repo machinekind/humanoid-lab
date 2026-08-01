@@ -1,8 +1,9 @@
 """The rollout recorded in tests/data/golden/, shared by the generator and the test.
 
-PORT.md's CR gate is that with every ported mechanism off, an env rollout is
-bit-exact against the pre-port code. This module defines that rollout once so
-`generate_golden.py` and `test_golden_baseline.py` cannot drift apart: if the
+The gate is that with every optional mechanism off, an env rollout is
+bit-exact against the recorded baseline. This module defines that rollout
+once so `generate_golden.py` and `test_golden_baseline.py` cannot drift
+apart: if the
 recording procedure changes, both change together and the npz files must be
 regenerated deliberately.
 

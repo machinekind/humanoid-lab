@@ -1,4 +1,4 @@
-"""The numpy deploy runtime's algebra (port item 5.2).
+"""The numpy deploy runtime's algebra.
 
 `export/runtime.py` is the reference implementation a robot side vendors,
 so it is numpy and nothing else. These tests build small hand-made

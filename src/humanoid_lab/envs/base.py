@@ -1,11 +1,10 @@
 """Robot-agnostic MJX env base, shared by every task.
 
-Ported from w01-tek's wojtek_rl/base.py: same shape (model loading,
-actuator address tables, IMU/foot helpers, obs catalog + include-list
-mechanism), but every robot-specific detail routes through a RobotSpec and a
-resolved actuator preset instead of hardcoded joint/site/geom names. Task
-envs (envs/joystick.py) subclass this and provide their own config, reset,
-step and reward composition.
+Holds model loading, actuator address tables, IMU/foot helpers and the obs
+catalog + include-list mechanism. Every robot-specific detail routes through
+a RobotSpec and a resolved actuator preset, so no joint, site or geom name is
+hardcoded here. Task envs (envs/joystick.py) subclass this and provide their
+own config, reset, step and reward composition.
 """
 
 from __future__ import annotations
@@ -213,10 +212,9 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # NOT the ctrl anchor. `_default_pose` above stays what
         # ctrl_from_action centers on and what the joint_pos observation
         # subtracts; only the `pose`/`stand_still` reference and the reset
-        # pose move. w01-tek keeps the same separation (its `_height_ctrl`
-        # ctrl anchor is untouched by its `_pose_ref`): re-centering the
-        # action space on a sagged pose would silently change what a zero
-        # action commands and what the policy reads back.
+        # pose move. Keeping the two anchors separate matters because
+        # re-centering the action space on a sagged pose would silently
+        # change what a zero action commands and what the policy reads back.
         self._settle_ctrl = None
         if self._config.get("real_pose_ref", False):
             settle_ctrl, settled_qpos = self._settle_pose()
@@ -228,7 +226,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
             self._pose_anchor = self._default_pose
             self._reset_qpos = self._home_qpos
 
-        # Mirror augmentation tables (port item 3.1), built only when the
+        # Mirror augmentation tables, built only when the
         # augmentation is on. Two reasons for the gate: the derivation probes
         # the model (about 3 mj_forward calls per joint pair), and robot.yaml's
         # `symmetry` map is optional -- a robot that has none, or whose
@@ -245,8 +243,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
         The observation maps are sized from THIS env's catalog, measured here
         by building the catalog on a fresh (unforwarded) data: only the shapes
-        are read, so no physics has to run. w01-tek sizes its maps from a
-        static table in the symmetry module instead, which cannot notice a
+        are read, so no physics has to run. A static size table in the
+        symmetry module would be the alternative, and it cannot notice a
         robot whose joint or foot count differs from the table's.
         """
         tables = symmetry.derive(self._mj_model, self._robot_spec, np.asarray(self._home_qpos))
@@ -284,12 +282,10 @@ class HumanoidEnv(mjx_env.MjxEnv):
     def _settle_pose(self):
         """Settle a quasi-rigid copy of the model and return (ctrl, qpos).
 
-        Ported from w01-tek's `_settle_height_grid`, minus its height table:
-        that env commands a stand height and settles one rung per height,
-        while this one has a single standing pose, so the table degenerates
-        to the one settle below. If a height command ever lands here, the
-        extension is that table -- settle a rung per height and interpolate
-        the anchor on the commanded height.
+        One settle, because this env has a single standing pose. If a
+        commanded stand height ever lands here, the extension is a grid:
+        settle a rung per height and interpolate the anchor on the commanded
+        height.
 
         The copy is deliberately not this run's plant. Every actuator becomes
         the same stiff position servo (kp 400, kd 20) with its force cap
@@ -297,9 +293,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
         the soft-limit envelope alone: every gain set and every actuator
         model at a given `soft_limit_factor` anchors on the same one. kp 400
         leaves about 5e-3 rad of residual sag, which is the accepted
-        tolerance (w01-tek's docstring claims kp 2000 / kd 100; its code, and
-        this, use 400 / 20). implicitfast plus a 5e-4 timestep keep that
-        stiff servo integrable whatever the training sim_dt is.
+        tolerance. implicitfast plus a 5e-4 timestep keep that stiff servo
+        integrable whatever the training sim_dt is.
 
         The end-of-settle velocity lands in `self._settle_qvel` rather than
         in the return value: `_check_settled` needs it to tell a settled pose
@@ -310,8 +305,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
         traced. About 0.2 s.
         """
         m = copy.deepcopy(self._mj_model)
-        # Divergence from w01-tek, which only overwrites the prm arrays:
-        # w01-tek's actuators are always position servos, ours need not be.
+        # The actuator TYPES are overwritten here as well as the prm arrays,
+        # because a torque preset's params are not a servo's.
         # The `ideal_torque` actuator model injects biastype NONE actuators
         # whose ctrl is a torque, and overwriting gainprm/biasprm on one of
         # those leaves `force = 400*ctrl` -- a torque command of 400x the
@@ -334,11 +329,11 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # Clip with the preset's SOFT JOINT LIMITS, not the raw ctrlrange and
         # not _ctrl_lo/_ctrl_hi. The targets here are angles: step() clips a
         # pd preset's motor targets to the soft limits, so a pose settled
-        # past them is one the policy can never command. w01-tek documents
-        # that trap, and its actuators are always position servos so its
-        # ctrlrange serves both jobs. Ours does not. A pd preset's raw
-        # ctrlrange is [0, 0] (ctrllimited=False), and clipping to it would
-        # command every joint to zero; an ideal_torque preset's _ctrl_hi is
+        # past them is one the policy can never command. The ctrlrange cannot
+        # serve as the angle envelope here because the presets are not all
+        # position servos. A pd preset's raw ctrlrange is [0, 0]
+        # (ctrllimited=False), and clipping to it would command every joint
+        # to zero; an ideal_torque preset's _ctrl_hi is
         # its forcerange in Nm, and clipping radians to +-120 does nothing at
         # all. Reading the angle envelope directly keeps the clip in one unit
         # for every actuator model.
@@ -362,8 +357,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
     def _check_settled(self, qpos) -> None:
         """Reject a settle that did not end standing still.
 
-        The single-rung analogue of w01-tek's strictly-increasing-height
-        prefix guard: a collapsed settle must not become a silent anchor.
+        A collapsed settle must not become a silent anchor.
 
         Two conditions, because a biped needs both. The height check catches
         the robot that fell over (asimov_v1's `home` keyframe stands it on
@@ -375,11 +369,10 @@ class HumanoidEnv(mjx_env.MjxEnv):
         snapshot of a fall. A settle that converges leaves five orders of
         magnitude of margin: roboto_origin's `home` ends at 7e-5 rad/s.
 
-        This second condition is a divergence from the 1.9 brief, which asks
-        for the height check alone. It is here because w01-tek is a statically
-        stable quadruped and this repo's robots are not: whether a biped
-        keyframe is a standing equilibrium at all is a question w01-tek never
-        had to ask.
+        The at-rest condition exists because these robots are bipeds. A
+        statically stable quadruped never has to ask whether its keyframe is
+        a standing equilibrium; a biped does, and a height check alone cannot
+        answer it.
         """
         height = float(qpos[self._base_qadr + 2])
         floor = float(self._config.fall.min_height)
@@ -471,8 +464,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
         """Per-foot site height, referenced to the RESET KEYFRAME's site
         height.
 
-        Not floor-referenced, and not w01-tek's geom-bottom semantic. w01-tek
-        computes `geom_z - FOOT_RADIUS`, which is exactly 0 for a resting
+        Not floor-referenced, and not a geom-bottom reading: a
+        `geom_z - FOOT_RADIUS` measure would read exactly 0 for a resting
         sphere at any orientation. Here `_foot_site_rest_z` is measured at
         the reset keyframe, whose base height deliberately floats the lowest
         sole a few mm above the floor, so every reading is biased low by that
@@ -573,7 +566,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
     def _get_obs(self, data, info, rng=None):
         """`_build_obs`, then the mirror when this episode drew the flag.
 
-        Order, and why it is the one w01-tek uses (env.py:1053-1066): the
+        Order, and why it is this one: the
         observation is built and NOISED in the real frame, and the mirror is
         applied to the already-noisy vector. `_build_obs` draws one uniform
         per element and scales it by a per-COMPONENT constant, and the mirror

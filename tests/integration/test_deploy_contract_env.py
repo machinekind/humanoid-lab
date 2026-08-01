@@ -1,4 +1,4 @@
-"""The deploy contract read off a live env (port item 5.1).
+"""The deploy contract read off a live env.
 
 Every field of `policy_meta.json` is a RESOLVED number taken from the env
 instance that defined training, so these tests check the numbers against

@@ -1,6 +1,6 @@
-"""Tests for dr/randomize.py: the yaml/code default pin (w01-tek's
-test_config_defaults.py pattern) plus batching behavior on the compiled
-asimov model, and the stream-isolation guards at the bottom of the file.
+"""Tests for dr/randomize.py: the yaml/code default pin, batching behavior
+on the compiled asimov model, and the stream-isolation guards at the bottom
+of the file.
 """
 
 import functools
@@ -152,7 +152,7 @@ def test_in_axes_is_usable_as_vmap_in_axes(mj_model, mjx_model, robot_spec, dr_c
     """The (model, in_axes) pair make_domain_randomize returns must be
     accepted by jax.vmap under every DR config, foot_friction included.
 
-    Ported from w01-tek's test_dr_expansion.py. The wrapper that consumes
+    The wrapper that consumes
     the pair does exactly one thing -- `jax.vmap(step, in_axes=[in_axes, 0])`
     -- and vmap refuses the pair unless the two line up. Every other test in
     this file inspects individual leaves of the batched model and would keep
@@ -164,7 +164,7 @@ def test_in_axes_is_usable_as_vmap_in_axes(mj_model, mjx_model, robot_spec, dr_c
     treedef rather than as data. Setting it after in_axes had been derived
     left the two describing different structures and every run with the flag
     on died the moment the env was wrapped -- fatal on the jax backend,
-    absent on warp, and shipped twice in w01-tek (53d7436, 3eb7444). The fix
+    absent on warp, and shipped twice before it was understood. The fix
     is in randomize.py and the lesson in docs/lessons/asimov_v1.md; this is
     the test that keeps them.
     """

@@ -25,12 +25,11 @@ reads as a policy failure to anyone watching the clip. The default is stated
 here (see env_overrides_for), not merely inherited from the battery's
 measurement env -- this module owns what its own renders show.
 
-MUJOCO_GL: mirrors w01-tek wojtek_rl/eval.py's own handling exactly --
-`egl` is set (via setdefault, so an already-exported MUJOCO_GL wins) only
-on linux, where headless GPU boxes need it; darwin is left on its default
-(CGL), which is what this repo's Mac dev box actually has. Forcing egl on
-darwin breaks offscreen rendering there, so this must run before `mujoco`
-is imported anywhere in the process.
+MUJOCO_GL: `egl` is set (via setdefault, so an already-exported MUJOCO_GL
+wins) only on linux, where headless GPU boxes need it; darwin is left on its
+default (CGL), which is what this repo's Mac dev box actually has. Forcing
+egl on darwin breaks offscreen rendering there, so this must run before
+`mujoco` is imported anywhere in the process.
 """
 
 import os
@@ -230,9 +229,9 @@ def render_video(
             state = step(state, act)
 
             if capture:
-                # This env has no action-delay machinery (envs/joystick.py's
-                # module docstring: w01-tek's delay/latency/action-filter
-                # machinery is deliberately not ported), and step() passes
+                # This env has no action-delay, latency or action-filter
+                # machinery (see envs/joystick.py's module docstring), and
+                # step() passes
                 # the clipped motor_targets straight to mjx_env.step
                 # (joystick.py step(), ~line 290-308) -- so post-step ctrl
                 # IS the policy's clipped PD target for this step. No

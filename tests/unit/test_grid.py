@@ -1,6 +1,6 @@
-"""Pure-function tests for the robustness grid's plant perturbations
-(port item 4.4): the torque lag filter, the speed-dependent torque
-envelope, the Kt-miscalibration scaling, and the grid cell naming.
+"""Pure-function tests for the robustness grid's plant perturbations: the
+torque lag filter, the speed-dependent torque envelope, the
+Kt-miscalibration scaling, and the grid cell naming.
 
 Model-free by construction: every function under test takes arrays (or a
 duck-typed model holding the four actuator arrays MuJoCo would have) and

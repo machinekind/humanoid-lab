@@ -5,12 +5,9 @@ model, no env and no device is involved -- the joint SIGNS of a real robot
 are derived numerically from its compiled model, which is
 tests/integration/test_symmetry_env.py's job.
 
-Ported from w01-tek's training/tests/unit/test_symmetry.py, with two
-differences. Ours is a biped (2 feet, 6 joints a side) against w01-tek's
-quadruped, and ours never hardcodes a joint sign: w01-tek's module owns a
-JOINT_SIGN constant read off its XML's axes, and this port takes the signs as
-an argument because no axis-naming rule survives both of our robots (see the
-integration file).
+This is a biped (2 feet, 6 joints a side), and no joint sign is hardcoded
+anywhere: the signs are taken as an argument because no axis-naming rule
+survives both of our robots (see the integration file).
 """
 
 from __future__ import annotations
@@ -185,16 +182,16 @@ def test_every_block_of_the_assembled_actor_map_lands_at_its_own_offset():
 
 
 def test_an_obs_component_with_no_mirror_entry_raises():
-    """w01-tek's KeyError pattern, adapted: a new catalog signal must get a
-    mirror map before anything trains with the augmentation on."""
+    """A new catalog signal must get a mirror map before anything trains
+    with the augmentation on."""
     with pytest.raises(symmetry.SymmetryError, match="imu_accel"):
         symmetry.obs_mirror(["gyro", "imu_accel"], {**SIZES, "imu_accel": 3}, maps())
 
 
 def test_a_map_that_does_not_match_the_env_s_own_component_size_raises():
-    """The validation w01-tek's docstring claims and its code does not do: the
-    sizes come from the env's real catalog, so a robot whose command grew a
-    fourth channel fails here instead of silently mirroring the wrong slots."""
+    """The sizes come from the env's real catalog, so a robot whose command
+    grew a fourth channel fails here instead of silently mirroring the wrong
+    slots."""
     with pytest.raises(symmetry.SymmetryError, match="command"):
         symmetry.obs_mirror(["command"], {**SIZES, "command": 4}, maps())
 
@@ -306,8 +303,7 @@ def signed_perm(perm, sign):
 
 
 def test_fixed_flag_world_mirror_is_invisible_to_the_policy():
-    """Ported verbatim in intent from w01-tek's own test of the same name --
-    the terrain_blind_v3 post-mortem, as an algebraic fact.
+    """The world-mirror post-mortem, as an algebraic fact.
 
     The env's augmentation presents sigma(obs) and un-mirrors the action
     before a mirror-equivariant physics step, with the flag fixed per env
@@ -317,11 +313,11 @@ def test_fixed_flag_world_mirror_is_invisible_to_the_policy():
     gets zero gradient toward pi(sigma s) = sigma pi(s). World mirroring
     cancels the chirality of the WORLD; it cannot symmetrize the POLICY.
 
-    That is how w01-tek's terrain_blind_v3_20260728 trained with
-    symmetry.enable=true and provably correct maps (mirror-wrapping the
-    checkpoint swapped its spin_left/spin_right scores exactly: -33/+124 deg
-    became +127/-35) and still could not turn one way. Its asymmetric turning
-    was fixed by the reward mechanics of port items 1.1 to 1.6, not by this.
+    That is how a quadruped policy trained with symmetry.enable=true and
+    provably correct maps (mirror-wrapping the checkpoint swapped its
+    spin_left/spin_right scores exactly: -33/+124 deg became +127/-35) and
+    still could not turn one way. Its asymmetric turning was fixed by the
+    tracking kernels, no-progress termination and pure command draws.
     A fix that acts on the POLICY has to couple the two frames inside the
     LEARNER -- mirrored-transition duplication in the PPO batch, a symmetry
     loss, or a mirror-equivariant network -- and would make the two streams

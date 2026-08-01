@@ -1,5 +1,5 @@
-"""eval/video.py's env, panel and CLI wiring (port items 4.5 and the plot
-panels): the push-free-by-default rollout, `--push`, `--plot-torque`,
+"""eval/video.py's env, panel and CLI wiring: the push-free-by-default
+rollout, `--push`, `--plot-torque`,
 `--plot-joints`, `--joint`, the panel compositor, and the
 platform-conditional GL default.
 

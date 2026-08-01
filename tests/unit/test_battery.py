@@ -212,10 +212,10 @@ def test_scenario_step_counts_scale_with_dt():
     assert n_fast == 2 * n_slow
 
 
-# -- spin probes (port item 4.1) ---------------------------------------------
+# -- spin probes -------------------------------------------------------------
 #
-# Chirality needs its own row per direction: w01-tek's stiff_b keeper shipped
-# unable to spin right because every scenario that turned at all turned left.
+# Chirality needs its own row per direction. A policy has shipped unable to
+# spin right because every scenario that turned at all turned left.
 
 
 def test_spin_left_holds_a_pure_positive_yaw_command():
@@ -360,7 +360,7 @@ def test_the_existing_scenario_fields_keep_their_meaning():
     n = SETTLE_STEPS + 100
     r = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
 
-    # port item 4.1 is additive: every pre-4.1 key is still there, unchanged.
+    # The spin probes are additive: every older key is still there, unchanged.
     for key in (
         "fell", "fell_at", "steps", "vel_err_vx", "vel_err_vy", "vel_err_wz",
         "height_mean", "height_std", "vibration", "foot_slip",
@@ -369,7 +369,7 @@ def test_the_existing_scenario_fields_keep_their_meaning():
         assert key in r
 
 
-# -- scenario_result's gait KPIs (port item 4.2) -----------------------------
+# -- scenario_result's gait KPIs ---------------------------------------------
 
 
 def test_scenario_result_carries_the_gait_kpis():
@@ -406,7 +406,7 @@ def test_a_scenario_that_never_lifted_a_foot_reports_zero_swings():
     assert r["touchdown_softness_med"] is None
 
 
-# -- tracking_error (port item 4.3) ------------------------------------------
+# -- tracking_error ----------------------------------------------------------
 #
 # The servo KPI: did the PD loop hold the setpoint the policy commanded?
 # ctrl is the setpoint, qpos the angle reached, both over actuated joints.
@@ -526,7 +526,7 @@ def test_the_cut_is_neutralised_even_when_the_run_never_mentioned_it():
 
 
 def test_a_run_trained_with_the_mirror_augmentation_measures_with_it_off():
-    """The deployment-frame rule (port item 3.1). Mirror augmentation is a
+    """The deployment-frame rule. Mirror augmentation is a
     training-only stochastic augmentation: it flips half the envs into a
     left-right mirrored view of the world. A measurement has to describe the
     frame the robot will actually be deployed in, and a battery that drew the
@@ -573,7 +573,7 @@ def test_every_other_key_of_the_run_s_env_block_survives():
     assert overrides["reward"] == {"scales": {"pose": -1.0}}
 
 
-# -- the grid CLI (port item 4.4) --------------------------------------------
+# -- the grid CLI ------------------------------------------------------------
 #
 # main() with run_battery stubbed out: the argparse wiring and the write
 # target are pure plumbing, and pinning them costs no rollout. What the

@@ -1,8 +1,8 @@
 """Robot-agnostic MJX backend plumbing.
 
-Ported from wojtek_rl/base.py: only the sim.backend resolution and warp
-data-budget helpers. The env base class (w01-tekEnv there) is robot-specific
-plumbing and lands in a later step alongside the RobotSpec loader.
+Holds the sim.backend resolution and the warp data-budget helpers only. The
+robot-specific env base class lives in envs/base.py alongside the RobotSpec
+loader.
 """
 
 import jax
@@ -48,7 +48,8 @@ def data_budget_kwargs(
 
     If a buffer is too small, warp drops the overflow silently instead of
     raising an error. The measured numbers behind the defaults are in
-    docs/plans/mjwarp-phase0-report.md §4.
+    envs/joystick.py's `sim` block; `./run.sh check-contacts` re-measures
+    them.
     """
     if backend != "warp":
         return {}

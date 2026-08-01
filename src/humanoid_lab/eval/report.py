@@ -40,7 +40,7 @@ _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
 # battery.json keys that are not scenarios. `contacts` is the warp budget
 # block (see sim_budget.budget_report); it gets its own section below.
-# `grid` is the robustness grid's plant stamp (port item 4.4); it is
+# `grid` is the robustness grid's plant stamp; it is
 # rendered in the header, because a report from a perturbed cell has to say
 # which plant produced its numbers.
 _META_KEYS = ("run", "checkpoint", "timestamp", "contacts", "grid")
@@ -132,7 +132,7 @@ def render_markdown(battery: dict) -> str:
             f"{_fmt(r.get('antiphase_score'))} |"
         )
 
-    # Spin probes (port item 4.1), their own section because the pair only
+    # Spin probes, their own section because the pair only
     # means something read side by side: a policy that turns 140 degrees one
     # way and 12 the other averages to a healthy-looking 76. Every scenario
     # row in battery.json carries the two yaw fields; these are the two rows
@@ -160,7 +160,7 @@ def render_markdown(battery: dict) -> str:
             "positive turned the wrong way; one near zero did not turn.",
         ]
 
-    # Gait KPIs (port item 4.2). Raw metrics with no threshold attached, so
+    # Gait KPIs. Raw metrics with no threshold attached, so
     # they get a table and no PASS/ATTENTION line: what a healthy apex is
     # depends on the robot's leg, and this repo has measured neither. The
     # swing count travels with the medians because a median over three
@@ -192,7 +192,7 @@ def render_markdown(battery: dict) -> str:
             "median with no swings behind it, not a zero.",
         ]
 
-    # Servo tracking error (port item 4.3). Raw, like the gait KPIs, and for
+    # Servo tracking error. Raw, like the gait KPIs, and for
     # the same reason: what a good number is depends on the preset's gains,
     # and the gains a run actually used are stamped in run.json rather than
     # known here.

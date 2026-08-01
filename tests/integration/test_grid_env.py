@@ -1,8 +1,8 @@
-"""The robustness grid through a real env (port item 4.4): the explicit-PD
+"""The robustness grid through a real env: the explicit-PD
 substep loop, the honesty property that ties it to the native pipeline, and
 a mini-grid through the aggregator.
 
-The honesty property (PORT.md's "Eval integrity"): the baseline cell takes
+The honesty property: the baseline cell takes
 the NATIVE rollout path. There is no shared code path through a tiny lag
 value -- `eval/battery.py::run_battery` branches, and that branch is the
 divergence point. What must hold instead, and what
@@ -68,13 +68,12 @@ AMPLITUDE = 0.3
 # substep bookkeeping around it.
 #
 # The bar asserted below is 1e-4: a hundredfold margin over the measured
-# number for float-ordering drift across platforms, and still a hundredfold
-# TIGHTER than w01-tek's own "under 1%" claim for the same property.
+# number for float-ordering drift across platforms.
 NATIVE_MATCH_MEASURED = 1.0e-6
 NATIVE_MATCH_REL = 1.0e-4
 
-# A lag long enough to be visibly different from no lag at all. 10 ms is one
-# of the rungs w01-tek's stiff_grid.job sweeps (0, 5, 10 ms).
+# A lag long enough to be visibly different from no lag at all. 10 ms is the
+# top rung of the usual (0, 5, 10 ms) sweep.
 LAG_TAU = 0.010
 
 # An envelope that actually bites on this plant. `sizing_ideal` is a
@@ -178,9 +177,7 @@ def test_explicit_pd_reproduces_the_native_pipeline_at_a_vanishing_lag(native, v
 def test_the_explicit_path_leaves_the_position_setpoint_in_ctrl(native, vanishing_lag):
     """The substep loop writes an applied TORQUE into the torque-mode
     model's ctrl channel. It has to put the position setpoint back, or
-    `tracking_error` diffs newton-metres against radians -- the symptom
-    w01-tek's own comment records from validating against its native
-    battery."""
+    `tracking_error` diffs newton-metres against radians."""
     native_rec, _ = native
     explicit_rec, _ = vanishing_lag
     assert np.asarray(explicit_rec["ctrl"]) == pytest.approx(

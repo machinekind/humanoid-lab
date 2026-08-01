@@ -1,6 +1,6 @@
 """Unit tests for the no-progress termination's math (envs/progress.py).
 
-Port item 1.5 (see docs/port-details.md). The three pieces the env composes
+The three pieces the env composes
 -- the served-progress measure, the hazard ramp, and the arming predicate --
 are pure functions of plain arrays, so they are tested here on synthetic
 numbers without building a model or an env. What the env does with them (EMA
@@ -13,7 +13,7 @@ import pytest
 
 from humanoid_lab.envs import progress
 
-# w01-tek's defaults, the numbers the env ships with.
+# The numbers the env ships with.
 RISK_BELOW = 0.5
 P_MAX = 0.02
 GRACE_SEC = 2.0

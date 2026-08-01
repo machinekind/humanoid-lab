@@ -33,9 +33,9 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
 
     Reseeding to `_cmd_speed(command)` puts the meter at ratio 1, exactly
     what a command resample does (envs/joystick.py's step). Zeroing
-    `steps_since_cmd` restores the grace window on top; w01-tek's terrain
-    respawn wrapper reseeds only the EMA and leaves the counter carried over,
-    which re-arms the cut on the respawn's first step. The command itself is
+    `steps_since_cmd` restores the grace window on top. Reseeding only the
+    EMA and carrying the counter over would re-arm the cut on the respawn's
+    first step. The command itself is
     deliberately left alone: the respawn continues serving it, and the meter
     is now measured against it from a fresh start.
 

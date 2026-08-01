@@ -1,14 +1,10 @@
-"""No-progress termination math (port item 1.5), CaT-style (arXiv 2403.18765).
+"""No-progress termination math, CaT-style (arXiv 2403.18765).
 
 Three pure functions of plain arrays -- no env, no model, no state -- so the
 model is testable on its own (tests/unit/test_no_progress.py) and the env only
 has to wire them up. The EMA that smooths `served`, the bernoulli draw, and
 the done flag live in the env, because those need per-episode state and an
 RNG key.
-
-Ported from w01-tek's wojtek_rl/env.py (the `no_progress` block of
-`default_config` and the cut block in `step`), where the same math sits inline
-in the env.
 """
 
 from __future__ import annotations

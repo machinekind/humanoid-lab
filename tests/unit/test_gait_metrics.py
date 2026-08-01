@@ -1,9 +1,9 @@
 """gait_metrics: swing apex and touchdown softness, model-free.
 
-Ported from w01-tek's training/tests/unit/test_gait_metrics.py (port item
-4.2), with three changes. gait_metrics takes an explicit settle_steps, so
-the reset transient is excluded at the call site and the exclusion is
-testable here. A record with no scorable swing returns `swings: 0` and null
+Three properties this file pins. gait_metrics takes an explicit
+settle_steps, so the reset transient is excluded at the call site and the
+exclusion is testable here. A record with no scorable swing returns
+`swings: 0` and null
 medians rather than an empty dict, so battery.json's shape never depends on
 what the policy did. And a swing already airborne at the first measured
 sample is dropped like an end-truncated one: our record is trimmed mid-flight

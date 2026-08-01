@@ -188,7 +188,7 @@ groups:
         resolve(preset, robot_spec)
 
 
-# -- the effective-gain stamp (port item 4.3) --------------------------------
+# -- the effective-gain stamp ------------------------------------------------
 
 
 def test_effective_gains_report_what_the_built_model_got():

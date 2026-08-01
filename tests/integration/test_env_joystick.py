@@ -91,9 +91,8 @@ def test_termination_triggers_when_base_drops_below_min_height(env):
 
 
 def test_joystick_yaml_obs_and_fall_match_env_defaults():
-    """Pin configs/task/joystick.yaml's env: mirror to the code defaults
-    (w01-tek's test_config_defaults.py pattern), so the two cannot
-    silently drift apart.
+    """Pin configs/task/joystick.yaml's env: mirror to the code defaults,
+    so the two cannot silently drift apart.
     """
     task_cfg = yaml.safe_load((paths.CONFIGS_DIR / "task" / "joystick.yaml").read_text())
     default = default_config()

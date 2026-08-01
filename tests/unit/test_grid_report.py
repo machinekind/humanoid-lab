@@ -1,4 +1,4 @@
-"""Tests for the robustness grid aggregator (port item 4.4): cell
+"""Tests for the robustness grid aggregator: cell
 discovery, the four gates, and the markdown table.
 
 Model-free: every input here is a synthetic cell dict with the same shape
@@ -104,8 +104,7 @@ def test_a_fall_fails_the_cell():
 
 
 def test_linear_velocity_error_at_the_limit_fails():
-    """`< 0.20`, not `<=`: exactly the limit is a failure, matching
-    w01-tek's own comparison."""
+    """`< 0.20`, not `<=`: exactly the limit is a failure."""
     v = grid_report.gate_cell(_cell(walk_ramp=_row(vel_err_vx=grid_report.VEL_ERR_LIMIT)))
     assert v.verdict == "FAIL"
     assert any("vel_err_vx:walk_ramp" in r for r in v.reasons)
@@ -117,8 +116,8 @@ def test_lateral_velocity_error_is_gated_too():
 
 
 def test_yaw_error_is_reported_but_not_gated():
-    """w01-tek's 0.20 limit is metres per second. There is no ported rad/s
-    gate and this module does not invent one."""
+    """VEL_ERR_LIMIT is metres per second. No rad/s gate has been derived
+    and this module does not invent one."""
     v = grid_report.gate_cell(_cell(stand=_row(vel_err_wz=99.0)))
     assert v.verdict == "PASS"
     assert not any("wz" in r for r in v.reasons)
@@ -240,8 +239,8 @@ def test_an_empty_grid_reports_that_rather_than_crashing(tmp_path):
 
 
 def test_the_report_marks_the_gates_as_unre_derived(tmp_path):
-    """The brief mandates re-derivation for a biped. The numbers ship with
-    that caveat attached to every report, not only to the source."""
+    """The gates need re-derivation for a biped. The numbers ship with that
+    caveat attached to every report, not only to the source."""
     run_dir = _write_grid(tmp_path, {"battery_a1_lag0ms_envnone.json": _cell()})
     md = grid_report.render_markdown(grid_report.build_grid([run_dir]))
     assert "quadruped" in md
