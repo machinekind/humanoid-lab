@@ -1,34 +1,56 @@
-# Toy robot.yaml fixture for tests/test_robot_spec.py and tests/test_injection.py.
-# Not a real robot: one leg (hip_pitch_joint, knee_joint) plus two unrelated
-# passive joints (toe_joint_a, toe_joint_b), matching tests/data/toy_robot/source/xmls/toy_biped.xml.
+# Toy robot.yaml fixture. Not a real robot: the smallest honest biped, two
+# mirror-symmetric legs (hip pitch + knee per side) plus two passive stubs,
+# matching tests/data/toy_robot/source/xmls/toy_biped.xml.
+#
+# Read by tests/integration/test_robot_spec.py, test_injection.py,
+# golden_rollout.py and the robot conformance suite. It is in the conformance
+# suite on purpose: it is a robot, and holding it to the same bar as
+# asimov_v1 and roboto_origin is what stops a "generic" check from quietly
+# depending on something only those two have.
 
 name: toy_biped
 model_xml: source/xmls/toy_biped.xml
 
+# Canonical action/obs order: left leg then right leg, XML document order.
 actuated_joints:
-  - hip_pitch_joint
-  - knee_joint
+  - left_hip_pitch_joint
+  - left_knee_joint
+  - right_hip_pitch_joint
+  - right_knee_joint
 
 joint_groups:
-  hip_pitch: [hip_pitch_joint]
-  knee: [knee_joint]
+  hip_pitch: [left_hip_pitch_joint, right_hip_pitch_joint]
+  knee: [left_knee_joint, right_knee_joint]
 
 passive_joints:
   toe_joint_a: {stiffness: 5.0, damping: 0.3}
   toe_joint_b: {stiffness: 5.0, damping: 0.3}
 
-foot_sites: [foot_site]
-foot_geoms: [foot_geom]
+foot_sites: [left_foot, right_foot]
+foot_geoms: [left_foot_geom, right_foot_geom]
 
-symmetry: {}
+# Both hinges are pitch joints (axis 0 1 0, identical on the two sides), so
+# both mirror with sign +1 -- envs/symmetry.py derives that from the model
+# rather than reading it off the axes. The standing keyframe below gives the
+# two sides equal angles, which is what makes the probe pose its own mirror.
+symmetry:
+  left_hip_pitch_joint: right_hip_pitch_joint
+  left_knee_joint: right_knee_joint
 
 keyframes:
+  # base_pos z measured 2026-08-01 per docs/adding-a-robot.md's rule:
+  # compiled pd_test, set qpos to this pose, mj_forward, then took the exact
+  # world-frame bottom of each foot capsule (the lower of its two end-cap
+  # centres, minus the radius) and shifted z so the lowest one sits 0.005 m
+  # above the floor -- inside the conformance suite's 0.0-0.02 m band.
   standing:
-    base_pos: [0.0, 0.0, 0.8]
+    base_pos: [0.0, 0.0, 0.7074]
     base_quat: [1.0, 0.0, 0.0, 0.0]
     joints:
-      hip_pitch_joint: 0.2
-      knee_joint: -0.4
+      left_hip_pitch_joint: 0.2
+      left_knee_joint: -0.4
+      right_hip_pitch_joint: 0.2
+      right_knee_joint: -0.4
 
 termination_bodies: [torso]
 

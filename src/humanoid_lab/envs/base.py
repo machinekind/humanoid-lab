@@ -230,9 +230,10 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
         # Mirror augmentation tables (port item 3.1), built only when the
         # augmentation is on. Two reasons for the gate: the derivation probes
-        # the model (about 3 mj_forward calls per joint pair), and a robot
-        # with no symmetry map at all -- tests/data/toy_robot has one leg --
-        # must still construct for every run that does not ask for this.
+        # the model (about 3 mj_forward calls per joint pair), and robot.yaml's
+        # `symmetry` map is optional -- a robot that has none, or whose
+        # geometry does not mirror under the one it declares, must still
+        # construct for every run that does not ask for this.
         self._mirror_tables = None
         sym = self._config.get("symmetry", None)
         if sym is not None and sym.enable:

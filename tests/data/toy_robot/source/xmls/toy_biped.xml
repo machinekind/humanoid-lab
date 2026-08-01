@@ -1,9 +1,21 @@
 <mujoco model="toy_biped">
   <!--
-    Minimal toy MJCF for exercising the RobotSpec loader and actuator injection,
-    not a real robot. Shape only: free-floating base, one leg with two actuated
-    hinges across two joint groups (nonzero XML armature, to prove injection
-    overrides it), and two passive hinge joints elsewhere on the base.
+    Minimal toy MJCF: the smallest thing this lab is willing to call a biped.
+    Not a real robot. It exists so the RobotSpec loader, actuator injection
+    and the robot conformance suite have a fixture that builds in
+    milliseconds, and so a "generic" check cannot quietly become an
+    asimov/roboto check without anything noticing.
+
+    Shape only, but honest shape: a ground plane, a free-floating base, two
+    mirror-symmetric legs (hip pitch + knee, each ending in a foot site and a
+    foot capsule), and two passive hinges elsewhere on the base. Every left
+    body is its right partner with y negated, so robot.yaml's symmetry map
+    survives envs/symmetry.py's numeric derivation.
+
+    Two deliberate placeholders the actuator presets are supposed to
+    overwrite: armature 99.0 / 88.0, which no real robot would carry, and a
+    knee frictionloss of 0.25, which pd_test omits so the XML value has to
+    survive.
   -->
   <compiler angle="radian"/>
 
@@ -12,30 +24,51 @@
   </default>
 
   <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+
+    <!-- This pos is a placeholder. robot.yaml's standing keyframe carries the
+         height measured against the foot capsules, per
+         docs/adding-a-robot.md's rule. -->
     <body name="torso" pos="0 0 0.8">
       <freejoint/>
-      <geom name="torso_geom" type="box" size="0.1 0.05 0.15" mass="5.0"/>
+      <geom name="torso_geom" type="box" size="0.1 0.06 0.15" mass="5.0"/>
 
-      <body name="thigh" pos="0 0 -0.2">
-        <joint name="hip_pitch_joint" type="hinge" axis="0 1 0" range="-1.2 1.2" armature="99.0"/>
-        <geom name="thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.04" mass="2.0"/>
+      <body name="left_thigh" pos="0 0.06 -0.15">
+        <joint name="left_hip_pitch_joint" type="hinge" axis="0 1 0" range="-1.2 1.2" armature="99.0"/>
+        <geom name="left_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.04" mass="2.0"/>
 
-        <body name="shank" pos="0 0 -0.25">
-          <joint name="knee_joint" type="hinge" axis="0 1 0" range="-1.0 1.0" armature="88.0" frictionloss="0.25"/>
-          <geom name="shank_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.035" mass="1.5"/>
-          <site name="foot_site" pos="0 0 -0.28"/>
-          <geom name="foot_geom" type="sphere" pos="0 0 -0.28" size="0.03" mass="0.3"/>
+        <body name="left_shank" pos="0 0 -0.25">
+          <joint name="left_knee_joint" type="hinge" axis="0 1 0" range="-1.0 1.0" armature="88.0" frictionloss="0.25"/>
+          <geom name="left_shank_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.035" mass="1.5"/>
+          <site name="left_foot" pos="0.01 0 -0.27"/>
+          <geom name="left_foot_geom" type="capsule" fromto="-0.04 0 -0.28 0.06 0 -0.28" size="0.025" mass="0.3"/>
         </body>
       </body>
 
-      <body name="toe_a" pos="0.1 0.05 -0.3">
-        <joint name="toe_joint_a" type="hinge" axis="1 0 0" range="-0.3 0.3"/>
-        <geom name="toe_a_geom" type="sphere" size="0.02" mass="0.05"/>
+      <body name="right_thigh" pos="0 -0.06 -0.15">
+        <joint name="right_hip_pitch_joint" type="hinge" axis="0 1 0" range="-1.2 1.2" armature="99.0"/>
+        <geom name="right_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.04" mass="2.0"/>
+
+        <body name="right_shank" pos="0 0 -0.25">
+          <joint name="right_knee_joint" type="hinge" axis="0 1 0" range="-1.0 1.0" armature="88.0" frictionloss="0.25"/>
+          <geom name="right_shank_geom" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.035" mass="1.5"/>
+          <site name="right_foot" pos="0.01 0 -0.27"/>
+          <geom name="right_foot_geom" type="capsule" fromto="-0.04 0 -0.28 0.06 0 -0.28" size="0.025" mass="0.3"/>
+        </body>
       </body>
 
-      <body name="toe_b" pos="-0.1 0.05 -0.3">
+      <!-- Passive stubs, one per side. They carry no actuator ever: robot.yaml
+           lists them under passive_joints and build_spec gives them a
+           spring/damper. Placed clear of the torso box and well clear of the
+           floor, so they never pollute a contact. -->
+      <body name="left_stub" pos="0 0.12 0.05">
+        <joint name="toe_joint_a" type="hinge" axis="1 0 0" range="-0.3 0.3"/>
+        <geom name="left_stub_geom" type="sphere" size="0.02" mass="0.05"/>
+      </body>
+
+      <body name="right_stub" pos="0 -0.12 0.05">
         <joint name="toe_joint_b" type="hinge" axis="1 0 0" range="-0.3 0.3"/>
-        <geom name="toe_b_geom" type="sphere" size="0.02" mass="0.05"/>
+        <geom name="right_stub_geom" type="sphere" size="0.02" mass="0.05"/>
       </body>
     </body>
   </worldbody>

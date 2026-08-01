@@ -3,8 +3,18 @@
 Discovery-driven on purpose. Adding a robot means adding a directory under
 `robots/`; it must never mean writing a test file. This module globs
 `robots/*/robot.yaml` (skipping `_template`, which ships templates rather
-than a robot) and parametrizes over each robot's `actuators/*.yaml` presets.
-A new robot directory is picked up by collection with no edit here.
+than a robot) plus `tests/data/toy_robot`, and parametrizes over each
+robot's `actuators/*.yaml` presets. A new robot directory is picked up by
+collection with no edit here.
+
+The toy fixture is in the list deliberately. It is a robot -- a robot.yaml,
+a source MJCF, actuator presets -- and holding it to the same bar is what
+keeps these checks honest: a "generic" assertion that only ever runs against
+the two vendored humanoids is one hardcoded name away from being
+robot-specific with nothing to catch it. It has already earned its place. It
+is the only fixture here whose plane geom is not called "floor" or "ground",
+whose reset keyframe is not called "home", and whose actuator preset is not
+a position servo.
 
 Everything asserted here is either derived from the robot's own yaml (the
 compiled model must agree with what robot.yaml and the preset declare) or a
@@ -36,6 +46,8 @@ from humanoid_lab.envs.joystick import Joystick, default_config
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale, load_actuator_preset, resolve
 from humanoid_lab.robot.spec import RobotSpec, load_robot_spec, validate_against_model
+
+TOY_ROBOT_DIR = Path(__file__).resolve().parent.parent / "data" / "toy_robot"
 
 # Keyframe foot-clearance band, docs/adding-a-robot.md's measurement rule:
 # the lowest foot-geom bottom must sit just above the floor, neither floating
@@ -89,18 +101,19 @@ class RobotCase:
 
 
 def _robot_dirs() -> list[Path]:
-    """Every robot directory in the lab.
+    """Every robot directory in the lab, plus the toy fixture.
 
     `robots/_template` is skipped: it ships `robot.yaml.template`, not a
     `robot.yaml`, so the glob already misses it -- the explicit filter is
     here so a future template that does carry a real robot.yaml still stays
     out of the suite.
     """
-    return [
+    dirs = [
         p.parent
         for p in sorted(paths.ROBOTS_DIR.glob("*/robot.yaml"))
         if p.parent.name != "_template"
     ]
+    return [*dirs, TOY_ROBOT_DIR]
 
 
 def _cases() -> list[RobotCase]:
@@ -127,7 +140,7 @@ CASE_IDS = [c.id for c in CASES]
 
 @pytest.fixture(scope="module")
 def _cache():
-    return {"spec": {}, "model": {}, "env": {}, "expect": {}}
+    return {"spec": {}, "model": {}, "env": {}, "preset": {}, "expect": {}}
 
 
 def robot_spec(_cache, robot_dir: Path) -> RobotSpec:
@@ -155,6 +168,27 @@ def built_env(_cache, case: RobotCase) -> Joystick:
         config.reset_keyframe = _reset_keyframe(spec)
         _cache["env"][case.id] = Joystick(case.robot_dir, case.preset, config)
     return _cache["env"][case.id]
+
+
+def actuator_preset(_cache, case: RobotCase):
+    if case.id not in _cache["preset"]:
+        _cache["preset"][case.id] = load_actuator_preset(case.robot_dir, case.preset)
+    return _cache["preset"][case.id]
+
+
+def require_position_servo(_cache, case: RobotCase) -> None:
+    """Skip a check whose meaning depends on ctrl being a joint ANGLE.
+
+    `_pd_hold` writes the reset keyframe's joint angles into `data.ctrl`.
+    Under a `pd` preset that is a position target and the robot really is
+    being held. Under `ideal_torque` the same numbers are a torque command,
+    and nothing holds the pose at all -- so "did it hold" and "was the stance
+    clean while it held" are not questions that preset can be asked. The gate
+    is on the ACTUATOR MODEL, not on the robot.
+    """
+    model = actuator_preset(_cache, case).model
+    if model != "pd":
+        pytest.skip(f"preset '{case.preset}' is a '{model}' actuator; ctrl is not a joint angle")
 
 
 def expectations(_cache, robot_dir: Path) -> dict:
@@ -429,7 +463,7 @@ def test_preset_injects_the_values_its_yaml_declares(_cache, case):
     """
     spec = robot_spec(_cache, case.robot_dir)
     model = built_model(_cache, case)
-    preset = load_actuator_preset(case.robot_dir, case.preset)
+    preset = actuator_preset(_cache, case)
     params = resolve(preset, spec)
 
     for joint_name in spec.actuated_joints:
@@ -670,7 +704,8 @@ def keyframe_rollout(_cache, _rollouts, case: RobotCase) -> dict:
     foot_ids = {model.geom(n).id for n in spec.foot_geoms}
 
     hold_steps = int(round(HOLD_SECONDS / model.opt.timestep))
-    impure_contacts, finite = [], True
+    assert 0 < hold_steps <= int(round(NAN_SECONDS / model.opt.timestep))
+    hold_base_z, impure_contacts, finite = float("nan"), [], True
     for step in range(int(round(NAN_SECONDS / model.opt.timestep))):
         mujoco.mj_step(model, data)
         finite = finite and bool(np.all(np.isfinite(data.qpos)) and np.all(np.isfinite(data.qvel)))
@@ -720,6 +755,7 @@ def test_the_reset_keyframe_holds_the_robot_up(_cache, _rollouts, case):
     catches the collapse: gains or a keyframe wrong enough that the robot is
     already on its way down when the episode starts.
     """
+    require_position_servo(_cache, case)
     result = keyframe_rollout(_cache, _rollouts, case)
     floor = HOLD_MIN_HEIGHT_FRACTION * result["keyframe_base_z"]
     assert result["hold_base_z"] > floor, (
@@ -738,6 +774,7 @@ def test_only_the_feet_touch_the_floor_at_the_reset_keyframe(_cache, _rollouts, 
     contype/conaffinity scheme is not what robot.yaml assumes -- injected
     primitives are supposed to pair with the floor only.
     """
+    require_position_servo(_cache, case)
     result = keyframe_rollout(_cache, _rollouts, case)
     assert not result["impure_contacts"], f"{case.id}: {result['impure_contacts'][:5]}"
 
@@ -833,7 +870,14 @@ def test_observation_widths_match_the_declared_component_lists(_cache, case):
     assert env.action_size == n_joints
     for name in ("joint_pos", "joint_vel", "last_action", "actuator_force"):
         assert sizes[name] == n_joints, (case.id, name)
-    assert sizes["contacts"] == len(spec.foot_sites), case.id
+    n_feet = len(spec.foot_sites)
+    assert sizes["contacts"] == n_feet, case.id
+    # One cos/sin pair per foot. envs/joystick.py's gait clock is a fixed
+    # two-entry antiphase schedule, so a robot with any other number of feet
+    # broadcasts against it and silently gets a phase vector that does not
+    # describe its own feet. The toy fixture had exactly that shape mismatch
+    # while it had one foot.
+    assert sizes["phase"] == 2 * n_feet, case.id
 
 
 # -- per-robot measured expectations -----------------------------------------
