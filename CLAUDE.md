@@ -16,7 +16,7 @@ network and experiment groups.
 | `check-contacts` | measure the warp contact and constraint budgets a preset needs |
 | `test` | `pytest tests/unit -q` — model-free, seconds, the edit loop |
 | `test-slow` / `test-all` | `tests/integration` (builds and steps MJX) / both, before a merge |
-| `battery` / `grid-report` / `report` / `eval` | eval battery, robustness-grid table, report, video |
+| `battery` / `report` / `eval` | eval battery, report, video |
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts (`policy.npz`, `policy_meta.json`) from a checkpoint |
 

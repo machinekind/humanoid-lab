@@ -70,22 +70,9 @@ case "${1:-}" in
     [[ -n "$motors" ]] && report_args+=(--motors "$motors")
     "$PY" -m humanoid_lab.sizing.report "${report_args[@]}"
     ;;
-  # PLAN.md build step 10: fixed eval battery -> runs/<name>/battery.json.
-  # Passthrough args: --run runs/<name> [--out path.json]
-  # [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0].
-  #
-  # The last three are the robustness grid's eval-only plant perturbations
-  # (see src/humanoid_lab/eval/grid.py). Any of them requires
-  # --out and the CLI refuses without it: a perturbed measurement must never
-  # overwrite the run's canonical battery.json. Cell filenames come from eval/grid.py's
-  # cell_name, which is what `grid-report` aggregates, e.g.
-  #   ./run.sh battery --run runs/r --alpha 1.58 --lag-tau 0.005 \
-  #     --out runs/r/grid/battery_a1.58_lag5ms_envnone.json
+  # Fixed eval battery -> runs/<name>/battery.json.
+  # Passthrough args: --run runs/<name> [--out path.json].
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
-  # Aggregates runs/<name>/grid/*.json into a markdown table with PASS/FAIL
-  # per cell. Passthrough args:
-  # --runs runs/<name> [runs/<other> ...] [--out path.md].
-  grid-report) shift; "$PY" -m humanoid_lab.eval.grid_report "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
   # first). If runs/<name>/sizing_data.npz also exists, additionally runs
   # sizing-report's report half -- a separate decoupled invocation (not a
@@ -128,7 +115,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|grid-report|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

@@ -27,12 +27,6 @@ scenarios of the documented wall-clock length:
   spin_left     -- pure spin, wz=+0.5 rad/s held. 6 s.
   spin_right    -- pure spin, wz=-0.5 rad/s held. 6 s.
 
-Robustness grid: --alpha, --lag-tau and --torque-envelope perturb the
-plant for one measurement. Any of them requires --out, so a
-perturbed measurement cannot reach the canonical battery.json even by
-forgetting the flag. The mechanisms live in eval/grid.py and the
-aggregator in eval/grid_report.py; run_battery below holds the one branch
-between the native and the explicit-PD rollout paths, documented there.
 """
 
 from __future__ import annotations
@@ -46,10 +40,8 @@ import jax
 import jax.numpy as jp
 import numpy as np
 from ml_collections import config_dict
-from mujoco import mjx
 
 from humanoid_lab import sim_budget
-from humanoid_lab.eval import grid
 from humanoid_lab.eval.gait import gait_metrics
 
 # -- pure metric functions -------------------------------------------------
@@ -562,65 +554,20 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     return {k: np.array(v) for k, v in rec.items()}, fell_at, budget
 
 
-def run_battery(
-    run_dir: Path,
-    alpha: float = 1.0,
-    lag_tau: float = 0.0,
-    torque_envelope=None,
-) -> dict:
+def run_battery(run_dir: Path) -> dict:
     """Run the fixed scenario battery against `run_dir`'s checkpoint.
 
     Returns the same dict main() writes (minus the `timestamp` main() adds
     at write time).
-
-    `alpha` (Kt miscalibration), `lag_tau` (actuator lag, seconds) and
-    `torque_envelope` (an `(omega_b, omega_0)` pair, or None) are the
-    robustness grid's eval-only plant perturbations -- see `eval/grid.py`.
-    The defaults `(1.0, 0.0, None)` reproduce the unperturbed battery
-    exactly, and `eval/report.py` only ever calls it that way.
-
-    **This function holds the grid's one documented branch.** An
-    unperturbed cell steps `env.reset`/`env.step` themselves -- the NATIVE
-    path, bit-for-bit what `./run.sh battery` has always run. A cell with a
-    lag or an envelope steps the explicit-PD substitute instead. The two are
-    not the same code, and no tiny lag value routes the baseline through the
-    substitute. What ties them together is a measured tolerance as the lag
-    goes to zero (`tests/integration/test_grid_env.py`), not a shared code
-    path. See eval/grid.py's module docstring.
     """
     run, env, ckpt, inf = load_checkpoint_policy(run_dir)
+    reset, step = jax.jit(env.reset), jax.jit(env.step)
 
-    if alpha != 1.0:
-        # In place on the model this eval process holds, then re-uploaded:
-        # env.mj_model is the built, post-injection model, and `alpha`
-        # models a firmware error on top of whatever preset produced it.
-        # Nothing training-side ever sees this: the env was constructed
-        # seconds ago inside this process, from run.json.
-        grid.apply_kt_miscalibration(env.mj_model, alpha)
-        env._mjx_model = mjx.put_model(env.mj_model, impl=env._backend)
-
-    if lag_tau > 0 or torque_envelope is not None:
-        reset_fn, step_fn = grid.make_explicit_pd_rollout_fns(env, lag_tau, torque_envelope)
-        reset, step = jax.jit(reset_fn), jax.jit(step_fn)
-    else:
-        reset, step = jax.jit(env.reset), jax.jit(env.step)
-
-    # Read AFTER the alpha scaling above, so `torque_sat_frac` is scored
-    # against the cap the perturbed plant actually had.
     torque_cap = np.asarray(env.mj_model.actuator_forcerange[:, 1])
 
     results = {
         "run": run["run_name"],
         "checkpoint": ckpt.name,
-        # Stamped on every battery.json, unperturbed ones included: a file
-        # with no grid block would be indistinguishable from one written
-        # before the axes existed.
-        "grid": {
-            "alpha": alpha,
-            "lag_tau": lag_tau,
-            "torque_envelope": list(torque_envelope) if torque_envelope else None,
-            "path": "explicit_pd" if (lag_tau > 0 or torque_envelope is not None) else "native",
-        },
     }
     nacon_seen, nefc_seen = [], []
     for name, (cmd_at, n_steps) in battery_scenarios(env.dt).items():
@@ -639,78 +586,16 @@ def run_battery(
     return results
 
 
-def armed_grid_flags(alpha, lag_tau, torque_envelope) -> list[str]:
-    """The robustness-grid flags this invocation actually perturbs with.
-
-    Empty for the canonical battery -- the baseline cell is the native path
-    (alpha 1.0, no lag, no envelope), so a run of it is not a grid cell and
-    may write <run>/battery.json. `torque_envelope` is the raw CLI string:
-    presence is what arms it, and a malformed one is rejected separately.
-    """
-    return [
-        name for name, on in (
-            ("--alpha", float(alpha) != 1.0),
-            ("--lag-tau", float(lag_tau) != 0.0),
-            ("--torque-envelope", torque_envelope is not None),
-        ) if on
-    ]
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", required=True, type=Path)
     ap.add_argument(
         "--out", default=None, type=Path,
-        help="write here instead of <run>/battery.json. REQUIRED whenever any "
-        "of --alpha/--lag-tau/--torque-envelope perturbs the plant: a "
-        "robustness-grid cell must never land on top of the run's canonical "
-        "number table. eval/grid.py's cell_name is the filename "
-        "eval/grid_report.py aggregates.",
-    )
-    ap.add_argument(
-        "--alpha", type=float, default=1.0,
-        help="Kt miscalibration: scale the built model's effective PD gains "
-        "and torque cap by this factor (1.0 = no-op). See eval/grid.py's "
-        "apply_kt_miscalibration.",
-    )
-    ap.add_argument(
-        "--lag-tau", type=float, default=0.0,
-        help="actuator-bandwidth time constant, seconds (0.0 = the native "
-        "pipeline, unchanged). Above 0 switches to the explicit-PD substep "
-        "loop with a first-order torque lag; see eval/grid.py's "
-        "make_explicit_pd_rollout_fns.",
-    )
-    ap.add_argument(
-        "--torque-envelope", default=None,
-        help="'OMEGA_B,OMEGA_0' rad/s (default: none, flat cap). "
-        "Speed-dependent DRIVING-torque cap: the static cap up to OMEGA_B, "
-        "ramping linearly to 0 at OMEGA_0, 0 beyond; BRAKING keeps the full "
-        "static cap. Forces the explicit-PD path even at --lag-tau 0.",
+        help="write here instead of <run>/battery.json",
     )
     args = ap.parse_args()
 
-    armed = armed_grid_flags(args.alpha, args.lag_tau, args.torque_envelope)
-    if armed and args.out is None:
-        # Same shape as build_model.py's "--set requires --out": the default
-        # path is the canonical artifact, and a perturbed measurement must
-        # not be able to land on it -- not even by forgetting a flag.
-        ap.error(
-            f"{', '.join(armed)} requires --out: the default <run>/battery.json is "
-            "the run's canonical, unperturbed number table and a robustness-grid "
-            "cell must not overwrite it. eval/grid.py's cell_name is the filename "
-            "eval/grid_report.py aggregates"
-        )
-
-    try:
-        torque_envelope = grid.parse_torque_envelope(args.torque_envelope)
-    except ValueError as exc:
-        # argparse's own exit path, so a malformed spec fails before the
-        # checkpoint is even loaded rather than raising out of a rollout.
-        ap.error(str(exc))
-
-    results = run_battery(
-        args.run, alpha=args.alpha, lag_tau=args.lag_tau, torque_envelope=torque_envelope
-    )
+    results = run_battery(args.run)
     out = args.out or (args.run / "battery.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     stamped = dict(results, timestamp=datetime.now().isoformat(timespec="seconds"))

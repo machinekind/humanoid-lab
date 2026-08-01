@@ -736,117 +736,6 @@ axis already covers that: a different stiffness is a different preset, or an
 `actuators.overrides` entry on the group that needs it, and both land in this
 block.
 
-## Robustness grid (eval-only)
-
-Three sim2real risks, probed by perturbing the plant of one battery run.
-This changes **no training code**: `envs/` never imports `eval/grid.py`, and
-every mutation happens to the model the eval process built seconds earlier
-from `run.json`.
-
-```
-./run.sh battery --run runs/<name> [--alpha A] [--lag-tau TAU] \
-    [--torque-envelope OMEGA_B,OMEGA_0] --out runs/<name>/grid/<cell>.json
-./run.sh grid-report --runs runs/<name> [--out runs/<name>/grid_report.md]
-```
-
-| Flag | Default | What it perturbs |
-|---|---|---|
-| `--alpha A` | `1.0` | Firmware Kt miscalibration. Scales the built model's effective `kp`, `kd` **and** torque cap together by `A`. Operates on the post-injection values — the same numbers `run.json`'s `actuator_gains` stamps — so it composes with any preset and any `actuators.overrides`. `1.0` writes nothing. |
-| `--lag-tau TAU` | `0.0` | Actuator bandwidth, seconds. Replaces the model's instantaneous PD actuator with an explicit per-substep loop: `tau_pd = kp*(ctrl - qpos) - kd*qvel`, clipped to the cap, then `tau += (1 - exp(-dt_sub/TAU)) * (tau_pd - tau)`. The lag state persists across control steps and zeroes at reset. |
-| `--torque-envelope OMEGA_B,OMEGA_0` | none | Back-EMF droop, rad/s. Caps **driving** torque at the static cap up to `OMEGA_B`, ramping linearly to zero at `OMEGA_0`. **Braking** (`tau * qvel < 0`) is exempt from the ramp and keeps the full static cap. Composes with `--alpha`: the plateau is the alpha-scaled cap. Forces the explicit-PD path even at `--lag-tau 0`, because the ramp needs per-substep `qvel`. |
-| `--out PATH` | `<run>/battery.json` | Where the cell lands. **Required whenever any flag above is armed** — the CLI errors out otherwise, naming the flags. A perturbed measurement must never overwrite the run's canonical number table, and a forgotten `--out` must fail rather than land there. |
-
-Every `battery.json` — perturbed or not — now carries a `grid` block naming
-`alpha`, `lag_tau`, `torque_envelope`, and `path` (`native` or
-`explicit_pd`). `./run.sh report` renders it as a `plant:` line in the
-header, so an `eval_report.md` always states which plant produced its
-numbers.
-
-### The baseline cell is the native path
-
-`eval/battery.py::run_battery` branches on `lag_tau > 0 or torque_envelope
-is not None`. An unperturbed cell steps `env.reset` / `env.step` themselves
-— bit for bit what `./run.sh battery` has always run. A cell with a lag or
-an envelope steps the explicit-PD substitute instead. **The two are not the
-same code**, and no tiny lag value routes the baseline through the
-substitute. Any claim that every cell runs through the same rollout code is
-false in that sense.
-
-What ties the two paths together is a measured property, not shared code:
-as the lag goes to zero the explicit-PD path reproduces the native pipeline.
-**Measured 1.0e-6 relative on `tracking_err_rms`** (native 0.05827954,
-explicit 0.05827960; `roboto_origin` / `sizing_ideal`, 80 control steps, CPU
-backend, `lag_tau = 1e-4` s where the filter coefficient is 1.0 to machine
-precision). `tests/integration/test_grid_env.py` asserts `1e-4` — a
-hundredfold margin for float-ordering drift across platforms. What is left
-at that limit is float ordering: MuJoCo sums
-`gain*ctrl + bias·(1, qpos, qvel)` inside `mj_fwdActuation`, the explicit
-loop computes `kp*(ctrl - qpos) - kd*qvel` in JAX.
-
-### Cell filenames and the report
-
-`eval/grid.py::cell_name` is the single writer of the convention and
-`eval/grid_report.py::parse_cell_name` the single reader; a unit test
-round-trips them. A sweep is a shell loop:
-
-```bash
-run=runs/<name>; mkdir -p "$run/grid"
-for alpha in 1.0 1.58; do
-  for lag in 0 0.005 0.010; do
-    ms=$(python3 -c "print(round($lag*1000))")
-    ./run.sh battery --run "$run" --alpha "$alpha" --lag-tau "$lag" \
-      --out "$run/grid/battery_a${alpha}_lag${ms}ms_envnone.json" \
-      || echo "WARN: cell alpha=$alpha lag=$lag crashed; continuing"
-  done
-done
-./run.sh grid-report --runs "$run"
-```
-
-A cell that falls over under a harsh perturbation is an expected outcome of
-this probe, not a bug — hence the `|| echo`. A cell that was never written
-prints as `MISSING` in the report rather than crashing it. There is no
-remote grid job here yet; the loop above is the whole of it.
-
-### The gates
-
-**These are quadruped gates. Re-derive them for a biped before trusting a
-PASS.** They were tuned on a statically stable 0.21 m four-bar quadruped,
-whose velocity error, joint-velocity spectrum and torque headroom all live
-on different scales from a biped's. They are here so the grid produces a
-verdict on day one, and they are named in `eval/grid_report.py` and
-re-stated in every report so nobody reads a PASS as this robot's bar.
-
-| Gate | Constant | Rule |
-|---|---|---|
-| Falls | — | No scenario fell. |
-| Velocity error | `VEL_ERR_LIMIT = 0.20` m/s | Every scenario's `vel_err_vx` and `vel_err_vy` are under it. |
-| Vibration | `VIBRATION_MULT = 1.3` | Every scenario's `vibration` is at most 1.3× the reference cell's number for that same scenario. |
-| Saturation | `SATURATION_LIMIT = 0.05` | The worst `torque_sat_frac` over every scenario is under it. |
-
-Two choices here, both about not inventing numbers.
-
-The **yaw error is reported but not gated**. `VEL_ERR_LIMIT` is metres per
-second; no rad/s limit has been derived and this repo does not make one up.
-
-The **vibration reference is the grid's own baseline cell** (alpha 1.0, lag
-0, envelope none), not a hardcoded keeper table, because there is no keeper
-policy here yet. With no baseline cell in the grid the vibration gate is
-**not applied**, and the report says so under "Gates not applied" — a gate
-with no data behind it is never counted as a pass. There is no "stiffest
-surviving run" summary either: that needs a scalar stiffness stamp to rank
-by, and `actuator_gains.kp` is per-actuator.
-
-### Choosing the numbers
-
-`--alpha 1.58` is a carried-over rung (an X8-32 versus AK80-9 Kt mismatch)
-and `--lag-tau` 5 and 10 ms the usual sweep. The **envelope has no
-carried-over numbers**: `OMEGA_B` / `OMEGA_0` describe one motor's torque-speed curve and
-have to come from a datasheet. Two sanity checks before reading a result: a
-plateau that ends above the joint speeds the policy actually reaches clamps
-nothing at all (on `roboto_origin` / `sizing_ideal` the joints reach about
-3.1 rad/s and peak at 52% of cap, so `8,20` is a no-op), and a preset with
-generous caps needs a tighter ramp than a deployable one to feel anything.
-
 ## Eval videos
 
 `./run.sh eval --run runs/<name>` renders one battery scenario to MP4 —
@@ -932,8 +821,7 @@ Read from `run.sh` as it stands today:
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
-| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--alpha A] [--lag-tau TAU] [--torque-envelope OMEGA_B,OMEGA_0]`. Writes `<run>/battery.json` unless `--out` says otherwise; the last three flags require `--out`, so a grid cell never lands on the canonical path. See [Robustness grid](#robustness-grid-eval-only). |
-| `grid-report` | `python -m humanoid_lab.eval.grid_report` | `--runs runs/<name> [runs/<other> ...] [--out PATH]`. Aggregates each run's `grid/` cells into one markdown table with PASS/FAIL per cell. |
+| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH]`. Writes `<run>/battery.json` unless `--out` says otherwise. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
 | `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
 | `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
