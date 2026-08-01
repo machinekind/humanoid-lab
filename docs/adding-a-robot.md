@@ -137,12 +137,12 @@ NaN, or if `|qvel|` exceeds `--max-qvel` (default 100 rad/s). Both gates
 must pass before the robot is usable for training.
 
 `check-contacts` measures the per-world contact and constraint-row peaks a
-new robot reaches and prints the warp budgets they need. A robot with more
-foot collision geoms than the ones already here can outgrow
-`task.env.sim.naconmax_per_env` / `njmax`, and warp drops the overflow
-silently — see `docs/configuration.md`'s warp contact budgets section. Add
-the new robot to `tests/integration/test_check_contacts.py`'s `ROBOTS` list
-so the guard covers it.
+new robot reaches and prints the warp budgets they need. Record them as the
+robot.yaml `sim_budget` block (warp drops overflow silently — see
+`docs/configuration.md`'s warp contact budgets section; a warp run without
+a recorded budget refuses to construct).
+`tests/integration/test_check_contacts.py` discovers every robot directory
+and guards the recorded numbers.
 
 ## 5. Write no test
 

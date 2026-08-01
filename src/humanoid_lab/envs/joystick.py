@@ -47,62 +47,23 @@ def default_config() -> config_dict.ConfigDict:
             # Physics backend. auto picks warp on a CUDA host and jax
             # elsewhere.
             #
-            # naconmax_per_env and njmax are the two warp buffers. Only warp
-            # reads them: envs/backend.py's make_data_fn passes them to
-            # mjx.make_data on the warp branch and calls make_data(mjx_model)
-            # with no kwargs on the jax branch, so changing them cannot move a
-            # jax rollout by a bit (which is why the numbers below could be
-            # resized without touching the goldens).
-            #
-            # MEASURED 2026-07-31 with
-            #   ./run.sh check-contacts --robot R --preset P
-            # (200 control steps x 5 seeds per regime; standing = neutral
-            # actions, walking = full-amplitude joint sinusoid, fallen =
-            # dropped from a tilt, sweeping face-down/side/back). Per-world
-            # peaks, contacts / constraint rows:
-            #
-            #   robot / preset               standing   walking    fallen
-            #   asimov_v1/sizing_ideal        32 / 157  30 / 149  22 / 117
-            #   asimov_v1/deploy_pd           31 / 153  29 / 145  22 / 117
-            #   roboto_origin/sizing_ideal    12 / 118   9 / 100  13 / 124
-            #   roboto_origin/deploy_pd       12 / 118  12 / 118  13 / 124
-            #
-            # Worst case 32 contacts / 157 rows, both on asimov_v1, whose 20
-            # foot geoms (10 sole + 10 toe capsules) put up to 2 contacts each
-            # on the plane the moment both feet are flat. At the ~7x headroom
-            # rule that is 224 and 1120, rounded up to a multiple of 8 and
-            # 32. The row peak is DERIVED on the jax backend (29 constant rows
-            # + 4 per contact at asimov's condim 3 and a pyramidal cone; 46 +
-            # 6 on roboto) -- see check_contacts.py. Re-measure both on a GPU
-            # box, where they are live counters.
-            #
-            # The fallen regime does not dominate here. A neutral action
-            # holds neither robot's home keyframe up under the stock preset
-            # gains, so "standing" is itself a collapse, and its
-            # first few steps -- both feet flat, every sole capsule loaded --
-            # carry the highest count. The old 32 was therefore sitting
-            # exactly ON asimov's standing peak: a warp run would have been
-            # dropping contacts from step 2, silently.
-            #
-            # Two facts for the debugging that follows a resize. Warp
-            # allocates the contact pool at make_data time, sized
-            # naconmax_per_env * num_envs, so this number is a device-memory
-            # line item: 224 at 4096 envs is a 917,504-contact pool, and on
-            # the quadruped predecessor a 4096-env job ran out of device
-            # memory on a 256 pool (1,048,576). A big-batch job that OOMs
-            # lowers this or lowers num_envs, and run.json's `contacts` block
-            # is what says whether it can afford to. And one MJX step is not
-            # batch-shape invariant on the jax CPU backend, so a
-            # batched-vs-sequential parity check has to compare integer
-            # outcomes (contact counts, done flags), never floats.
-            #
-            # Overflow is silent in both directions: contacts past naconmax
-            # are dropped, and constraint rows past njmax apply no force with
-            # no warning anywhere. tests/integration/test_check_contacts.py
-            # fails if new collision geometry outgrows these numbers.
+            # naconmax_per_env and njmax are the warp contact/constraint
+            # buffers; only warp reads them (the jax branch of
+            # envs/backend.py takes no kwargs). None defers to the robot's
+            # own measured `sim_budget` block in robot.yaml, and a warp run
+            # with neither refuses at construction -- overflow is silent in
+            # both directions: contacts past naconmax are dropped and rows
+            # past njmax apply no force, with no warning anywhere.
+            # ./run.sh check-contacts measures a robot's peaks and
+            # recommends budgets; tests/integration/test_check_contacts.py
+            # fails when new collision geometry outgrows a robot's recorded
+            # numbers. Warp allocates naconmax_per_env * num_envs contacts
+            # at make_data time, so the budget is a device-memory line item
+            # a big-batch job trades against num_envs (run.json's
+            # `contacts` block records the peaks).
             backend="auto",
-            naconmax_per_env=224,
-            njmax=1120,
+            naconmax_per_env=None,
+            njmax=None,
             num_envs=1,
         ),
         episode_length=1000,

@@ -96,12 +96,30 @@ class HumanoidEnv(mjx_env.MjxEnv):
         sim = self._config.sim
         self._backend = resolve_backend(sim.backend)
         self._mjx_model = mjx.put_model(self._mj_model, impl=self._backend)
+        # Warp contact budgets: an explicit sim config value wins, else the
+        # robot's own measured sim_budget block (robot.yaml). Only warp
+        # reads them, and running warp without a budget would drop contacts
+        # silently, so that combination refuses here instead.
+        budget = self._robot_spec.sim_budget
+        self._naconmax_per_env = (
+            sim.naconmax_per_env if sim.naconmax_per_env is not None
+            else budget.get("naconmax_per_env")
+        )
+        self._njmax = sim.njmax if sim.njmax is not None else budget.get("njmax")
+        if self._backend == "warp" and (self._naconmax_per_env is None or self._njmax is None):
+            raise ValueError(
+                f"backend 'warp' needs contact budgets, and robot "
+                f"'{self._robot_spec.name}' has no sim_budget block in its "
+                "robot.yaml (and the sim config sets none). Measure with "
+                "./run.sh check-contacts and record naconmax_per_env/njmax "
+                "in robot.yaml"
+            )
         self._make_data_fn = make_data_fn(
             self._backend,
             self._mj_model,
             self._mjx_model,
-            sim.naconmax_per_env,
-            sim.njmax,
+            self._naconmax_per_env,
+            self._njmax,
             sim.num_envs,
         )
 

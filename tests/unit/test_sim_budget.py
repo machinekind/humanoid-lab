@@ -214,15 +214,17 @@ def test_observed_peaks_is_all_none_with_neither_counters_nor_contacts():
 
 
 def _stub_env(backend="jax", naconmax_per_env=224, njmax=1120, num_envs=1):
-    sim = types.SimpleNamespace(
-        naconmax_per_env=naconmax_per_env, njmax=njmax, num_envs=num_envs
-    )
+    # _naconmax_per_env/_njmax mirror envs/base.py's resolved attributes
+    # (sim config value if set, else the robot.yaml sim_budget).
     return types.SimpleNamespace(
-        _backend=backend, _config=types.SimpleNamespace(sim=sim)
+        _backend=backend,
+        _naconmax_per_env=naconmax_per_env,
+        _njmax=njmax,
+        _config=types.SimpleNamespace(sim=types.SimpleNamespace(num_envs=num_envs)),
     )
 
 
-def test_budget_report_for_env_reads_the_budgets_off_the_env_config():
+def test_budget_report_for_env_reads_the_budgets_the_env_resolved():
     """Both writers of the block read the same three numbers from the same
     place, so run.json and battery.json can never disagree about what the run
     was configured with."""

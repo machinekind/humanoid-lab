@@ -300,3 +300,13 @@ model_patches:
       type: capsule
       size: [0.0315]
       fromto: [0.031, 0.0, 0.0, 0.105, 0.0, 0.0]
+
+# Warp contact/constraint budgets for this robot's collision geometry.
+# Measured worst case across standing/walking/fallen regimes
+# (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 13 contacts
+# / 124 rows, in the fallen regime. Times the 7x headroom rule, rounded up
+# to multiples of 8 and 32. The row peak is derived on the jax backend;
+# re-measure on a warp host, where both are live counters.
+sim_budget:
+  naconmax_per_env: 96
+  njmax: 896

@@ -130,3 +130,14 @@ sensors:
   quat: imu_quat
   linvel: imu_lin_vel
   acc: imu_lin_acc
+
+# Warp contact/constraint budgets for this robot's collision geometry.
+# Measured worst case across standing/walking/fallen regimes
+# (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 32 contacts
+# / 157 rows: standing, both feet flat, every sole and toe capsule loaded.
+# Times the 7x headroom rule, rounded up to multiples of 8 and 32. The row
+# peak is derived on the jax backend; re-measure on a warp host, where both
+# are live counters.
+sim_budget:
+  naconmax_per_env: 224
+  njmax: 1120

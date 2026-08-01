@@ -529,44 +529,33 @@ rollout by a bit.
 | Key | Default | Meaning |
 |---|---:|---|
 | `sim.backend` | `auto` | `auto` picks warp on a CUDA host and jax elsewhere. `jax` and `warp` pass through. |
-| `sim.naconmax_per_env` | `224` | Contact budget per world. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
-| `sim.njmax` | `1120` | Constraint-row budget per world. Never multiplied by the env count. |
+| `sim.naconmax_per_env` | `None` | Contact budget per world. `None` defers to the robot's `sim_budget` block in its robot.yaml. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
+| `sim.njmax` | `None` | Constraint-row budget per world, same `None` fallback. Never multiplied by the env count. |
 | `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
 
 Both overflows are silent. Contacts past `naconmax` are dropped; rows past
 `njmax` apply no force, and nothing warns anywhere — no counter reports it and
 no exception is raised, so a run just trains against a robot whose feet half
-pass through the floor.
+pass through the floor. That is why the budgets are fail-closed: a warp env
+whose robot records no `sim_budget` (and whose sim config sets none) refuses
+to construct.
 
-**Measured 2026-07-31**, `./run.sh check-contacts --robot R --preset P`, 200
-control steps × 5 seeds per regime. Per-world peaks, contacts / constraint
-rows:
-
-| robot / preset | standing | walking | fallen |
-|---|---:|---:|---:|
-| `asimov_v1` / `sizing_ideal` | 32 / 157 | 30 / 149 | 22 / 117 |
-| `asimov_v1` / `deploy_pd` | 31 / 153 | 29 / 145 | 22 / 117 |
-| `roboto_origin` / `sizing_ideal` | 12 / 118 | 9 / 100 | 13 / 124 |
-| `roboto_origin` / `deploy_pd` | 12 / 118 | 12 / 118 | 13 / 124 |
-
-Worst case 32 contacts and 157 rows, both on `asimov_v1`, whose 20 foot geoms
-put up to two contacts each on the floor plane the moment both feet are flat.
-At the ~7× headroom rule that is 224 and 1120. The previous defaults, 32 and
-320, inherited from a quadruped, put `naconmax_per_env` exactly **on**
-asimov's standing peak.
-
-The fallen regime does not dominate here. A neutral action
-holds neither robot's home keyframe up under the stock preset gains, so
-"standing" is itself a collapse and its opening steps carry the highest count.
+The budgets are measurements OF a robot's collision geometry, so they live
+with the robot: each `robots/<name>/robot.yaml` records the
+`./run.sh check-contacts` worst case times the 7× headroom rule, with the
+measurement provenance in a comment. The headroom rule itself is inherited
+from the quadruped predecessor and has not been re-derived for these
+robots' fallen-regime contact patterns.
 
 Two facts for the debugging that follows a resize. The pool is a real
-device-memory line item: 224 at 4096 envs is a 917,504-contact allocation, and
-a 4096-env job has run out of device memory on a 256 pool. And one MJX step
-is not batch-shape invariant on the jax CPU backend, so a batched-versus-
-sequential parity check has to compare integer outcomes, never floats.
+device-memory line item: 224 per env at 4096 envs is a 917,504-contact
+allocation, and a 4096-env job has run out of device memory on a 256 pool.
+And one MJX step is not batch-shape invariant on the jax CPU backend, so a
+batched-versus-sequential parity check has to compare integer outcomes,
+never floats.
 
-`tests/integration/test_check_contacts.py` fails if new collision geometry
-outgrows the configured budgets.
+`tests/integration/test_check_contacts.py` discovers every robot directory
+and fails if new collision geometry outgrows the recorded budgets.
 
 ### The `contacts` block
 

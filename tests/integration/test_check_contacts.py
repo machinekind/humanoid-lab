@@ -16,30 +16,37 @@ from __future__ import annotations
 import pytest
 
 from humanoid_lab import check_contacts, paths
-from humanoid_lab.envs.joystick import default_config
+from humanoid_lab.robot.spec import load_robot_spec
 
 # Short by CLI standards: every measured peak lands inside the first 80
 # control steps, and three seeds is enough to cover the fallen sweep's three
-# attitudes. The recorded measurement in default_config's comment uses the
-# CLI's own longer defaults.
+# attitudes. The budgets recorded in the robot.yamls use the CLI's own
+# longer defaults.
 TEST_STEPS = 100
 TEST_SEEDS = 3
 
-ROBOTS = [("asimov_v1", "sizing_ideal"), ("roboto_origin", "deploy_pd")]
+# Every robot directory, like test_robot_conformance: adding a robot means
+# adding a directory, not editing this list. Each is measured under its
+# first preset -- the recorded peak tables barely move across presets.
+ROBOTS = sorted(p.parent.name for p in paths.ROBOTS_DIR.glob("*/robot.yaml"))
+
+
+def _first_preset(robot: str) -> str:
+    return sorted(p.stem for p in (paths.ROBOTS_DIR / robot / "actuators").glob("*.yaml"))[0]
 
 
 @pytest.fixture(scope="module")
 def measured():
     return {
         robot: check_contacts.measure_robot(
-            paths.ROBOTS_DIR / robot, preset, steps=TEST_STEPS, seeds=TEST_SEEDS
+            paths.ROBOTS_DIR / robot, _first_preset(robot), steps=TEST_STEPS, seeds=TEST_SEEDS
         )
-        for robot, preset in ROBOTS
+        for robot in ROBOTS
     }
 
 
-@pytest.mark.parametrize("robot, preset", ROBOTS, ids=[r for r, _ in ROBOTS])
-def test_every_regime_reports_a_peak(measured, robot, preset):
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_every_regime_reports_a_peak(measured, robot):
     """Three regimes, all of them measuring something.
 
     No ordering is asserted between them, and that is a finding rather than a
@@ -62,27 +69,25 @@ def test_every_regime_reports_a_peak(measured, robot, preset):
     assert regimes["fallen"]["height_end"] < 0.5
 
 
-@pytest.mark.parametrize("robot, preset", ROBOTS, ids=[r for r, _ in ROBOTS])
-def test_the_configured_budgets_hold_the_measured_peaks_with_headroom(
-    measured, robot, preset
-):
-    """The configured budgets must still cover the measured peaks at the
-    headroom the config comment claims. Adding foot geometry, raising condim,
-    or injecting collision primitives moves the peaks; this test is what makes
-    that a build failure instead of a silent contact drop on the next GPU
-    run."""
-    cfg = default_config().sim
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_the_recorded_budgets_hold_the_measured_peaks_with_headroom(measured, robot):
+    """robot.yaml's sim_budget must still cover the measured peaks at the
+    headroom rule. Adding foot geometry, raising condim, or injecting
+    collision primitives moves the peaks; this test is what makes that a
+    build failure instead of a silent contact drop on the next GPU run."""
+    budget = load_robot_spec(paths.ROBOTS_DIR / robot).sim_budget
+    assert budget, f"{robot}: robot.yaml records no sim_budget block to guard"
     peak_contacts = measured[robot]["peak"]["nacon_max"]
     peak_rows = measured[robot]["peak"]["nefc_max"]
 
-    assert peak_contacts * check_contacts.HEADROOM <= cfg.naconmax_per_env, (
+    assert peak_contacts * check_contacts.HEADROOM <= budget["naconmax_per_env"], (
         f"{robot}: {peak_contacts} peak contacts at {check_contacts.HEADROOM}x headroom "
-        f"needs naconmax_per_env >= {peak_contacts * check_contacts.HEADROOM}, config has "
-        f"{cfg.naconmax_per_env}"
+        f"needs naconmax_per_env >= {peak_contacts * check_contacts.HEADROOM}, robot.yaml has "
+        f"{budget['naconmax_per_env']}"
     )
-    assert peak_rows * check_contacts.HEADROOM <= cfg.njmax, (
+    assert peak_rows * check_contacts.HEADROOM <= budget["njmax"], (
         f"{robot}: {peak_rows} peak constraint rows at {check_contacts.HEADROOM}x headroom "
-        f"needs njmax >= {peak_rows * check_contacts.HEADROOM}, config has {cfg.njmax}"
+        f"needs njmax >= {peak_rows * check_contacts.HEADROOM}, robot.yaml has {budget['njmax']}"
     )
 
 

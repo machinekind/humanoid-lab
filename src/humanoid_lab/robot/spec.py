@@ -132,6 +132,12 @@ class RobotSpec:
     # acceleration). Any subset may be present; envs fall back to a
     # qpos/qvel-derived computation for keys not listed here.
     sensors: dict[str, str] = field(default_factory=dict)
+    # Warp contact/constraint budgets measured for THIS robot's collision
+    # geometry (`./run.sh check-contacts`). Recognized keys:
+    # naconmax_per_env, njmax. A robot without a measurement omits the
+    # block; a warp run then refuses at env construction (envs/base.py)
+    # instead of dropping contacts silently.
+    sim_budget: dict[str, int] = field(default_factory=dict)
 
     @property
     def model_xml_path(self) -> Path:
@@ -200,7 +206,23 @@ def load_robot_spec(robot_dir: Path) -> RobotSpec:
         termination_bodies=list(raw.get("termination_bodies") or []),
         obs_layout=dict(raw.get("obs_layout") or {}),
         sensors=dict(raw.get("sensors") or {}),
+        sim_budget=_parse_sim_budget(raw.get("sim_budget") or {}, yaml_path),
     )
+
+
+def _parse_sim_budget(raw: dict, yaml_path: Path) -> dict[str, int]:
+    known = {"naconmax_per_env", "njmax"}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise ValueError(
+            f"{yaml_path}: sim_budget has unknown key(s) {unknown}; known: {sorted(known)}"
+        )
+    out = {}
+    for key, value in raw.items():
+        if int(value) <= 0:
+            raise ValueError(f"{yaml_path}: sim_budget.{key} must be positive, got {value}")
+        out[key] = int(value)
+    return out
 
 
 def _parse_keyframes(raw_keyframes: dict[str, Any], yaml_path: Path) -> dict[str, Keyframe]:

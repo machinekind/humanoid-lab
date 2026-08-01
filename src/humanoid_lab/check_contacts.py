@@ -3,8 +3,8 @@
     ./run.sh check-contacts --robot asimov_v1 --preset sizing_ideal
 
 Builds the joystick env for a robot/preset and rolls three regimes, reporting
-the per-world peak of both budgets and what `envs/joystick.py`'s
-`sim.naconmax_per_env` / `sim.njmax` should be to clear that peak with
+the per-world peak of both budgets and what the robot.yaml `sim_budget`
+block (naconmax_per_env / njmax) should record to clear that peak with
 headroom.
 
 The three regimes, each rolled from `--seeds` different reset draws (the

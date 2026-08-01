@@ -143,34 +143,41 @@ def budget_report(
     buffers, so a peak past a warp budget is not an overflow there -- it means
     the warp run of the same config WOULD have dropped contacts, which is
     check_contacts' job to say, not this block's.
+
+    The budgets themselves may be None on the jax backend (a robot with no
+    recorded sim_budget); warp cannot construct without them (envs/base.py
+    refuses), so a warp report always carries real numbers.
     """
     nacon = None if nacon_max is None else int(nacon_max)
     nefc = None if nefc_max is None else int(nefc_max)
+    nacon_budget = None if naconmax_per_env is None else int(naconmax_per_env)
+    njmax_budget = None if njmax is None else int(njmax)
     is_warp = backend == "warp"
     return {
         "backend": backend,
         "nacon_max": nacon,
-        "naconmax_per_env": int(naconmax_per_env),
+        "naconmax_per_env": nacon_budget,
         "num_envs": int(num_envs),
         # What make_data allocates for the whole batch. Reported for the
         # device-memory arithmetic, never compared against a per-world peak.
-        "pool": int(naconmax_per_env) * int(num_envs),
+        "pool": None if nacon_budget is None else nacon_budget * int(num_envs),
         # >= not >: at the budget the buffer is full and the next contact is
         # already gone, silently.
-        "overflow": bool(is_warp and nacon is not None and nacon >= naconmax_per_env),
+        "overflow": bool(is_warp and nacon is not None and nacon >= nacon_budget),
         "nefc_max": nefc,
-        "njmax": int(njmax),
-        "rows_overflow": bool(is_warp and nefc is not None and nefc >= njmax),
+        "njmax": njmax_budget,
+        "rows_overflow": bool(is_warp and nefc is not None and nefc >= njmax_budget),
     }
 
 
 def budget_report_for_env(env, nacon_max, nefc_max) -> dict:
-    """`budget_report` with the budgets read off `env`'s resolved sim config.
+    """`budget_report` with the budgets the env actually resolved (sim
+    config value if set, else the robot's own robot.yaml sim_budget).
 
     The single adapter train.py and eval/battery.py both call, so the two
     files cannot disagree about what a run was configured with.
     """
-    sim = env._config.sim
     return budget_report(
-        env._backend, nacon_max, nefc_max, sim.naconmax_per_env, sim.njmax, sim.num_envs
+        env._backend, nacon_max, nefc_max,
+        env._naconmax_per_env, env._njmax, env._config.sim.num_envs,
     )
