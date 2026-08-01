@@ -37,6 +37,3 @@ A payload promises:
   fine, and `train.sh` does it.
 - It exits nonzero on failure, and its header states its partial-failure
   policy.
-
-Remote job submission is a human-authorized action. Agents never submit on
-their own.

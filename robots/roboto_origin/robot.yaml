@@ -104,7 +104,7 @@ keyframes:
   # init_state (modules/roboparty_train/robolab/robolab/assets/robots/
   # roboparty.py at PROVENANCE.md's pinned commit; BSD-3-Clause, not
   # vendored into source/ -- see PROVENANCE.md). Verified per
-  # docs/adding-a-robot.md's measurement rule on 2026-07-15: compiled
+  # docs/adding-a-robot.md's measurement rule: compiled
   # deploy_pd, set qpos to this keyframe, mj_forward, then computed the
   # exact capsule bottom (min over the two world-frame end-cap centers,
   # minus radius) of every foot_geoms entry above. At this pose the
@@ -160,7 +160,7 @@ model_patches:
   # contype/conaffinity on all of them, so the primitives injected below
   # are the only collision surface. Feet alone are NOT enough: with only
   # foot capsules, a toppled robot passes straight through the floor
-  # (reproduced 2026-07-15: shove at home pose -> base settles at
+  # (reproduced: shove at home pose -> base settles at
   # z = -0.73 m, dangling from the feet). Fall detection is base height/
   # tilt (termination_bodies above), but the body still needs floor
   # contact for the fall itself to resolve physically, so every major
@@ -181,7 +181,7 @@ model_patches:
 
   # Six foot capsules (3 per side), replacing the ankle_roll_link visual
   # mesh as collision geometry. Sole footprint measured from the
-  # left/right_ankle_roll_link STL on 2026-07-15: body-frame x
+  # left/right_ankle_roll_link STL: body-frame x
   # [-0.054, 0.104], y [-0.029, 0.029], sole plane at z -0.045. Each
   # capsule: radius 0.012, centerline (fromto) at z -0.033 so the capsule
   # bottom (centerline z minus radius = -0.033 - 0.012 = -0.045) sits
@@ -225,7 +225,7 @@ model_patches:
       size: [0.012]
       fromto: [-0.042, 0.017, -0.033, 0.092, 0.017, -0.033]
 
-    # Body primitives (added 2026-07-15, the fell-through-the-floor fix;
+    # Body primitives (the fell-through-the-floor fix;
     # see the mesh_collisions comment above). All numbers measured from
     # the body's own STL vertices in the body frame, per
     # docs/adding-a-robot.md's measurement rule: boxes take the mesh

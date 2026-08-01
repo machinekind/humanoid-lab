@@ -32,8 +32,9 @@ from pathlib import Path
 # use the thresholds below, because an early/undertrained checkpoint
 # (e.g. this step's 100k-step smoke gate) is EXPECTED to fall or track
 # badly while moving -- that's reported honestly, not hidden.
-_VIBRATION_ATTENTION = 0.5  # training skill's smoothness gate (see battery.py's
-# vibration_index docstring): fbb_v2 scored 0.972 buzzing, 0.168 after the fix.
+_VIBRATION_ATTENTION = 0.5  # fraction of qvel FFT power above the cutoff
+# (see battery.py's vibration_index); smooth and buzzing gaits sit an order
+# of magnitude apart on it.
 _VEL_ERR_ATTENTION = 0.3  # mean |cmd - achieved| per axis, m/s or rad/s
 _TORQUE_SAT_ATTENTION = 0.05  # fraction of (step, joint) samples over 0.95*cap
 _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability

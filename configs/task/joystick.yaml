@@ -5,7 +5,7 @@ env:
   # (see envs/base.py). Validated to exist in the model at construct time.
   reset_keyframe: "home"
 
-  # w01-tek-parity reset pose noise: uniform +-reset_noise (rad) added to
+  # Reset pose noise: uniform +-reset_noise (rad) added to
   # every actuated joint's qpos at reset. 0.0 disables it.
   reset_noise: 0.05
 
@@ -58,7 +58,7 @@ env:
   # asimov stands ~0.72-0.75 m. robot.yaml's home keyframe base_pos z
   # (0.636 m) is not this: it's the floating-base placeholder measured so
   # the feet just touch the floor, not the robot's standing height.
-  # max_tilt_gz is w01-tek's own untuned value, carried as a starting point.
+  # max_tilt_gz is an untuned starting point.
   fall:
     min_height: 0.45
     max_tilt_gz: -0.4

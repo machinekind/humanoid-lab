@@ -68,13 +68,14 @@ def _round_or_none(value: float | None, nd: int) -> float | None:
 def vibration_index(qvel_hist, dt: float, cutoff_hz: float = 5.0) -> float:
     """Fraction of joint-velocity FFT power above `cutoff_hz`.
 
-    This is the training skill's smoothness gate (see this repo's
-    ~/.claude/skills/training-mjx-locomotion/SKILL.md: "A gait that tracks
-    velocity but vibrates (fast motor oscillation) is a reward problem, and
-    it has a number. Measure the fraction of joint-velocity FFT power above
-    5 Hz over an eval rollout" -- fbb_v2 scored 0.972 buzzing, 0.168 after
-    the reward fix that removed it). Works on a (T,) single-joint signal or
-    a (T, n_joints) array pooled across joints.
+    A gait that tracks velocity but vibrates (fast motor oscillation) is a
+    reward problem, and this is its number: buzzing concentrates
+    joint-velocity power well above the stride harmonics, so the
+    high-frequency fraction separates a smooth gait from a buzzing one by
+    an order of magnitude. The 5 Hz default assumes stride harmonics below
+    it; re-derive the cutoff for a gait whose stride rate approaches it.
+    Works on a (T,) single-joint signal or a (T, n_joints) array pooled
+    across joints.
     """
     v = np.asarray(qvel_hist, dtype=float)
     v = v - v.mean(axis=0, keepdims=True)

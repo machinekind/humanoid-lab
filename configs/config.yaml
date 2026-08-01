@@ -6,8 +6,6 @@
 # overrides win over everything here, robot overlays included: Hydra
 # applies them after the whole defaults list composes. `_self_` placement
 # only governs where this file's own keys merge relative to the groups.
-# Probe-verified on this repo: overlay wins over the task/dr base, CLI
-# wins over the overlay.
 #
 # Experiments (configs/experiment/*.yaml) are also `@package _global_`
 # overlays, selected with `experiment=<name>` (no `+`, since the group has
@@ -50,11 +48,10 @@ actuators:
 
 # Ends a run whose eval reward has plateaued. Brax checkpoints at every
 # eval, so the newest checkpoint is the early-stopped policy and nothing is
-# lost by stopping. Calibrate min_delta ABOVE the eval noise before trusting
-# this: w01-tek's eval noise was +-1.5 reward, so min_delta=0.5 let noise
-# reset the patience clock and they raised it to 1.0 (and patience to 8 for
-# overnight runs). Measure our own eval noise -- repeat evals of one
-# checkpoint -- before enabling.
+# lost by stopping. Calibrate min_delta ABOVE the measured eval noise
+# (repeat evals of one checkpoint) before enabling: a min_delta inside the
+# noise band lets noise reset the patience clock and the run never stops.
+# Raise patience for overnight runs.
 early_stop:
   enable: false
   min_evals: 10 # no verdict before this many evals, however flat they are

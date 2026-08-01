@@ -4,11 +4,11 @@ The measurement itself builds a model and steps MJX, so it lives here. The
 pure arithmetic it reports against (`sim_budget.recommend_budget`) is unit
 tested in tests/unit/test_sim_budget.py.
 
-The second test is the standing guard the port brief asks for: it fails when
-someone adds collision geometry to a robot without resizing the budgets in
-envs/joystick.py's default_config. A failure there is not a "loosen the
-test" prompt -- on the warp backend the contacts past the budget are dropped
-with no warning at all.
+The second test is a standing guard: it fails when someone adds collision
+geometry to a robot without resizing the configured budgets. That failure
+means the budgets are undersized, not that the test is too strict -- on the
+warp backend the contacts past the budget are dropped with no warning at
+all.
 """
 
 from __future__ import annotations

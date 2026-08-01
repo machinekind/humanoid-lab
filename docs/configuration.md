@@ -307,8 +307,7 @@ Off by default. `pose` and `stand_still` both score a deviation from
 `_default_pose` — the reset keyframe's **commanded** joint values. Under
 gravity and finite gains the robot comes to rest below that command, so the
 deviation never reaches zero and both terms charge a floor no policy can
-remove. Measured on the quadruped predecessor: 0.343 rad of summed sag,
-about 97% of its entire standing residual. `roboto_origin`'s `home` keyframe settles 0.065 rad off
+remove. `roboto_origin`'s `home` keyframe settles 0.065 rad off
 its command (0.015 rad at the knee), which at the stock `scales.stand_still`
 of `-0.5` is 0.032 of standing penalty per step that exists only because the
 anchor is wrong. Each actuator preset sags differently, so the floor also
@@ -798,12 +797,11 @@ Patience counts evals, not steps, so `ppo.num_evals` sets how much training
 each unit of patience buys. At the default 100M-step budget with brax's
 `num_evals`, one eval is several million steps.
 
-**Calibrate `min_delta` above the eval noise before trusting it.** On the
-quadruped predecessor the eval noise was about ±1.5 reward, so `min_delta=0.5`
-let noise reset the patience clock and it had to go to 1.0, with `patience`
-raised to 8 for overnight runs. The defaults here are those starting numbers
-and have not been calibrated against our eval noise. Measure that noise
-first by evaluating one checkpoint repeatedly.
+**Calibrate `min_delta` above the eval noise before trusting it.** A
+`min_delta` inside the noise band lets noise reset the patience clock and
+the run never stops. The defaults are uncalibrated starting numbers:
+measure the eval noise first by evaluating one checkpoint repeatedly, and
+raise `patience` for overnight runs.
 
 ## `run.sh` verbs
 

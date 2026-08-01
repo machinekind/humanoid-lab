@@ -303,7 +303,7 @@ def main(cfg: DictConfig) -> None:
         t_last[0], t_last[1] = now, num_steps
         reward = metrics.get("eval/episode_reward", float("nan"))
         # avg_episode_length exposes die-and-reset reward hacking that the
-        # reward number alone hides (trot_v1 post-mortem, 2026-07-05).
+        # reward number alone hides.
         ep_len = metrics.get("eval/avg_episode_length", float("nan"))
         print(
             f"steps {num_steps:>12,}  reward {reward:8.2f}  "
