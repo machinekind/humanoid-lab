@@ -30,7 +30,9 @@ _OPTIONAL_PARAM_KEYS = ("kp", "kd", "velocity_limit", "armature", "frictionloss"
 # Schema for the raw preset dict, checked AFTER overrides are merged in: a
 # typo'd override key (e.g. kp_) must fail loudly here rather than vanish
 # silently inside resolve()'s explicit key extraction below.
-_TOP_LEVEL_KEYS = frozenset({"model", "soft_limit_factor", "action_scale_factor", "groups"})
+_TOP_LEVEL_KEYS = frozenset(
+    {"model", "soft_limit_factor", "action_scale_factor", "action_scale_rad", "groups"}
+)
 _GROUP_PARAM_KEYS = frozenset({"effort_limit", *_OPTIONAL_PARAM_KEYS})
 
 
@@ -71,12 +73,19 @@ def _validate_preset_keys(data: dict, label: str) -> None:
 
 @dataclass(frozen=True)
 class ActuatorPreset:
-    """Parsed contents of an actuators/<name>.yaml preset file."""
+    """Parsed contents of an actuators/<name>.yaml preset file.
+
+    action_scale_rad, when set, is a flat per-joint action scale in radians
+    (RoboParty's scheme: every joint moves the same angle per unit action)
+    and replaces the action_scale_factor formula outright. pd-family models
+    only: an ideal-torque ctrl is a torque, not an angle.
+    """
 
     model: str
     soft_limit_factor: float
     action_scale_factor: float
     groups: dict[str, dict[str, float]]
+    action_scale_rad: float | None = None
 
 
 def load_actuator_preset(
@@ -111,11 +120,19 @@ def load_actuator_preset(
             f"{sorted(ACTUATOR_MODELS)}"
         )
 
+    action_scale_rad = raw.get("action_scale_rad")
+    if action_scale_rad is not None and model != "pd":
+        raise ValueError(
+            f"{yaml_path}: action_scale_rad is an angle and only the pd model's "
+            f"ctrl is one; model '{model}' scales its actions its own way"
+        )
+
     return ActuatorPreset(
         model=model,
         soft_limit_factor=float(raw.get("soft_limit_factor", 0.9)),
         action_scale_factor=float(raw.get("action_scale_factor", 0.3)),
         groups={group: dict(params) for group, params in raw["groups"].items()},
+        action_scale_rad=None if action_scale_rad is None else float(action_scale_rad),
     )
 
 
@@ -158,11 +175,15 @@ def resolve(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, JointAct
 def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, float]:
     """The per-joint action_scale for this preset's model.
 
-    pd: action_scale_factor * effort_limit / kp. ideal_torque: effort_limit
+    pd: action_scale_factor * effort_limit / kp, or the flat
+    action_scale_rad when the preset sets one (load_actuator_preset already
+    refused it on a non-pd model). ideal_torque: effort_limit
     (action_scale_factor does not apply). See ActuatorModel.action_scale.
     """
-    model = ACTUATOR_MODELS[preset.model]
     params_by_joint = resolve(preset, robot_spec)
+    if preset.action_scale_rad is not None:
+        return {joint_name: preset.action_scale_rad for joint_name in params_by_joint}
+    model = ACTUATOR_MODELS[preset.model]
     return {
         joint_name: model.action_scale(params, preset.action_scale_factor)
         for joint_name, params in params_by_joint.items()

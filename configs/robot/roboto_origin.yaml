@@ -218,9 +218,3 @@ dr:
 #     interval_steps=200, vel=0.4 m/s, planar only) but configs/task/
 #     joystick.yaml's env: block does not expose it, so there is no yaml
 #     key to pin this to.
-#   action_scale: RobotCfg.action_scale = 0.25 (also set directly in
-#     RPOFlatEnvCfg.__post_init__). NOT ported: our action scaling is
-#     preset-owned (action_scale_factor in the actuators yaml). See
-#     robots/roboto_origin/actuators/deploy_pd.yaml's existing comment on
-#     why upstream's flat-0.25-rad scheme has no field in our
-#     ActuatorPreset schema.
