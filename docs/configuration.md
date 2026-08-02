@@ -746,6 +746,8 @@ and its battery row describe the same trajectory.
 |---|---|---|
 | `--scenario NAME` | `walk_ramp` | Any `eval/battery.py::battery_scenarios` name. |
 | `--steps N` | the scenario's own length | Truncates the rollout. |
+| `--video-size WxH` | `640x480` | Rendered frame size. When the model's offscreen buffer is smaller, `eval/render.py`'s SceneView widens a private model copy, so any size works without touching the robot XML. The stacked `--plot-*` panels follow the frame width. |
+| `--overlay-torque` | off | A signed bar per actuator drawn into the frame itself (`eval/overlays.py`), normalized by that joint's own cap, one colour per joint group, red lines at ±1. The instantaneous view of the same signal `--plot-torque` traces over the episode: saturation is visible at the moment it happens. |
 | `--plot-torque` | off | A normalized-torque strip under the render: every joint's torque over its own actuator cap, one colour per joint group, dashed lines at ±1. Normalized because this robot's per-joint force ranges are heterogeneous — a single N·m cap line across a hip and an ankle means nothing. |
 | `--plot-joints` | off | A per-joint target-vs-state grid: one row per joint group, one column per side, achieved position solid and the policy's target dashed. |
 | `--joint NAME` | — | Swaps the grid for a single-joint zoom panel. Implies `--plot-joints`. |
@@ -823,7 +825,7 @@ Read from `run.sh` as it stands today:
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
 | `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH]`. Writes `<run>/battery.json` unless `--out` says otherwise. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
-| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
+| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
 | `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
 
 ## Configs compose only from the editable install

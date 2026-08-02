@@ -111,8 +111,8 @@ case "${1:-}" in
   # Rollouts are push-free by default (the battery's measurement
   # convention); --push restores the run's own random pushes.
   # Passthrough args: --run runs/<name> [--scenario name] [--steps N]
-  # [--out path.mp4] [--seed N] [--plot-torque] [--plot-joints]
-  # [--joint NAME] [--push].
+  # [--out path.mp4] [--seed N] [--video-size WxH] [--overlay-torque]
+  # [--plot-torque] [--plot-joints] [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
   # latest checkpoint (see docs/deploy.md). Forced

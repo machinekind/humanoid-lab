@@ -19,6 +19,13 @@ NAME` swaps the grid for a single-joint zoom panel and implies
 --plot-joints. All three are opt-in (off by default -- plain video output
 is the same code path as before); panel rendering lives in eval/plots.py.
 
+`--video-size WxH` sets the rendered frame size (the SceneView widens a
+private model copy when the model's offscreen buffer is smaller).
+`--overlay-torque` draws eval/overlays.py's per-actuator bar strip into
+the frame itself: an instantaneous saturation view, where `--plot-torque`
+is the full-episode trace below the frame. Both normalize by each joint's
+own actuator cap.
+
 `--push` restores the run's own random pushes for the rollout. They are OFF
 by default, matching the battery's measurement convention: a mid-video kick
 reads as a policy failure to anyone watching the clip. The default is stated
@@ -39,7 +46,6 @@ if sys.platform == "linux":  # headless GPU boxes; macOS uses its default GL (CG
     os.environ.setdefault("MUJOCO_GL", "egl")
 
 import argparse
-import shutil
 from pathlib import Path
 
 import jax
@@ -51,6 +57,8 @@ from humanoid_lab.eval.battery import (
     load_checkpoint_policy,
 )
 from humanoid_lab.eval.plots import joint_grid, joint_zoom, torque_strip
+from humanoid_lab.eval.render import DEFAULT_SIZE, SceneView, frame_size
+from humanoid_lab.eval.writer import write_video
 
 
 def push_override(push: bool) -> dict:
@@ -142,12 +150,12 @@ def render_video(
     steps: int | None = None,
     out: Path | None = None,
     seed: int = 0,
-    width: int = 640,
-    height: int = 480,
+    video_size: tuple[int, int] = DEFAULT_SIZE,
     plot_torque: bool = False,
     plot_joints: bool = False,
     joint: str | None = None,
     push: bool = False,
+    overlay_torque: bool = False,
 ) -> Path:
     run, env, _ckpt, inf = load_checkpoint_policy(run_dir, push_override(push))
 
@@ -183,18 +191,18 @@ def render_video(
     qadr = np.asarray(env._qadr) if capture else None
     torques, targets, positions = [], [], []
 
-    mj_model = env.mj_model
-    data = mujoco.MjData(mj_model)
     frames = []
     frame_times = []  # sim time of each entry in `frames`, recorded explicitly
-    with mujoco.Renderer(mj_model, height=height, width=width) as renderer:
+
+    def overlay_force():
+        # Per-rendered-frame device transfer, paid only when the overlay is on.
+        return np.asarray(state.data.actuator_force) if overlay_torque else None
+
+    with SceneView(env, size=video_size, camera=camera, torque=overlay_torque) as view:
         # Always capture the initial pose: a scenario that falls at step 0
         # (e.g. an untrained checkpoint on `stand`) must still write a
         # nonzero-length video.
-        data.qpos[:] = np.asarray(state.data.qpos)
-        mujoco.mj_forward(mj_model, data)
-        renderer.update_scene(data, camera=camera)
-        frames.append(renderer.render())
+        frames.append(view.frame(state.data.qpos, torque=overlay_force()))
         frame_times.append(0.0)
 
         for i in range(n_steps):
@@ -220,10 +228,7 @@ def render_video(
                 print(f"fell at step {i}")
                 break
             if (i + 1) % render_every == 0:
-                data.qpos[:] = np.asarray(state.data.qpos)
-                mujoco.mj_forward(mj_model, data)
-                renderer.update_scene(data, camera=camera)
-                frames.append(renderer.render())
+                frames.append(view.frame(state.data.qpos, torque=overlay_force()))
                 frame_times.append((i + 1) * env.dt)
 
     if plot_torque or plot_joints:
@@ -233,18 +238,7 @@ def render_video(
         )
 
     out = out or (run_dir / f"{scenario}.mp4")
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    import mediapy
-
-    if shutil.which("ffmpeg") is None:
-        # No system ffmpeg (common on a bare Mac); fall back to the binary
-        # bundled with imageio-ffmpeg, already a project dependency.
-        import imageio_ffmpeg
-
-        mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
-
-    mediapy.write_video(str(out), frames, fps=fps)
+    write_video(out, frames, fps)
     print(f"scenario {scenario}  run {run['run_name']}  {len(frames)} frames -> {out}")
     return out
 
@@ -256,6 +250,15 @@ def main():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--video-size", type=frame_size, default=DEFAULT_SIZE, metavar="WxH",
+        help="rendered frame size (default 640x480); the stacked --plot panels follow the frame width",
+    )
+    ap.add_argument(
+        "--overlay-torque", action="store_true",
+        help="draw the per-actuator torque bars into the frame itself, normalized by each "
+        "joint's own cap (an instantaneous view; --plot-torque is the full-episode strip)",
+    )
     ap.add_argument("--plot-torque", action="store_true", help="append a normalized-torque strip below the render")
     ap.add_argument("--plot-joints", action="store_true", help="append a joint target-vs-state grid below that")
     ap.add_argument("--joint", default=None, help="single-joint zoom panel instead of the grid (implies --plot-joints)")
@@ -269,8 +272,9 @@ def main():
 
     render_video(
         args.run, args.scenario, args.steps, args.out, args.seed,
+        video_size=args.video_size,
         plot_torque=args.plot_torque, plot_joints=args.plot_joints, joint=args.joint,
-        push=args.push,
+        push=args.push, overlay_torque=args.overlay_torque,
     )
 
 
