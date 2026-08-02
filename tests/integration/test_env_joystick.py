@@ -106,3 +106,14 @@ def test_joystick_yaml_obs_and_fall_match_env_defaults():
     assert task_cfg["env"]["command"]["vx"] == list(default.command.vx)
     assert task_cfg["env"]["command"]["vy"] == list(default.command.vy)
     assert task_cfg["env"]["command"]["wz"] == list(default.command.wz)
+
+
+def test_armed_distance_term_refuses_a_robot_without_the_pair():
+    """toy_robot has no ankle_roll group. With the term off it constructs
+    (conformance covers that); armed, it must refuse."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.reward.scales.feet_distance = 0.1
+    toy = paths.REPO_ROOT / "tests" / "data" / "toy_robot"
+    with pytest.raises(ValueError, match="ankle_roll"):
+        Joystick(toy, "pd_test", cfg)

@@ -471,6 +471,17 @@ class Joystick(HumanoidEnv):
         self._soft_hi_j = jp.array(self._soft_hi)
         self._ankle_pair = self._group_body_pair("ankle_roll")
         self._knee_pair = self._group_body_pair("knee")
+        scales = self._config.reward.scales
+        if self._ankle_pair is None and scales.feet_distance:
+            raise ValueError(
+                "reward.scales.feet_distance needs an 'ankle_roll' joint group "
+                "with one joint per side"
+            )
+        if self._knee_pair is None and scales.knee_distance:
+            raise ValueError(
+                "reward.scales.knee_distance needs a 'knee' joint group "
+                "with one joint per side"
+            )
 
         c = self._config.command
         self._cmd_vmax = self._cmd_speed(jp.array([max(abs(c.vx[0]), abs(c.vx[1])), 0.0, 0.0]))
@@ -499,14 +510,13 @@ class Joystick(HumanoidEnv):
                 weights[joint_index[name]] = float(weight)
         return jp.array(weights)
 
-    def _group_body_pair(self, group: str) -> tuple[int, int]:
-        """The two body ids that carry `group`'s joints."""
+    def _group_body_pair(self, group: str) -> tuple[int, int] | None:
+        """The two body ids that carry `group`'s joints. None when the
+        robot has no such pair; the constructor refuses an armed distance
+        term in that case, and an off term reads 0."""
         joints = self._robot_spec.joint_groups.get(group, ())
         if len(joints) != 2:
-            raise ValueError(
-                f"joint group '{group}' must name one joint per side for its "
-                f"separation band, got {list(joints)}"
-            )
+            return None
         m = self._mj_model
         a, b = (int(m.jnt_bodyid[m.joint(n).id]) for n in joints)
         return a, b
@@ -995,10 +1005,14 @@ class Joystick(HumanoidEnv):
             "upward": terms.upward(gravity[2]),
             "feet_distance": terms.distance_band(
                 self._body_y_separation(data, self._ankle_pair), *cfg.feet_distance_range
-            ),
+            )
+            if self._ankle_pair
+            else jp.zeros(()),
             "knee_distance": terms.distance_band(
                 self._body_y_separation(data, self._knee_pair), *cfg.knee_distance_range
-            ),
+            )
+            if self._knee_pair
+            else jp.zeros(()),
             # Zero-command mask, like stand_still. Upstream gates on
             # |cmd| < 0.01; ~moving uses the shared deadband.
             "feet_contact_without_cmd": terms.feet_contact_without_cmd(contact, gravity[2])
