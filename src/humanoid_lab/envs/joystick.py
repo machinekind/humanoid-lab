@@ -22,6 +22,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jp
 import numpy as np
+from brax import math as brax_math
 from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
@@ -327,6 +328,19 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity-damping share of stand_still (position share is 1;
             # only the ratio matters, scales.stand_still prices the sum).
             stand_still_vel_weight=0.2,
+            # Per-group relative weights of the pose_l1 term: a map
+            # joint_group -> weight, resolved onto the actuated joints at
+            # construction. None = every joint at 1.0; with a map, a group
+            # absent from it contributes at 0 and a group the robot does not
+            # have refuses at construction. scales.pose_l1 prices the
+            # weighted sum, so only the ratios here matter.
+            pose_l1_weights=None,
+            # Lateral separation bands for the two distance terms, m,
+            # measured between the bodies carrying each side's ankle_roll /
+            # knee joint, in the base frame. These are isaaclab's
+            # body_distance_y defaults; robot overlays pin measured ones.
+            feet_distance_range=(0.2, 0.5),
+            knee_distance_range=(0.2, 0.5),
             # UNTUNED starting values, carried from the quadruped
             # predecessor for every term that has a biped analogue
             # (rewards/terms.py's module docstring lists what has none).
@@ -355,6 +369,17 @@ def default_config() -> config_dict.ConfigDict:
                 # policy trained with it glides its feet into stance instead
                 # of striking the floor at swing free-fall speed.
                 feet_landing=0.0,
+                # Terms ported from RoboParty's robolab velocity recipe (the
+                # ported section of rewards/terms.py), all 0 = off here;
+                # roboto_origin's overlay pins the upstream weights.
+                pose_l1=0.0,
+                joint_pos_limits=0.0,
+                joint_vel=0.0,
+                joint_acc=0.0,
+                upward=0.0,
+                feet_distance=0.0,
+                knee_distance=0.0,
+                feet_contact_without_cmd=0.0,
             ),
         ),
     )
@@ -431,6 +456,17 @@ class Joystick(HumanoidEnv):
         # hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll); an explicit
         # deviation, left uniform rather than guessing a split.
         self._pose_weight = jp.ones(self.action_size)
+        # pose_l1's per-group split IS configurable (reward.pose_l1_weights);
+        # the soft joint limits double as joint_pos_limits' band.
+        self._pose_l1_weight = self._resolve_group_weights(
+            self._config.reward.get("pose_l1_weights", None)
+        )
+        self._soft_lo_j = jp.array(self._soft_lo)
+        self._soft_hi_j = jp.array(self._soft_hi)
+        # Separation-band body pairs: the bodies carrying each side's
+        # ankle_roll and knee joints (a biped has exactly one per side).
+        self._ankle_pair = self._group_body_pair("ankle_roll")
+        self._knee_pair = self._group_body_pair("knee")
 
         c = self._config.command
         self._cmd_vmax = self._cmd_speed(jp.array([max(abs(c.vx[0]), abs(c.vx[1])), 0.0, 0.0]))
@@ -441,6 +477,42 @@ class Joystick(HumanoidEnv):
         self._neutral_ctrl = self._actuator_model.ctrl_from_action(
             jp.zeros(self.action_size), self._default_pose, self._action_scale
         )
+
+    def _resolve_group_weights(self, group_map):
+        """Per-joint weight vector from a joint_group -> weight map (see
+        reward.pose_l1_weights in default_config)."""
+        if group_map is None:
+            return jp.ones(self.action_size)
+        rs = self._robot_spec
+        weights = np.zeros(self.action_size)
+        joint_index = {name: i for i, name in enumerate(rs.actuated_joints)}
+        for group, weight in dict(group_map).items():
+            if group not in rs.joint_groups:
+                raise ValueError(
+                    f"reward.pose_l1_weights names unknown joint group '{group}'; "
+                    f"robot defines groups: {sorted(rs.joint_groups)}"
+                )
+            for name in rs.joint_groups[group]:
+                weights[joint_index[name]] = float(weight)
+        return jp.array(weights)
+
+    def _group_body_pair(self, group: str) -> tuple[int, int]:
+        """The two body ids carrying `group`'s joints, for a separation band."""
+        joints = self._robot_spec.joint_groups.get(group, ())
+        if len(joints) != 2:
+            raise ValueError(
+                f"the '{group}' joint group must name exactly one joint per side "
+                f"for its separation band, got {list(joints)}"
+            )
+        m = self._mj_model
+        a, b = (int(m.jnt_bodyid[m.joint(n).id]) for n in joints)
+        return a, b
+
+    def _body_y_separation(self, data, pair):
+        """|y| distance between two bodies, in the base frame (the frame
+        upstream's body_distance_y measures in)."""
+        delta = data.xpos[pair[0]] - data.xpos[pair[1]]
+        return jp.abs(brax_math.rotate(delta, brax_math.quat_inv(self._quat(data)))[1])
 
     # -- command / gait clock ------------------------------------------------
     def _sample_command(self, rng):
@@ -871,5 +943,26 @@ class Joystick(HumanoidEnv):
             * shape_gate,
             "feet_landing": terms.feet_landing(foot_vel[:, 2], foot_clearance, cfg.glide_height)
             * moving,
+            # The ported robolab terms (rewards/terms.py's ported section)
+            # sit after the whole pre-port set, for the same
+            # order-stability reason as feet_apex above.
+            "pose_l1": terms.pose_l1(qpos_act, self._pose_anchor, self._pose_l1_weight),
+            "joint_pos_limits": terms.joint_pos_limits(
+                qpos_act, self._soft_lo_j, self._soft_hi_j
+            ),
+            "joint_vel": terms.joint_vel(qvel_act),
+            "joint_acc": terms.joint_acc(data.qacc[self._vadr]),
+            "upward": terms.upward(gravity[2]),
+            "feet_distance": terms.distance_band(
+                self._body_y_separation(data, self._ankle_pair), *cfg.feet_distance_range
+            ),
+            "knee_distance": terms.distance_band(
+                self._body_y_separation(data, self._knee_pair), *cfg.knee_distance_range
+            ),
+            # Masked like stand_still: this is the zero-command "plant both
+            # feet" reward. Upstream gates on |cmd| < 0.01 where our ~moving
+            # uses the shared speed deadband.
+            "feet_contact_without_cmd": terms.feet_contact_without_cmd(contact, gravity[2])
+            * (~moving),
         }
         return rewards, fall

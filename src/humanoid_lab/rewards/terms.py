@@ -192,3 +192,61 @@ def torque_limit(actuator_force, torque_cap, frac: float):
     """Actuator-saturation hinge: 0 well inside the cap, positive above
     `frac` of it. A soft margin on top of the actuator's hard forcerange."""
     return jp.sum(jp.maximum(jp.abs(actuator_force) - frac * torque_cap, 0.0))
+
+
+# -- terms ported from RoboParty's robolab velocity recipe -----------------
+# (tasks/direct/base/mdp/rewards.py at the commit docs/plans/
+# roboto-first-run.md pins). Shapes are kept identical so the upstream
+# weights transfer 1:1; each docstring names the upstream function.
+
+
+def pose_l1(qpos_actuated, default_pose, weights):
+    """Weighted L1 deviation from the default pose: upstream's four
+    joint_deviation_l1 groups collapsed into one term, with each group's
+    relative weight carried in `weights` and the overall scale priced by
+    the caller. `pose` above is the L2 twin."""
+    return jp.sum(weights * jp.abs(qpos_actuated - default_pose))
+
+
+def joint_pos_limits(qpos_actuated, soft_lo, soft_hi):
+    """L1 excursion outside the soft joint limits (upstream
+    joint_pos_limits): zero inside, linear in the overshoot outside."""
+    return jp.sum(
+        jp.maximum(soft_lo - qpos_actuated, 0.0) + jp.maximum(qpos_actuated - soft_hi, 0.0)
+    )
+
+
+def joint_vel(qvel_actuated):
+    """Sum of squared actuated-joint velocities (upstream joint_vel_l2)."""
+    return jp.sum(jp.square(qvel_actuated))
+
+
+def joint_acc(qacc_actuated):
+    """Sum of squared actuated-joint accelerations (upstream joint_acc_l2)."""
+    return jp.sum(jp.square(qacc_actuated))
+
+
+def upward(gravity_z):
+    """Uprightness reward (upstream upward): -gravity_body_z, ~1 upright,
+    0 sideways, negative past horizontal."""
+    return -gravity_z
+
+
+def distance_band(separation, band_min: float, band_max: float):
+    """Keep a lateral separation inside [band_min, band_max] (upstream
+    body_distance_y, the anti-scissor term): 1.0 anywhere in the band,
+    decaying exp(-excursion * 100) outside it, so the payment fades over
+    ~1 cm of leg crossing or splay. The 0.5 m clamp and the 100/m decay
+    are upstream constants, kept as-is."""
+    d_min = jp.clip(separation - band_min, -0.5, 0.0)
+    d_max = jp.clip(separation - band_max, 0.0, 0.5)
+    return (jp.exp(-jp.abs(d_min) * 100.0) + jp.exp(-jp.abs(d_max) * 100.0)) / 2.0
+
+
+def feet_contact_without_cmd(contact, gravity_z):
+    """All feet planted, paid in proportion to uprightness (upstream
+    feet_contact_without_cmd): 1.0 when every foot is in contact and the
+    base is upright, 0 otherwise. The zero-command mask is the caller's,
+    like every other task-context mask in this module."""
+    upright = jp.clip(-gravity_z, 0.0, 0.7) / 0.7
+    return jp.all(contact) * upright
