@@ -13,6 +13,13 @@ case "${1:-}" in
   # active-contact count is readable without a GPU box. Passthrough args:
   # --robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out path.json].
   check-contacts) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_contacts "$@" ;;
+  # dr.foot_friction end to end: builds the randomized models and checks the
+  # friction inside each foot-floor contact equals that env's draw (contact
+  # priority makes the foot's value win; see dr/randomize.py). NOT forced
+  # onto CPU: the point is the box's own backend, and warp on a GPU host is
+  # the answer a training run uses. Passthrough args: --robot NAME --preset
+  # NAME [--backend auto|warp|jax] [--num-envs N] [--range LO HI].
+  check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
@@ -115,7 +122,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

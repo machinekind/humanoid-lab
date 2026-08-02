@@ -503,6 +503,19 @@ randomization on top, gated by its own `enable`.
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
 
+**Friction draws and MuJoCo's combine rule.** Two equal-priority geoms
+contact at the element-wise **max** of their frictions. So while
+`foot_friction` is off, a `dr.base.floor_friction` draw below the foot
+geoms' own friction never reaches a foot contact — only the part of the
+range above the foot value randomizes anything there. Enabling
+`foot_friction` gives the foot geoms contact priority 1, which makes the
+foot's draw the contact friction outright (and makes the floor draw
+irrelevant at foot contacts, whatever its value). `./run.sh check-friction
+--robot <name> --preset <name>` proves this end to end on the box's own
+backend: it compares the friction inside each settled foot-floor contact
+against that env's draw and exits nonzero on any mismatch. Run it on a GPU
+host before trusting a slip-randomized training run to warp.
+
 "Independent" is a property of the RNG plumbing, not a wish. The fixed
 distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
 above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
@@ -802,6 +815,7 @@ Read from `run.sh` as it stands today:
 | `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
 | `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
+| `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
 | `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
 | `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
