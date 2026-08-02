@@ -1,0 +1,111 @@
+# First proper roboto_origin locomotion run
+
+Goal: train `roboto_walk_v1`, the first roboto_origin joystick policy trained
+to a real budget, by reproducing RoboParty's own flat velocity recipe as
+closely as this pipeline permits. Their recipe walks and runs on the physical
+robot, so it is the reference; every place we cannot match it is recorded
+below as an accepted delta, not silently dropped.
+
+Reference: `Roboparty/robolab` at commit `6b1c3d9988497c8961dcba77892de32edc1770e1`
+(2026-07-26), files `robolab/tasks/direct/base/{rpo_env_cfg.py,base_config.py,
+agents/rpo_agent_cfg.py}`. This is the source for every weight and range in
+this plan. Note it is newer than the snapshot commit
+`robots/roboto_origin/PROVENANCE.md` pins; where the two disagree (the
+additive base-mass draw shrank from +-3 kg to +-1 kg) this plan follows the
+newer robolab values, and the port commits should update the overlay's
+"not ported" comments to cite them.
+
+## Where we start
+
+Already in place, no work needed:
+
+- `actuators/deploy_pd.yaml` carries upstream's hardware PD gains verbatim.
+- `configs/robot/roboto_origin.yaml` pins the upstream command envelope,
+  joint noise scales, and the ten reward weights whose shape matches ours.
+- The same file's "not ported" block records every upstream term we lack,
+  with weights. That block is this plan's work list.
+
+The existing `runs/hpc_train_roboto` (1e8 steps, final reward negative) was
+a pipeline check and says nothing about the recipe. Upstream trains for
+about 1.2e9 env steps (4096 envs x 24 steps x 12000 iterations at 50 Hz);
+the budget below matches that, not the old run.
+
+## Code changes, in commit order
+
+1. **Reward terms.** Add the missing upstream terms to `rewards/terms.py`
+   and `envs/joystick.py`, pin their weights in the roboto overlay:
+   per-group L1 pose deviation (hip yaw/roll -0.03; torso plus arm roll,
+   arm yaw, elbow pitch, elbow yaw -1.0; arm pitch -0.06; leg pitch chain
+   -0.01), `feet_distance` 0.1 (y-separation of the ankle roll bodies,
+   band 0.16 to 0.50 m), `knee_distance` 0.1 (band 0.18 to 0.35 m),
+   `dof_pos_limits` -1.0, `joint_vel_l2` -2e-4, `dof_acc_l2` -2.5e-7,
+   `upward` 0.4, `feet_contact_without_cmd` 0.1. The torso and arm
+   deviation weight is what holds the arms still; the distance bands are
+   what prevent leg crossing. Keep our existing shapes where a same-name
+   upstream term differs (`feet_slip`, `feet_air_time`, `stand_still`);
+   the overlay comments already record those deltas.
+2. **Action scale.** Add a flat-radians mode to the ActuatorPreset schema
+   and set `deploy_pd` to upstream's flat 0.25 rad. Our
+   `action_scale_factor` formula gives each joint a different span, so the
+   upstream action-rate and smoothness weights currently scale a different
+   quantity; the flat mode makes those weights transfer 1:1. The schema is
+   ours to change.
+3. **DR.** Add an additive base-mass switch (upstream: +-1 kg on the
+   torso, on top of our unconditional 0.7 to 1.3 base scale) and expose
+   the push schedule in yaml (upstream: one push every 10 to 15 s, xy
+   +-0.5 m/s, z +-0.2 m/s, roll/pitch +-0.52 rad/s, yaw +-0.78 rad/s; our
+   current push block is planar-only and not yaml-visible). Set
+   `dr.foot_friction` to span upstream's 0.3 to 1.6 static-friction
+   envelope and verify the draw with `check-friction --backend warp` on
+   the training box.
+4. **PPO.** Match upstream where brax has the knob: `ppo.discounting=0.994`,
+   `ppo.gae_lambda=0.9`, `ppo.entropy_cost=0.005`,
+   `ppo.learning_rate=1e-4`, `network=large` (their [512, 256, 128] ELU).
+   `build_ppo_params` starts from playground's Go1 config; any of these
+   keys it does not carry gets added there rather than overridden blind.
+
+## Accepted deltas for run one
+
+- **Termination.** Upstream terminates on torso/thigh contact. Our model
+  has collision geoms only on the feet, so height/tilt termination
+  (min_height 0.45, the overlay's values) substitutes.
+- **Contact-force terms.** `undesired_contacts`, `feet_force`,
+  `feet_stumble`, `feet_height` need contact sensors or foot scanners we
+  do not have. Skipped, weights stay recorded in the overlay.
+- **Observation history.** Upstream's actor sees a 10-frame observation
+  history plus 3 past actions; ours is single-frame plus `last_action`.
+  Accepted for run one; revisit before any sim2real attempt, together
+  with the action-delay machinery the joystick docstring already defers.
+- **Gait clock.** Upstream has none; our joystick's antiphase clock and
+  `feet_phase` term stay, since they are this env's stepping mechanism
+  and the battery and goldens depend on them.
+- **LR schedule.** Upstream uses an adaptive-KL learning rate; brax PPO
+  has none. Fixed 1e-4.
+- **Heading command.** Upstream steers yaw through a heading controller;
+  we sample `wz` directly inside the same +-1.57 envelope.
+
+## Run ladder
+
+Each step gates the next. Cluster submissions wait for explicit go-ahead.
+
+1. Local: `./run.sh train --cfg job --resolve robot=roboto_origin
+   actuators=deploy_pd network=large`, then `./run.sh test`, then
+   `./run.sh smoke robot=roboto_origin actuators=deploy_pd`.
+2. GPU box: `./run.sh check-contacts` and
+   `./run.sh check-friction --robot roboto_origin --preset deploy_pd
+   --backend warp`.
+3. Bounded run, about 3e7 steps, same config as the full run. Gate:
+   tracking reward rising on wandb, plus an eval video
+   (`--overlay-torque`) and a battery pass that look sane.
+4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd SEED=0
+   RUN_NAME=roboto_walk_v1 RUN_ARGS="++ppo.num_timesteps=1.2e9
+   network=large" ./jobs/train.sh`, NUM_ENVS/BATCH from
+   `jobs/preflight_sizing.sh` on the real node class, wandb on.
+5. After: `battery`, `report`, an eval video per battery scenario, and
+   `export` of the deploy pair.
+
+## Out of scope
+
+AMP, BeyondMimic, Parkour, and motion retargeting (need GMR motion data);
+rough terrain and the height scanner; the observation-history and
+action-delay port; contact-based termination.
