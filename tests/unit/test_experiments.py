@@ -75,3 +75,23 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
     robot_dir = paths.ROBOTS_DIR / "asimov_v1"
     with pytest.raises(ValueError):
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
+
+
+def test_roboto_walk_v1_arms_dr_and_pins_the_upstream_ppo_knobs():
+    cfg = _compose(["experiment=roboto_walk_v1"])
+
+    assert cfg.robot.name == "roboto_origin"
+    assert cfg.actuators.name == "deploy_pd"
+    assert cfg.domain_rand is True
+    for field in ("joint_gains", "com_offset", "dof", "foot_friction", "base_mass_add"):
+        assert cfg.dr[field].enable is True, field
+    # No-op decouple: upstream does not randomize effort limits.
+    assert cfg.dr.motor_strength.enable is True
+    assert cfg.dr.motor_strength.range == [1.0, 1.0]
+
+    # rpo_agent_cfg.py values.
+    assert cfg.ppo.discounting == 0.994
+    assert cfg.ppo.gae_lambda == 0.9
+    assert cfg.ppo.entropy_cost == 0.005
+    assert cfg.ppo.learning_rate == 1.0e-4
+    assert cfg.ppo.num_timesteps == 1.2e9

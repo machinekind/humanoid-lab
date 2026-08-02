@@ -169,9 +169,11 @@ dr:
   dof:
     # EventCfg.scale_joint_parameters armature scale. (0.8, 1.2) at the
     # pinned robolab commit; the older snapshot's (0.5, 1.5) is
-    # superseded. Upstream randomizes no dof friction or damping, so
-    # frictionloss and damping keep the base values.
+    # superseded. Upstream randomizes no dof damping or friction, so both
+    # are pinned to no-op: arming dr.dof draws armature only.
     armature: [0.8, 1.2]
+    damping: [1.0, 1.0]
+    frictionloss: [1.0, 1.0]
   joint_gains:
     # EventCfg.scale_actuator_gains stiffness/damping_distribution_params
     # (base_config.py), both (0.9, 1.1) = 1 +- 0.1.

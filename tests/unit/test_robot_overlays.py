@@ -108,9 +108,12 @@ def test_roboto_origin_overlay_wins_over_the_task_and_dr_bases():
     assert cfg.task.env.push.ang_vel_rp == 0.52
     assert cfg.task.env.push.ang_vel_yaw == 0.78
 
-    # Untouched DR sub-fields still come from the base configs/dr/default.yaml.
-    assert cfg.dr.dof.damping == [0.9, 1.1]
-    assert cfg.dr.dof.frictionloss == [0.9, 1.1]
+    # No-op pins: arming dr.dof draws armature only.
+    assert cfg.dr.dof.damping == [1.0, 1.0]
+    assert cfg.dr.dof.frictionloss == [1.0, 1.0]
+
+    # An untouched DR sub-field still comes from configs/dr/default.yaml.
+    assert cfg.dr.motor_strength.range == [0.5, 1.1]
 
 
 def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
