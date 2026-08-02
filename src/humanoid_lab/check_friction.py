@@ -73,33 +73,40 @@ def probe(robot: str, preset: str, backend: str, num_envs: int, friction_range) 
         return jax.lax.scan(body, data, None, length=SETTLE_STEPS)[0]
 
     out = jax.jit(jax.vmap(run, in_axes=(in_axes,)))(model_v)
+    # Normalize both impls to flat contact rows with an env column. jax
+    # keeps a per-env contact struct; DataWarp keeps one global buffer with
+    # contact__worldid mapping each slot to its env.
     impl = getattr(out, "_impl", out)
     if hasattr(impl, "contact"):
-        geom = np.asarray(impl.contact.geom)
-        dist = np.asarray(impl.contact.dist)
-        friction = np.asarray(impl.contact.friction)
+        c = impl.contact
+        n_env, n_con = np.asarray(c.dist).shape
+        env_of = np.repeat(np.arange(n_env), n_con)
+        geom = np.asarray(c.geom).reshape(-1, 2)
+        dist = np.asarray(c.dist).reshape(-1)
+        mu = np.asarray(c.friction).reshape(n_env * n_con, -1)[:, 0]
     else:
-        # DataWarp flattens the contact struct into contact__* leaves.
-        geom = np.asarray(impl.contact__geom)
-        dist = np.asarray(impl.contact__dist)
-        friction = np.asarray(impl.contact__friction)
+        env_of = np.asarray(impl.contact__worldid).reshape(-1)
+        geom = np.asarray(impl.contact__geom).reshape(-1, 2)
+        dist = np.asarray(impl.contact__dist).reshape(-1)
+        mu = np.asarray(impl.contact__friction).reshape(len(dist), -1)[:, 0]
 
     names = list(env.robot_spec.foot_geoms)
     base = np.asarray(env.mjx_model.geom_friction)[foot_ids, 0]
     sampled = np.asarray(model_v.geom_friction)[:, foot_ids, 0]
+    # Which foot geoms each env actually has on the floor, and the
+    # solver-side friction of each such contact. Not every foot geom
+    # touches (toe segments lift), so only the observed ones are compared.
+    seen_by_env: list[dict[int, float]] = [{} for _ in range(num_envs)]
+    for k in range(len(dist)):
+        g1, g2 = int(geom[k, 0]), int(geom[k, 1])
+        if dist[k] >= 0 or floor_id not in (g1, g2):
+            continue
+        other = g2 if g1 == floor_id else g1
+        if other in foot_ids:
+            seen_by_env[int(env_of[k])][foot_ids.index(other)] = float(mu[k])
     ok = True
     for e in range(num_envs):
-        # Which foot geoms this env actually has on the floor, and the
-        # solver-side friction of each such contact. Not every foot geom
-        # touches (toe segments lift), so only the observed ones are compared.
-        seen: dict[int, float] = {}
-        for k in range(geom.shape[1]):
-            g1, g2 = int(geom[e, k, 0]), int(geom[e, k, 1])
-            if dist[e, k] >= 0 or floor_id not in (g1, g2):
-                continue
-            other = g2 if g1 == floor_id else g1
-            if other in foot_ids:
-                seen[foot_ids.index(other)] = float(friction[e, k, 0])
+        seen = seen_by_env[e]
         if not seen:
             print(f"env {e}: FAIL, no foot-floor contact after {SETTLE_STEPS} settle steps")
             ok = False
