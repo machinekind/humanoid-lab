@@ -88,19 +88,22 @@ the budget below matches that, not the old run.
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
 
-1. Local: `./run.sh train --cfg job --resolve robot=roboto_origin
-   actuators=deploy_pd network=large`, then `./run.sh test`, then
-   `./run.sh smoke robot=roboto_origin actuators=deploy_pd`.
+The run config is `configs/experiment/roboto_walk_v1.yaml`. It pins
+robot, preset, network, DR switches, and PPO knobs.
+
+1. Local: `./run.sh train experiment=roboto_walk_v1 --cfg job --resolve`,
+   then `./run.sh test`, then a smoke with the experiment and tiny PPO
+   sizes re-pinned on the CLI.
 2. GPU box: `./run.sh check-contacts` and
    `./run.sh check-friction --robot roboto_origin --preset deploy_pd
    --backend warp`.
-3. Bounded run, about 3e7 steps, same config as the full run. Gate:
-   tracking reward rising on wandb, plus an eval video
-   (`--overlay-torque`) and a battery pass that look sane.
-4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd SEED=0
-   RUN_NAME=roboto_walk_v1 RUN_ARGS="++ppo.num_timesteps=1.2e9
-   network=large" ./jobs/train.sh`, NUM_ENVS/BATCH from
-   `jobs/preflight_sizing.sh` on the real node class, wandb on.
+3. Bounded run, about 3e7 steps: `EXPERIMENT=roboto_walk_v1` and
+   `RUN_ARGS="ppo.num_timesteps=3e7"`. Gate: tracking reward rises on
+   wandb, an eval video (`--overlay-torque`) looks sane, battery passes.
+4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
+   EXPERIMENT=roboto_walk_v1 SEED=0 RUN_NAME=roboto_walk_v1
+   ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
+   the real node class. wandb on.
 5. After: `battery`, `report`, an eval video per battery scenario, and
    `export` of the deploy pair.
 
@@ -109,3 +112,6 @@ Each step gates the next. Cluster submissions wait for explicit go-ahead.
 AMP, BeyondMimic, Parkour, and motion retargeting (need GMR motion data);
 rough terrain and the height scanner; the observation-history and
 action-delay port; contact-based termination.
+
+Changelog: 2026-08-02, prerequisites implemented on this branch; the
+ladder now uses the roboto_walk_v1 experiment preset.
