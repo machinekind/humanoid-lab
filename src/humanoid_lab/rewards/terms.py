@@ -1,17 +1,20 @@
 """Reward term library: one pure function per reward component.
 
-Ported from w01-tek's wojtek_rl/env.py `_get_reward`. Each function reads
-only generic arrays (sensor readings, qpos/qvel slices already gathered by
-the caller, actions, precomputed spec-derived indices) -- never a joint,
-site or body name -- so the same library works for any robot/task that
-assembles its own inputs.
+Each function reads only generic arrays (sensor readings, qpos/qvel slices
+already gathered by the caller, actions, precomputed spec-derived indices)
+-- never a joint, site or body name -- so the same library works for any
+robot/task that assembles its own inputs.
 
-Dropped (quadruped/w01-tek-only, do not port): contact_match (diagonal-pair
-matching), high_step, height_tracking (variable stand height + its height
-table), splay/knee terms. feet_phase's gait clock is a biped two-foot
-antiphase clock instead of w01-tek's 4-leg walk/trot blend; that clock lives
-in envs/joystick.py, not here -- this module only scores the resulting
-clearance error.
+Absent on purpose, because they are quadruped-only: contact_match
+(diagonal-pair matching), high_step, height_tracking (variable stand height
+plus its height table), and the splay/knee terms. feet_phase's gait clock is
+a biped two-foot antiphase clock; that clock lives in envs/joystick.py, not
+here -- this module only scores the resulting clearance error.
+
+The two velocity-tracking terms are the one exception to one-function-per-
+component: they split into a squared error, a width, and the exp kernel that
+consumes both, because the env's tracking_relative and tracking_far_weight
+branches need the error and the width separately (see envs/joystick.py).
 
 Every term returns a scalar. Masking by task context (e.g. "* moving", "*
 ~moving") is the caller's job, not this library's: "moving" is a
@@ -23,14 +26,51 @@ from __future__ import annotations
 import jax.numpy as jp
 
 
-def tracking_lin_vel(cmd_xy, linvel_xy, sigma: float):
-    """exp(-err^2/sigma); 1.0 at perfect tracking."""
-    return jp.exp(-jp.sum(jp.square(cmd_xy - linvel_xy)) / sigma)
+def tracking_err_lin(cmd_xy, linvel_xy):
+    """Squared planar velocity tracking error."""
+    return jp.sum(jp.square(cmd_xy - linvel_xy))
 
 
-def tracking_ang_vel(cmd_wz, gyro_z, sigma: float):
-    """exp(-err^2/sigma); 1.0 at perfect tracking."""
-    return jp.exp(-jp.square(cmd_wz - gyro_z) / sigma)
+def tracking_err_ang(cmd_wz, gyro_z):
+    """Squared yaw rate tracking error."""
+    return jp.square(cmd_wz - gyro_z)
+
+
+def tracking_kernel(err_sq, sigma):
+    """exp(-err^2/sigma); 1.0 at perfect tracking. The error and the width
+    are separate arguments because the caller chooses the width: a fixed
+    tracking_sigma for the absolute kernel, tracking_rel_sigma() for the
+    command-relative one."""
+    return jp.exp(-err_sq / sigma)
+
+
+def tracking_rel_sigma(cmd_magnitude, rel_sigma: float, floor: float):
+    """Command-relative kernel width: rel_sigma * max(|cmd|, floor)^2.
+
+    Dividing the squared error by the squared command makes the kernel score
+    the FRACTION of the command tracked, so 80% of target pays the same at
+    any commanded speed. rel_sigma is therefore dimensionless. The floor
+    keeps a small or zero command from sharpening the kernel to a point and
+    dividing by zero.
+    """
+    return rel_sigma * jp.square(jp.maximum(cmd_magnitude, floor))
+
+
+def tracking_far_blend(kernel, err_sq, weight: float, far_sigma: float):
+    """Mix a wide exponential into a tracking kernel:
+    (1-weight)*kernel + weight*exp(-err^2/far_sigma).
+
+    exp(-err^2/sigma) is gradient-free once the error is a few sigma out, so
+    a capability the policy never explored gets no pull toward the command at
+    all. The wide second exponential keeps a usable gradient at range. Both
+    exponentials peak at zero error, so the optimum and the [0, 1] bound are
+    unchanged.
+
+    err_sq is the raw squared error, never a relative one: the far kernel
+    stays absolute in both branches, so a state far off the command sees the
+    same pull at any commanded speed.
+    """
+    return (1.0 - weight) * kernel + weight * jp.exp(-err_sq / far_sigma)
 
 
 def lin_vel_z(linvel_z):
@@ -92,6 +132,43 @@ def feet_slip(foot_linvel_xy, contact):
     return jp.sum(jp.sum(jp.square(foot_linvel_xy), axis=-1) * contact)
 
 
+def feet_apex(swing_apex, first_contact, apex_target: float):
+    """Pay each completed swing for how close its PEAK clearance came to
+    `apex_target`, once, on the step the foot lands.
+
+    A duration-averaged clearance term such as feet_phase tolerates a long
+    1.5-2 cm skim that collects nearly as much as a crisp arc, so the
+    optimizer skims. Pricing the peak instead has measured 3 to 5 cm swings
+    and 30 to 70% better grip. Clipped at the target: the term
+    asks for an apex, it does not pay for exceeding it.
+
+    `swing_apex` is the caller's running maximum over the swing (the env
+    tracks it in its info dict); `first_contact` selects the feet whose swing
+    ended this step.
+    """
+    return jp.sum(jp.clip(swing_apex / apex_target, 0.0, 1.0) * first_contact)
+
+
+def feet_landing(foot_vz, foot_clearance, glide_height: float):
+    """Penalize downward foot speed, weighted by closeness to the floor:
+    sum(min(foot_vz, 0)^2 * clip(1 - clearance/glide_height, 0, 1)).
+
+    Measured BEFORE contact on purpose. A penalty read at contact under-reads
+    hard strikes, because the solver has already absorbed the impact within
+    the control step it becomes visible. Weighting by proximity instead makes
+    the gradient read "decelerate as you approach": 1 at the floor, 0 at
+    `glide_height` and above. Stance feet score ~0 (vz ~ 0), and a swing high
+    above the floor scores 0 whatever its speed.
+
+    The physical reference for touchdown softness is free fall over the glide
+    band: sqrt(2*9.81*0.03) ~ 0.77 m/s at a 0.03 m band.
+    """
+    return jp.sum(
+        jp.square(jp.clip(foot_vz, None, 0.0))
+        * jp.clip(1.0 - foot_clearance / glide_height, 0.0, 1.0)
+    )
+
+
 def feet_phase(foot_clearance, target_clearance, phase_sigma: float):
     """exp(-err^2/sigma) between actual and gait-clock-commanded foot
     clearance; 1.0 when every foot matches its swing/stance target exactly."""
@@ -99,11 +176,12 @@ def feet_phase(foot_clearance, target_clearance, phase_sigma: float):
     return jp.exp(-err / phase_sigma)
 
 
-def stand_still(qpos_actuated, default_pose, qvel_actuated):
+def stand_still(qpos_actuated, default_pose, qvel_actuated, vel_weight: float = 0.2):
     """Position pull to the default pose plus velocity damping, for the
     zero-command (stand) case. L1 position alone causes bang-bang fidgeting
-    around the anchor."""
-    return jp.sum(jp.abs(qpos_actuated - default_pose)) + 0.2 * jp.sum(jp.abs(qvel_actuated))
+    around the anchor. `vel_weight` sets the damping share; only the ratio
+    matters, since `scales.stand_still` prices the sum."""
+    return jp.sum(jp.abs(qpos_actuated - default_pose)) + vel_weight * jp.sum(jp.abs(qvel_actuated))
 
 
 def termination(fall):

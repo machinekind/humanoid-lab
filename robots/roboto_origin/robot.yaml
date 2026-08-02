@@ -81,8 +81,10 @@ foot_geoms:
   - right_foot2_collision
   - right_foot3_collision
 
-# All 11 left/right joint pairs. torso_joint has no counterpart and is
-# excluded, same as asimov's unpaired joints.
+# All 11 left/right joint pairs, plus torso_joint paired with ITSELF: it
+# sits on the mirror plane, so its mirror image is the same joint turning
+# the other way. Validated for joint-name existence; nothing consumes the
+# map yet.
 symmetry:
   left_thigh_yaw_joint: right_thigh_yaw_joint
   left_thigh_roll_joint: right_thigh_roll_joint
@@ -95,13 +97,14 @@ symmetry:
   left_arm_yaw_joint: right_arm_yaw_joint
   left_elbow_pitch_joint: right_elbow_pitch_joint
   left_elbow_yaw_joint: right_elbow_yaw_joint
+  torso_joint: torso_joint
 
 keyframes:
   # Pose and base_pos z both come from the upstream Isaac ArticulationCfg
   # init_state (modules/roboparty_train/robolab/robolab/assets/robots/
   # roboparty.py at PROVENANCE.md's pinned commit; BSD-3-Clause, not
   # vendored into source/ -- see PROVENANCE.md). Verified per
-  # docs/adding-a-robot.md's measurement rule on 2026-07-15: compiled
+  # docs/adding-a-robot.md's measurement rule: compiled
   # deploy_pd, set qpos to this keyframe, mj_forward, then computed the
   # exact capsule bottom (min over the two world-frame end-cap centers,
   # minus radius) of every foot_geoms entry above. At this pose the
@@ -157,7 +160,7 @@ model_patches:
   # contype/conaffinity on all of them, so the primitives injected below
   # are the only collision surface. Feet alone are NOT enough: with only
   # foot capsules, a toppled robot passes straight through the floor
-  # (reproduced 2026-07-15: shove at home pose -> base settles at
+  # (reproduced: shove at home pose -> base settles at
   # z = -0.73 m, dangling from the feet). Fall detection is base height/
   # tilt (termination_bodies above), but the body still needs floor
   # contact for the fall itself to resolve physically, so every major
@@ -178,7 +181,7 @@ model_patches:
 
   # Six foot capsules (3 per side), replacing the ankle_roll_link visual
   # mesh as collision geometry. Sole footprint measured from the
-  # left/right_ankle_roll_link STL on 2026-07-15: body-frame x
+  # left/right_ankle_roll_link STL: body-frame x
   # [-0.054, 0.104], y [-0.029, 0.029], sole plane at z -0.045. Each
   # capsule: radius 0.012, centerline (fromto) at z -0.033 so the capsule
   # bottom (centerline z minus radius = -0.033 - 0.012 = -0.045) sits
@@ -222,7 +225,7 @@ model_patches:
       size: [0.012]
       fromto: [-0.042, 0.017, -0.033, 0.092, 0.017, -0.033]
 
-    # Body primitives (added 2026-07-15, the fell-through-the-floor fix;
+    # Body primitives (the fell-through-the-floor fix;
     # see the mesh_collisions comment above). All numbers measured from
     # the body's own STL vertices in the body frame, per
     # docs/adding-a-robot.md's measurement rule: boxes take the mesh
@@ -233,8 +236,8 @@ model_patches:
     # caps stay inside the mesh's axis range and clear of the neighboring
     # joint pivots. Left/right pairs mirror in y. None of these reach the
     # floor in any keyframe (the shin capsule, the lowest, clears it by
-    # ~0.034 m at home) -- gated by
-    # tests/test_roboto_origin.py::test_home_settle_contacts_floor_and_feet_only.
+    # ~0.034 m at home) -- gated by test_robot_conformance.py's
+    # test_only_the_feet_touch_the_floor_at_the_reset_keyframe.
     base_collision:
       body: base_link
       type: box
@@ -297,3 +300,13 @@ model_patches:
       type: capsule
       size: [0.0315]
       fromto: [0.031, 0.0, 0.0, 0.105, 0.0, 0.0]
+
+# Warp contact/constraint budgets for this robot's collision geometry.
+# Measured worst case across standing/walking/fallen regimes
+# (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 13 contacts
+# / 124 rows, in the fallen regime. Times the 7x headroom rule, rounded up
+# to multiples of 8 and 32. The row peak is derived on the jax backend;
+# re-measure on a warp host, where both are live counters.
+sim_budget:
+  naconmax_per_env: 96
+  njmax: 896

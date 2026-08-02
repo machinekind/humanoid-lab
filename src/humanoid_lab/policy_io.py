@@ -30,6 +30,15 @@ def _build_network_factory(ppo_params) -> Callable:
     return ppo_networks.make_ppo_networks
 
 
+def load_params(ckpt_dir):
+    """The raw (normalizer, policy, value) params pytree from a checkpoint.
+
+    `load_policy` below closes over the same tuple. The exporter needs the
+    arrays themselves, which an inference function does not expose.
+    """
+    return ppo_checkpoint.load(ckpt_dir)
+
+
 def load_policy(ckpt_dir, env, ppo_params, deterministic: bool = True):
     """Rebuild a deterministic inference fn from a Brax PPO checkpoint.
 

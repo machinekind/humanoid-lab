@@ -10,7 +10,7 @@ def test_full_defaults_tree_composes():
         cfg = compose(config_name="config")
 
     assert cfg.task.name == "joystick"
-    assert cfg.robot.name == "asimov_v1"
+    assert cfg.robot.name == "roboto_origin"
     assert cfg.actuators.name == "sizing_ideal"
     assert "com_offset" in cfg.dr
     assert cfg.wandb.project == "humanoid-lab"

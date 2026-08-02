@@ -32,13 +32,20 @@ from pathlib import Path
 # use the thresholds below, because an early/undertrained checkpoint
 # (e.g. this step's 100k-step smoke gate) is EXPECTED to fall or track
 # badly while moving -- that's reported honestly, not hidden.
-_VIBRATION_ATTENTION = 0.5  # training skill's smoothness gate (see battery.py's
-# vibration_index docstring): fbb_v2 scored 0.972 buzzing, 0.168 after the fix.
+_VIBRATION_ATTENTION = 0.5  # fraction of qvel FFT power above the cutoff
+# (see battery.py's vibration_index); smooth and buzzing gaits sit an order
+# of magnitude apart on it.
 _VEL_ERR_ATTENTION = 0.3  # mean |cmd - achieved| per axis, m/s or rad/s
 _TORQUE_SAT_ATTENTION = 0.05  # fraction of (step, joint) samples over 0.95*cap
 _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
-_META_KEYS = ("run", "checkpoint", "timestamp")
+# battery.json keys that are not scenarios. `contacts` is the warp budget
+# block (see sim_budget.budget_report); it gets its own section below.
+_META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
+
+# The per-direction spin rows (eval/battery.py's battery_scenarios), listed
+# in the order the section renders them.
+_SPIN_SCENARIOS = ("spin_left", "spin_right")
 
 
 def _fmt(v, nd: int = 3) -> str:
@@ -89,6 +96,8 @@ def render_markdown(battery: dict) -> str:
         "",
         f"- checkpoint: {battery.get('checkpoint', '?')}",
         f"- generated: {battery.get('timestamp', '?')}",
+    ]
+    lines += [
         "",
         "## Battery",
         "",
@@ -109,7 +118,132 @@ def render_markdown(battery: dict) -> str:
             f"{_fmt(r.get('antiphase_score'))} |"
         )
 
+    # Spin probes, their own section because the pair only
+    # means something read side by side: a policy that turns 140 degrees one
+    # way and 12 the other averages to a healthy-looking 76. Every scenario
+    # row in battery.json carries the two yaw fields; these are the two rows
+    # that exist to be read that way.
+    spin_names = [n for n in scenario_names if n in _SPIN_SCENARIOS]
+    if spin_names:
+        lines += [
+            "",
+            "## Spin probes",
+            "",
+            "| scenario | yaw_progress_deg | yaw_cmd_deg | completed | fell |",
+            "|---|---|---|---|---|",
+        ]
+        for name in spin_names:
+            r = battery[name]
+            lines.append(
+                f"| {name} | {_fmt(r.get('yaw_progress_deg'), 1)} | "
+                f"{_fmt(r.get('yaw_cmd_deg'), 1)} | {_fmt(r.get('completed'))} | "
+                f"{_fmt(r.get('fell'))} |"
+            )
+        lines += [
+            "",
+            "Yaw is the body gyro's z channel integrated over the post-settle "
+            "window, signed: positive is left (CCW). A right-hand row reading "
+            "positive turned the wrong way; one near zero did not turn.",
+        ]
+
+    # Gait KPIs. Raw metrics with no threshold attached, so
+    # they get a table and no PASS/ATTENTION line: what a healthy apex is
+    # depends on the robot's leg, and this repo has measured neither. The
+    # swing count travels with the medians because a median over three
+    # swings and one over ninety are not the same reading.
+    if any("swings" in battery[n] for n in scenario_names):
+        lines += [
+            "",
+            "## Gait KPIs",
+            "",
+            "| scenario | swings | swing_apex_med_m | swing_apex_p90_m "
+            "| touchdown_v_med | touchdown_softness_med |",
+            "|---|---|---|---|---|---|",
+        ]
+        for name in scenario_names:
+            r = battery[name]
+            if "swings" not in r:
+                continue
+            lines.append(
+                f"| {name} | {r.get('swings')} | {_fmt(r.get('swing_apex_med_m'), 4)} | "
+                f"{_fmt(r.get('swing_apex_p90_m'), 4)} | {_fmt(r.get('touchdown_v_med'))} | "
+                f"{_fmt(r.get('touchdown_softness_med'))} |"
+            )
+        lines += [
+            "",
+            "A swing is a contiguous run of foot clearance over 5 mm, measured "
+            "after the settle window. `touchdown_softness_med` is the touchdown "
+            "speed over the free-fall speed from that swing's own apex: 1.0 is a "
+            "foot dropped like a brick, lower is a foot flown in. A `-` is a "
+            "median with no swings behind it, not a zero.",
+        ]
+
+    # Servo tracking error. Raw, like the gait KPIs, and for
+    # the same reason: what a good number is depends on the preset's gains,
+    # and the gains a run actually used are stamped in run.json rather than
+    # known here.
+    if any("tracking_err_rms" in battery[n] for n in scenario_names):
+        lines += [
+            "",
+            "## Servo tracking",
+            "",
+            "| scenario | tracking_err_rms | tracking_err_p95 |",
+            "|---|---|---|",
+        ]
+        for name in scenario_names:
+            r = battery[name]
+            if "tracking_err_rms" not in r:
+                continue
+            lines.append(
+                f"| {name} | {_fmt(r.get('tracking_err_rms'), 4)} | "
+                f"{_fmt(r.get('tracking_err_p95'), 4)} |"
+            )
+        lines += [
+            "",
+            "The gap between ctrl and qpos over the actuated joints, after the "
+            "settle window: did the servo hold the setpoint the policy "
+            "commanded. The p95 says "
+            "whether the error is spread evenly or lives in a few joints. Under "
+            "an ideal_torque preset ctrl is a torque, so these two numbers are "
+            "not a servo error -- run.json's `actuator_gains.model` says which "
+            "preset produced the run.",
+        ]
+
+    contacts = battery.get("contacts")
+    if contacts:
+        lines += [
+            "",
+            "## Contact budgets",
+            "",
+            f"- backend: {contacts.get('backend', '?')}",
+            f"- contacts: peak {_fmt(contacts.get('nacon_max'))} of "
+            f"{contacts.get('naconmax_per_env', '?')} per env "
+            f"(pool {contacts.get('pool', '?')} over {contacts.get('num_envs', '?')} envs)",
+            f"- constraint rows: peak {_fmt(contacts.get('nefc_max'))} of "
+            f"{contacts.get('njmax', '?')} per world",
+        ]
+        if contacts.get("nacon_max") is None or contacts.get("nefc_max") is None:
+            lines.append(
+                "- a `-` peak was not measured: the jax backend has no live counter "
+                "for it and no budget to overflow"
+            )
+
     lines += ["", "## Attention", ""]
+    if contacts and contacts.get("overflow"):
+        lines.append(
+            f"- **contacts: ATTENTION** -- the contact pool overflowed "
+            f"({contacts.get('nacon_max')} >= naconmax_per_env "
+            f"{contacts.get('naconmax_per_env')}). Warp drops the overflow silently, "
+            "so every number above was measured on a simulation missing contacts. "
+            "Raise the budget and re-run."
+        )
+    if contacts and contacts.get("rows_overflow"):
+        lines.append(
+            f"- **contacts: ATTENTION** -- the constraint rows overflowed "
+            f"({contacts.get('nefc_max')} >= njmax {contacts.get('njmax')}). Rows past "
+            "njmax apply no force, with no warning anywhere. Raise the budget and "
+            "re-run."
+        )
     for name in scenario_names:
         flags = scenario_flags(name, battery[name])
         if flags:

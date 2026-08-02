@@ -1,6 +1,6 @@
 """CLI: build a robot's training-scene MJCF for a given actuator preset.
 
-    ./run.sh build --robot asimov_v1 --preset sizing_ideal [--out PATH]
+    ./run.sh build --robot roboto_origin --preset deploy_pd [--out PATH]
 
 Loads robot.yaml + the named actuator preset (robot/build.py's build_spec:
 actuator injection, armature/frictionloss override, passive-joint springs,

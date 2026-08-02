@@ -5,12 +5,13 @@ __pycache__/
 .ruff_cache/
 runs/
 wandb/
+wandb-offline/
 outputs/
 robots/*/mjx/
 *.egg-info/
 MUJOCO_LOG.TXT
 train.log
-hpc/local.env
-hpc/local.mk
+CLAUDE.local.md
 logs/
 .DS_Store
+.jax_cache/

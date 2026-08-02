@@ -1,0 +1,71 @@
+"""No-progress termination math, CaT-style (arXiv 2403.18765).
+
+Three pure functions of plain arrays -- no env, no model, no state -- so the
+model is testable on its own (tests/unit/test_no_progress.py) and the env only
+has to wire them up. The EMA that smooths `served`, the bernoulli draw, and
+the done flag live in the env, because those need per-episode state and an
+RNG key.
+"""
+
+from __future__ import annotations
+
+import jax.numpy as jp
+
+# The two commanded-speed constants the task, this module, and the deploy
+# contract all share. They live here (not in joystick.py) because joystick
+# imports this module and the deploy contract must ship the same numbers
+# the env trained with -- one definition, three consumers.
+#
+# A command asking for less than SPEED_DEADBAND is a stand command: the
+# gait clock freezes, the `moving` mask opens, and the no-progress cut
+# never arms. Units are commanded speed (`Joystick._cmd_speed`).
+SPEED_DEADBAND = 0.05
+
+# Weight of |yaw rate| in commanded speed -- an effective turning radius in
+# metres. Used identically by `_cmd_speed` (gait-clock speed scaling) and
+# by `served` below, so served and demand blend the same way and their
+# ratio is meaningful. Carried from the quadruped predecessor's 0.21 m
+# leg; re-derive for a robot of this scale.
+YAW_SPEED_WEIGHT = 0.3
+
+
+def served(linvel_xy, gyro_z, command):
+    """Speed actually delivered in service of `command`.
+
+    Body-frame planar velocity projected onto the commanded direction, plus
+    the yaw rate toward the commanded turn. Projection, not magnitude: moving
+    against the command reads negative, which is worse than standing still,
+    and moving across it scores zero.
+
+    `linvel_xy` and `gyro_z` are body-frame; `command` is the full
+    `(vx, vy, wz)`. A zero linear command divides by a 1e-6 floor rather than
+    by zero (nothing arms at that demand anyway).
+    """
+    command = jp.asarray(command)
+    direction = jp.maximum(jp.linalg.norm(command[:2]), 1e-6)
+    return (
+        jp.dot(jp.asarray(linvel_xy), command[:2]) / direction
+        + YAW_SPEED_WEIGHT * gyro_z * jp.sign(command[2])
+    )
+
+
+def hazard(progress_ratio, risk_below, p_max):
+    """Per-step cut probability from smoothed progress as a fraction of demand.
+
+    Zero at and above `risk_below`, ramping linearly to `p_max` at zero
+    progress and staying there for negative progress. At `p_max` the expected
+    survival of a dead stop is 1/p_max control steps.
+    """
+    return p_max * jp.clip((risk_below - progress_ratio) / risk_below, 0.0, 1.0)
+
+
+def armed(demand, steps_since_cmd, dt, grace_sec):
+    """Whether the hazard applies at all this step.
+
+    Two conditions: the command asks for real motion
+    (`demand > SPEED_DEADBAND`), and the command has been standing for at
+    least `grace_sec`. The grace window covers the reset transient and,
+    since `steps_since_cmd` restarts on every resample, the time it takes
+    to turn a gait around for a new command.
+    """
+    return (demand > SPEED_DEADBAND) & (steps_since_cmd * dt >= grace_sec)

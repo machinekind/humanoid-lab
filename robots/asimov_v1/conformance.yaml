@@ -1,0 +1,18 @@
+# Measured expectations for tests/integration/test_robot_conformance.py.
+#
+# Optional, and deliberately small. The conformance suite derives everything
+# else it asserts from robot.yaml and the actuator presets, so those checks
+# move when the yaml moves. This file is for the handful of numbers that are
+# measurements OF the vendored source rather than statements about it -- the
+# ones that must NOT move when robot.yaml does.
+#
+# A robot with nothing to record here simply has no conformance.yaml.
+
+# Total body mass of the compiled model, kg. Measured 2026-08-01 at
+# 32.3713 kg on every preset (an actuator preset overrides gains and
+# armature, never link mass). The band is +-2%: it is a guard against a
+# meshdir or inertial regression that silently zeroes or doubles a link's
+# mass, not a fit.
+total_mass_kg:
+  min: 32.0
+  max: 33.0

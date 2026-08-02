@@ -1,7 +1,6 @@
 """Build-order step 7 gate (part 2): sizing/report.py's pure reducers and
 rendering, exercised on synthetic npz-shaped arrays -- no checkpoint, no
-env, no mujoco model. Mirrors w01-tek's test_report.py pattern (pure
-numpy in, dict/str out).
+env, no mujoco model: pure numpy in, dict/str out.
 """
 
 from __future__ import annotations

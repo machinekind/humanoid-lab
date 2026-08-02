@@ -10,10 +10,10 @@ same task/robot/preset/env overrides, read back from run.json's
 hydra_config -- the one part of run.json that carries the un-resolved
 per-run knobs train.py itself passed to make_env), loads the checkpoint's
 policy via policy_io.load_policy, and rolls CPU episodes using the env's
-own command sampling (Joystick._sample_command / command.resample_steps --
-no scripted battery here, unlike w01-tek's battery.py: sizing wants the
-torque/speed distribution the trained gait actually produces under its own
-command envelope, not a handful of scripted scenarios).
+own command sampling (Joystick._sample_command / command.resample_steps).
+There is no scripted scenario list here, unlike eval/battery.py: sizing
+wants the torque/speed distribution the trained gait actually produces
+under its own command envelope.
 
 Deviation from train.py's exact env construction: train.py additionally
 overrides env_overrides["sim"]["num_envs"] to the PPO batch size, to size
@@ -96,15 +96,19 @@ def _ppo_params_from_run(run: dict) -> config_dict.ConfigDict:
 
 
 def make_env_for_run(run: dict):
-    from humanoid_lab.registry import make_env
+    from humanoid_lab import registry
 
     task = run["task"]
     hydra = run["hydra_config"]
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    env_overrides = hydra["task"].get("env") or {}
-    env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
+    # The run's own env, unchanged. Pushes and the env's own command
+    # sampling deliberately stay ON, unlike the battery's: sizing wants the
+    # distribution the trained gait actually produces under its own command
+    # envelope.
+    env_overrides = dict(hydra["task"].get("env") or {})
+    env = registry.make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     return env, robot_dir, preset_name, actuator_overrides
 
 

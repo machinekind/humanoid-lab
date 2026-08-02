@@ -5,6 +5,9 @@ run composes from the config groups under `configs/`. `run.sh train` wraps
 `python -m humanoid_lab.train`. Every Hydra override syntax works after it:
 `group=value`, `key=value`, `+key=value`.
 
+Which of these keys reach a deployed robot is a separate question, answered
+in [deploy.md](deploy.md).
+
 ## Resolve before running
 
 Print the fully composed config and exit, without touching JAX or building
@@ -149,7 +152,7 @@ experiment yaml turns the term on by setting a nonzero value under
 group together in W&B. An explicit `wandb.group`, in the experiment yaml or
 on the CLI, wins over that default.
 
-`tests/test_experiments.py` composes every file under `configs/experiment/`
+`tests/unit/test_experiments.py` composes every file under `configs/experiment/`
 in CI. It checks that the file pins robot and task, that its `task.env`
 overlay applies onto the task's `default_config()`, and that its actuator
 preset resolves against the pinned robot with any inline overrides applied.
@@ -165,10 +168,15 @@ CI before it costs GPU time.
 | `smoke` | `false` | Shrinks PPO to a tiny CPU-sized budget (100k steps, 64 envs) and caps episode length at 200 steps. `run.sh smoke` also forces `JAX_PLATFORMS=cpu` and `wandb.enable=false`. |
 | `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. |
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
+| `contact_preflight` | `true` | Measure the warp contact/constraint peaks on a short probe before training and record them in `run.json`. Skipped automatically under `smoke=true`. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
 | `wandb.project` | `humanoid-lab` | W&B project name. |
 | `wandb.group` | `null` | W&B run group. Defaults to the selected experiment's name, or stays `null` if no experiment is selected. An explicit value wins over that default. |
 | `ppo` | `{}` | Global PPO overrides, applied after the task's own `task.ppo` block. CLI `ppo.foo=...` wins over both. |
+| `early_stop.enable` | `false` | End the run once the eval reward has plateaued. See [Early stopping](#early-stopping-early_stop). |
+| `early_stop.min_evals` | `10` | No stop verdict before this many evals exist. |
+| `early_stop.patience` | `6` | Consecutive evals with no new best that end the run. |
+| `early_stop.min_delta` | `0.5` | A new best must beat the running best by more than this. **Calibrate above the eval noise.** |
 
 ## Actuator presets: the name pointer
 
@@ -217,20 +225,586 @@ model builds. `run.json` records the resolved `cfg.actuators` block,
 overrides included, so `eval/battery.py` and `sizing/collect.py`
 reconstruct the same model from a finished run.
 
+## Velocity-tracking kernels (`task.env.reward`)
+
+The two tracking terms, `tracking_lin_vel` and `tracking_ang_vel`, are
+`exp(-err²/tracking_sigma)` kernels by default. The switches below reshape
+them. Every one is off at its default, and off reproduces the legacy kernel
+exactly.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `tracking_sigma` | `0.25` | Width of the absolute kernel, in (m/s)² and (rad/s)². |
+| `tracking_product` | `false` | Multiply the two kernels into each other: `k_lin, k_ang = k_lin*k_ang, k_ang*k_lin`. Additive tracking pays the easy half of a command — a robot that ignores a pure-spin command still earns the full `tracking_lin_vel`, since standing still tracks the zero linear command perfectly (measured at about 63% of an ideal spin's payout). With the product, full pay needs the whole command tracked. |
+| `tracking_relative` | `false` | Score the fraction of the command tracked instead of the absolute error: the width becomes `tracking_rel_sigma * max(\|cmd\|, floor)²`. The absolute kernel pays only within about `√tracking_sigma` of the target whatever the target's size, so a fast command's reward cliff is out of exploration's reach — one measured policy reached 0.70 m/s under a 0.8 command and 0.00 m/s under a 1.0 one. |
+| `tracking_rel_sigma` | `0.25` | Dimensionless width of the relative kernel. A quadruped starting point; a narrow kernel rounds partial tracking to zero, and on terrain this had to widen to `0.5`. |
+| `tracking_rel_floor_lin` | `0.3` | Floor on the linear relative denominator, m/s. Keeps a near-zero command from sharpening the kernel to a point and dividing by zero. |
+| `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role; on terrain this had to widen to `0.7`. |
+| `tracking_far_weight` | `0.0` | Mix a wide exponential into both kernels: `(1-w)*kernel + w*exp(-err²/tracking_far_sigma)`. Applies in the absolute and the relative branch alike, and the far kernel stays absolute in both. `exp(-err²/σ)` is gradient-free a few sigma out, so a capability the policy never explored gets no pull toward the command; the wide kernel keeps a usable gradient at range without moving the optimum or leaving `[0, 1]`. **This term alone creates a standing deadlock**: at a yaw rate error of 0.8 rad/s it pays `0.25*exp(-0.64/2.5)`, about 19% of the maximum angular reward, for standing still, and that gradient is weaker than the penalties a pivot attempt incurs. Turn it on only together with `tracking_product` or `tracking_relative`. |
+| `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
+| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which has made stand-and-lift the top income under a command on a quadruped run: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
+
+## Orientation tolerance cone (`task.env.reward`)
+
+The `orientation` penalty is `sum(gravity_xy²)`, which is `sin²` of the
+base's tilt from vertical. `orientation_tol_deg` puts a tolerance cone around
+upright: the penalty becomes `max(sin²(tilt) - sin²(tol), 0)`, exactly zero
+inside the cone and rising continuously from its edge with the legacy
+penalty's own slope.
+
+Tilt here is measured against **gravity**, not against the local surface. A
+flat-referenced penalty therefore taxes the body pitch that locomotion needs
+— leaning into an acceleration, or climbing — while a real nosedive stays far
+outside any cone worth setting. 20 degrees is a workable cone; 10 was
+measured too tight for that reason.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `orientation_tol_deg` | `0.0` | Half-angle of the cone, degrees. `sin²` of it is precomputed at construction, so `0` leaves the legacy penalty bit-exact and a live env never re-reads the key — change it by config, not by mutating a built env. |
+
+## Swing shaping (`task.env.reward`)
+
+Two terms shape what a swing looks like, both at weight 0 by default.
+
+`feet_apex` pays each completed swing, once, at touchdown, for how close its
+**peak** clearance came to `apex_target`. The env tracks that peak in
+`info["swing_apex"]`: a running maximum while the foot is airborne, read at
+first contact, cleared afterwards. Duration-averaged clearance terms —
+`feet_phase` here — tolerate a long 1.5 to 2 cm skim
+that collects nearly as much as a crisp arc, so the optimizer skims. Pricing
+the peak has measured 3 to 5 cm swings and 30 to 70% better grip. The term is
+in the `shaping_tracking_gate` set.
+
+`feet_landing` is a penalty on downward foot speed weighted by closeness to
+the floor, `sum(min(vz, 0)² * clip(1 - clearance/glide_height, 0, 1))`. It is
+measured **before** contact on purpose: a penalty read at contact under-reads
+impacts, because the solver has already absorbed the hit within the control
+step it becomes visible. The gate makes the gradient read "decelerate as you
+approach" — 1 at the floor, 0 at `glide_height` and above — so stance feet
+score about zero and a swing high above the floor scores zero at any speed.
+The physical reference for touchdown softness is free fall over the band:
+`sqrt(2*9.81*0.03) ≈ 0.77 m/s`. It is **not** in the shaping gate: gating a
+penalty on the tracking kernel would relax it exactly when tracking is
+failing, which is when feet are being slammed into the floor.
+
+"At the floor" and "at `glide_height`" are physical heights:
+`_foot_clearance` reads the sole's height above the floor (a planted foot
+~0), per [docs/lessons/foot-clearance.md](lessons/foot-clearance.md).
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
+| `scales.feet_landing` | `0.0` | Weight of the soft-landing penalty (negative when on). `0` = off. |
+| `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for this leg** — a quadruped starting value, and our own `gait.swing_height` asks for 0.08 m. |
+| `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`. |
+
+`reward.stand_still_vel_weight` (default `0.2`) sets stand_still's
+velocity-damping share against a position share of 1; only the ratio
+matters, since `scales.stand_still` prices the sum.
+
+## Settled pose anchor (`task.env.real_pose_ref`)
+
+Off by default. `pose` and `stand_still` both score a deviation from
+`_default_pose` — the reset keyframe's **commanded** joint values. Under
+gravity and finite gains the robot comes to rest below that command, so the
+deviation never reaches zero and both terms charge a floor no policy can
+remove. `roboto_origin`'s `home` keyframe settles 0.065 rad off
+its command (0.015 rad at the knee), which at the stock `scales.stand_still`
+of `-0.5` is 0.032 of standing penalty per step that exists only because the
+anchor is wrong. Each actuator preset sags differently, so the floor also
+moves with a config axis that has nothing to do with the task.
+
+On, the env settles a **quasi-rigid copy** of the model once at construction
+and anchors `pose`, `stand_still` and the reset pose on the result. Every
+actuator on the copy becomes the same stiff position servo — kp 400, kd 20,
+force cap removed, timestep 5e-4, `implicitfast` — held at the keyframe
+targets for two simulated seconds. The pose that comes out does not depend
+on the runtime gains or the actuator model: at a given `soft_limit_factor`,
+two gain sets and two actuator models settle to bit-identical anchors.
+Two things are deliberately not factored out. A preset that changes joint
+armature (roboto's presets do) moves the two-second settle, measured at about
+5e-5 rad there — armature is a property of the mechanism, not a gain. And a
+preset that changes `soft_limit_factor` moves the clip below, and with it the
+anchor: roboto's home pose is inside its 0.9 soft limits and 0.029 rad
+outside its 0.8 ones. The runtime envelope is preset policy, not an actuator
+detail. Compensating the real plant's sag to reach that pose
+is the policy's job. Cost is about 0.2 s of plain CPU MuJoCo, and only when
+the flag is on.
+
+**The ctrl anchor does not move.** `_default_pose` stays what
+`ctrl_from_action` centers on and what the `joint_pos` observation subtracts.
+Only the reward reference and the reset pose change. Re-centering the action
+space on a sagged pose would silently change what a zero action commands and
+what the policy reads back.
+
+Two details are load-bearing:
+
+- The settle targets are clipped to the preset's **soft joint limits**
+  (`joint range × soft_limit_factor`, in radians), not to the model's raw
+  `ctrlrange` and not to `_ctrl_lo`/`_ctrl_hi`. `step()` clips a `pd`
+  preset's motor targets to those soft limits, so a pose settled past them is
+  one the policy can never command. A `pd` preset's raw ctrlrange is `[0, 0]`
+  besides — those actuators are deliberately `ctrllimited=False`. And
+  `_ctrl_lo`/`_ctrl_hi` are the soft limits only for a `pd` preset: for an
+  `ideal_torque` one they are the actuator forcerange in N·m, so clipping a
+  radian target against them does nothing at all. Reading the angle envelope
+  directly is what keeps the two models on the same anchor.
+- The settle forces each actuator's `gaintype`/`biastype`/`ctrllimited` as
+  well as its gain and bias parameters, because a torque preset's params are
+  not a servo's. An `ideal_torque` preset injects
+  `biastype NONE` actuators whose ctrl is a torque; overwriting the parameter
+  arrays alone would leave `force = 400*ctrl` and settle a different robot.
+
+**Construction raises if the settle does not end standing still**, naming the
+robot and the settled height. Two conditions: the settled base height must
+clear `fall.min_height`, and the robot must have come to rest (max `|qvel|`
+under 1e-2). A biped needs both. `asimov_v1`'s keyframes satisfy neither —
+held rigid, `home` topples backward within a second (its CoM sits about 2 cm
+behind the heel) and comes to rest at 0.111 m, while `knees_bent` is still
+above the fall floor at the two-second cut but moving at 0.15 rad/s and on
+the floor by four seconds. A height check alone would have anchored on that
+snapshot. **Turn this on only for a robot whose reset keyframe is a standing
+equilibrium**; `roboto_origin`'s `home` is (base height flat to 1e-5 m out to
+ten simulated seconds), and asimov_v1's are not, pending a balanced keyframe.
+
+This repo has no height command, so one settle is enough. If a height
+command ever lands here, the extension is a grid: settle a rung per
+commanded stand height and interpolate the anchor on the command.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `real_pose_ref` | `false` | Anchor `pose`, `stand_still` and the reset pose on the settled pose instead of the keyframe pose. `false` is the legacy anchor, bit-exact, and runs no settle. |
+
+## No-progress termination (`task.env.no_progress`)
+
+Off by default. When on, an env whose measured progress keeps falling short
+of its command is terminated probabilistically, CaT-style
+([arXiv 2403.18765](https://arxiv.org/abs/2403.18765)). It closes the
+reward-landscape hole where ignoring the command indefinitely is profitable:
+forfeiting the rest of the episode is the whole penalty. **No reward term is
+attached** — `rewards["termination"]` stays fall-only, and enabling this adds
+no key to `reward.scales`.
+
+Per control step, with the command that drove the step:
+
+```
+served  = dot(linvel_xy, cmd_xy)/max(|cmd_xy|, 1e-6) + 0.3*gyro_z*sign(cmd_wz)
+ema    ←  (1 - dt/ema_sec)*ema + (dt/ema_sec)*served
+ratio   = ema / max(demand, 1e-6)          demand = |cmd_xy| + 0.3*|cmd_wz|
+hazard  = p_max * clip((risk_below - ratio)/risk_below, 0, 1)
+cut     ~ bernoulli(hazard)  when armed, else 0
+```
+
+`served` is a projection, not a magnitude, so moving against the command
+reads negative — worse than standing still — and moving across it scores
+zero. The cut arms only when `demand > 0.05` and `steps_since_cmd*dt >=
+grace_sec`. The EMA reseeds to the new demand (ratio 1) on every command
+resample, so a robot is never billed for the previous command's shortfall.
+The math is `src/humanoid_lab/envs/progress.py`; the env wires it in
+`envs/joystick.py`.
+
+Two metrics appear while it is on and exist nowhere otherwise:
+`no_progress_cut` (episode sum, 1 exactly when the episode ended on the cut)
+and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
+`[0, 2]`).
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enable` | `false` | Off changes nothing: no info state, no metrics, and no RNG key is split, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
+| `grace_sec` | `2.0` | No hazard for this long after a reset or a command resample. **Re-derive for a biped.** A quadruped starting value, and the one most likely wrong here: turning a two-legged gait around takes longer than turning a 0.21 m four-bar quadruped's. |
+| `ema_sec` | `1.0` | Smoothing horizon of the progress measure, seconds. Long enough that one bad stride does not arm the cut. |
+| `risk_below` | `0.5` | The hazard starts below this fraction of the commanded speed. **Re-derive for a biped**, together with `grace_sec`: 50% of demand may be a lot to ask of a humanoid inside the grace window. |
+| `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
+
+The meter is also reseeded on every **respawn**, by a wrapper rather than by
+the env. `wrap_for_brax_training`, the trainer's own wrapping, ends in
+`BraxAutoResetWrapper(full_reset=False)`: on done it restores `data` and
+`obs` from the cached first state and returns `state.info` untouched. So
+`info` survives every termination, and a cut env would come back carrying the
+dying episode's shortfall and a `steps_since_cmd` well past `grace_sec` —
+armed on its first step, and dead again within a second. `envs/wrappers.py`'s
+`ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
+`steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
+`no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
+`wrap_for_brax_training` itself, unchanged. Reseeding only the EMA and
+carrying the counter over would re-arm the cut on the respawn's first step,
+so the counter is zeroed too. Any other wrapper that restarts an episode in
+place owns the same reseed.
+
+## Pure command draws (`task.env.command`)
+
+The command sampler draws `(vx, vy, wz)` from one uniform box. That box
+almost never produces a clean corner: a backward command arrives with random
+lateral and yaw contamination attached, and under `tracking_product` or
+`tracking_relative` a contaminated corner pays about nothing however well the
+robot serves it. The skill is then never profitable to learn, and the policy
+settles on refusing it — a quadruped policy trained this way held 0.000 m/s
+under a commanded -0.4 backward, and five isolating probes confirmed the
+refusal was learned rather than mechanical.
+
+The five draws below rewrite the base sample into a clean single-axis
+command with the given probability. They apply in the order `wz, vy, slow,
+fast, back`, a later draw overwriting an earlier one, and all of them run
+before `zero_prob`, which stays the sampler's last word: standing still
+overrides every draw.
+
+Each draw is gated on its static probability and keys off
+`jax.random.fold_in(rng, 0x100 + idx)` with an index of its own — `1 wz,
+2 vy, 3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not
+exist in the trace, all five off leave the sampler bit-identical to the
+pre-1.6 one (`tests/integration/test_golden_baseline.py`), and enabling one
+draw does not move another draw's samples
+(`tests/integration/test_pure_command_draws.py`).
+
+The `0x100` offset is load-bearing. `fold_in(key, i)` is bit-identical to
+`split(key, n)[i]` for every `i < n`, so a raw table index would fold in one
+of the sampler's own base split keys — index 1 would *be* the `vy` uniform
+key. The offset puts every draw's key out of reach of any split of `rng`,
+whatever width that split later grows to.
+
+Every range is a **starting value to re-derive**, taken from this repo's own
+envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`).
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `pure_wz_prob` | `0.0` | Keep the drawn `wz`, zero the linear part: spin-in-place training. |
+| `pure_vy_prob` | `0.0` | Keep the drawn `vy`, zero `vx` and `wz`: pure-strafe training. |
+| `pure_slow_prob` | `0.0` | Redraw `vx` from `slow_vx`, zero `vy` and `wz`: clean slow straight walking, so the gait learns to scale down instead of having one speed. |
+| `slow_vx` | `(0.1, 0.35)` | Range of the slow redraw, m/s. Sits inside our `vx` range. |
+| `pure_fast_prob` | `0.0` | Redraw `vx` from `fast_vx`, zero `vy` and `wz`: clean fast straight walking. |
+| `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. Setting `fast_vx` **above** the box is a known way to pull a policy past a speed it deadlocks at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
+| `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal described above. |
+| `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside asimov_v1's negative `vx` range. **Not inside roboto_origin's**, whose overlay narrows `vx` to `[-0.6, 1.0]` — arming `pure_back_prob` there without narrowing `back_vx` is refused at construction (see below). |
+
+Every armed redraw is checked against the **composed** `command` box when the
+env is constructed: `command.<range>` must sit inside `command.<axis>`, or
+`Joystick.__init__` raises a `ValueError` naming the draw, the range and the
+box. A redraw is a redraw of the axis, not a widening of it — a policy that
+trained on commands outside its own box would ship a contract that
+understates what it saw. `deploy_contract.py` refuses the same configuration
+at export; the construct-time check just moves the failure to before the GPU
+hours. Draws at probability `0.0` are not checked, so the shipped all-off
+defaults validate nothing.
+
 ## Domain randomization (`dr`)
 
 All five switches default `enable: false`. Setting `domain_rand=true` alone
-reproduces the original fixed distribution: floor friction, base and link
-mass scale, and one shared gain and kd scale. Each switch below adds an
-independent randomization on top of that, gated by its own `enable`.
+enables the `dr.base` set: floor friction, base and link mass scale, and
+one shared gain and kd scale (`gain_fallback`, used only while
+`dr.joint_gains` is off). Each switch below it adds an independent
+randomization on top, gated by its own `enable`.
 
 | Switch | Tunables | Default range |
 |---|---|---|
+| `dr.base` | `floor_friction`, `base_mass`, `link_mass`, `gain_fallback` (multiplicative; the always-on set, no `enable`) | `[0.6, 1.2]`, `[0.7, 1.3]`, `[0.9, 1.1]`, `[0.8, 1.2]` |
 | `dr.com_offset` | `xy`, `z` (m) | `0.02`, `0.01` |
 | `dr.joint_gains` | `gain_pct`, `kd_pct` | `0.2`, `0.2` |
 | `dr.dof` | `damping`, `armature`, `frictionloss` (multiplicative) | `[0.9, 1.1]` each |
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
+
+**Friction draws and MuJoCo's combine rule.** Two equal-priority geoms
+contact at the element-wise **max** of their frictions. So while
+`foot_friction` is off, a `dr.base.floor_friction` draw below the foot
+geoms' own friction never reaches a foot contact — only the part of the
+range above the foot value randomizes anything there. Enabling
+`foot_friction` gives the foot geoms contact priority 1, which makes the
+foot's draw the contact friction outright (and makes the floor draw
+irrelevant at foot contacts, whatever its value). `./run.sh check-friction
+--robot <name> --preset <name>` proves this end to end on the box's own
+backend: it compares the friction inside each settled foot-floor contact
+against that env's draw and exits nonzero on any mismatch. Run it on a GPU
+host before trusting a slip-randomized training run to warp.
+
+"Independent" is a property of the RNG plumbing, not a wish. The fixed
+distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
+above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
+own — `1 joint_gains, 2 com_offset, 3 dof, 4 foot_friction, 5
+motor_strength`, fixed. The `0x100` offset is the same load-bearing constant
+as the pure command draws use, for the same reason: `fold_in(key, i)` is
+bit-identical to `split(key, n)[i]` for every `i < n`, so a raw table index
+keys off one of the five base keys. Before the offset landed, `com_offset`
+sampled straight off `r3`, the link-mass key, and `foot_friction` sampled
+straight off `r5`, the kd key — measured correlation 1.0 between the COM
+offset and the link-mass scale, and between the first foot's friction scale
+and the kd scale. Two axes were one axis wearing two names.
+
+Fixing that **changed the DR sampling streams**: a run at a given seed now
+draws different worlds than it did before. Nothing published depends on it —
+DR is training-only, and the goldens roll out with DR off.
+`tests/integration/test_randomize.py` pins both the index domain and the
+decorrelation.
+
+## Warp contact budgets (`task.env.sim`)
+
+Only the warp backend reads these. `envs/backend.py`'s `make_data_fn` passes
+them to `mjx.make_data` on the warp branch and calls `make_data(mjx_model)`
+with no kwargs on the jax branch, so changing either one cannot move a jax
+rollout by a bit.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `sim.backend` | `auto` | `auto` picks warp on a CUDA host and jax elsewhere. `jax` and `warp` pass through. |
+| `sim.naconmax_per_env` | `None` | Contact budget per world. `None` defers to the robot's `sim_budget` block in its robot.yaml. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
+| `sim.njmax` | `None` | Constraint-row budget per world, same `None` fallback. Never multiplied by the env count. |
+| `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
+
+Both overflows are silent. Contacts past `naconmax` are dropped; rows past
+`njmax` apply no force, and nothing warns anywhere — no counter reports it and
+no exception is raised, so a run just trains against a robot whose feet half
+pass through the floor. That is why the budgets are fail-closed: a warp env
+whose robot records no `sim_budget` (and whose sim config sets none) refuses
+to construct.
+
+The budgets are measurements OF a robot's collision geometry, so they live
+with the robot: each `robots/<name>/robot.yaml` records the
+`./run.sh check-contacts` worst case times the 7× headroom rule, with the
+measurement provenance in a comment. The headroom rule itself is inherited
+from the quadruped predecessor and has not been re-derived for these
+robots' fallen-regime contact patterns.
+
+Two facts for the debugging that follows a resize. The pool is a real
+device-memory line item: 224 per env at 4096 envs is a 917,504-contact
+allocation, and a 4096-env job has run out of device memory on a 256 pool.
+And one MJX step is not batch-shape invariant on the jax CPU backend, so a
+batched-versus-sequential parity check has to compare integer outcomes,
+never floats.
+
+`tests/integration/test_check_contacts.py` discovers every robot directory
+and fails if new collision geometry outgrows the recorded budgets.
+
+### The `contacts` block
+
+`run.json` and `battery.json` both carry a `contacts` block with identical
+keys on every backend, so a remote GPU run and a local CPU run diff without
+branching:
+
+| Field | Meaning |
+|---|---|
+| `backend` | `jax` or `warp`, as resolved for that run. |
+| `nacon_max` | Peak contacts in one world, or `null` if nothing measured it. |
+| `nefc_max` | Peak constraint rows in one world. Always `null` on jax: its `_impl.nefc` is a static buffer size, not a count. |
+| `naconmax_per_env`, `njmax`, `num_envs` | The budgets the run was configured with. |
+| `pool` | `naconmax_per_env * num_envs`, the device allocation. |
+| `overflow` | `backend == "warp"` and `nacon_max >= naconmax_per_env`. |
+| `rows_overflow` | `backend == "warp"` and `nefc_max >= njmax`. |
+
+`battery.json`'s peaks come from the battery's own rollouts, sampled every
+step. `run.json`'s come from the `contact_preflight` probe: brax's PPO loop is
+one jitted scan, so no Python-side code holds an `mjx.Data` while training
+runs and the live counters are unreachable from there. The probe measures the
+same per-world peaks on the same backend, before the job spends GPU hours.
+
+## Eval battery metrics (`battery.json`)
+
+`./run.sh battery` writes one entry per scenario. Every field added by port
+items 4.1 to 4.3 is **additive**: no pre-existing field changed meaning, and
+none of the new numbers folds into a score, a gate, or the `fell` / `steps`
+logic. They are raw readings.
+
+### The settle window
+
+`eval/battery.py`'s `SETTLE_STEPS = 50` is the reset transient every new
+metric drops — 1 s at asimov's `ctrl_dt` of 0.02, and a step count rather
+than a duration. `rollout` starts recording on the first step after reset,
+and the opening steps are the robot falling into its pose against a command
+it has not had time to answer. The pre-4.1 metrics (`vel_err_*`,
+`vibration`, `foot_slip`, `height_*`, `torque_sat_frac`, `mech_power_mean`,
+`antiphase_score`) still score the whole record: narrowing their window would
+change what an existing field means.
+
+A scenario that ends inside the window therefore reports `null` (or
+`swings: 0`) for every new metric while the older ones still print numbers.
+That is the expected reading for an early checkpoint that falls in under a
+second, not a broken feature — a 100k-step smoke policy falls at about step
+50 on `asimov_v1`, right on the boundary.
+
+### Spin probes
+
+Two scenarios, `spin_left` and `spin_right`, hold a pure yaw command —
+`wz = +0.5` and `-0.5` rad/s, no translation — for 6 s. They sit inside the
+`±0.6` yaw box with headroom, so a row that fails cannot be excused as a
+command-envelope corner the policy was never trained near.
+
+| Field | Meaning |
+|---|---|
+| `yaw_progress_deg` | Body gyro z integrated over the post-settle window, degrees, signed (`+` is CCW / left). `null` when the row did not outlive the settle window. |
+| `yaw_cmd_deg` | The commanded yaw rate integrated over the same window: the row's own denominator. |
+| `completed` | The scenario held its full scripted duration. |
+
+Both yaw fields are written on **every** scenario row, not just the two spin
+ones — they read the same body gyro every row already records, and `turn`'s
+yaw budget is worth the same look. The two spin rows are the ones that exist
+to be read side by side.
+
+Why per-direction rows: a policy that turns 140 degrees left and 12 right
+averages to a healthy-looking 76. A policy has shipped unable to spin right
+because every scenario that turned at all turned left.
+
+The frame is the body gyro, not world yaw. Integrating the rate needs no
+unwrapping, so a multi-turn spin cannot alias, and a robot that is not
+upright gets the honest number — it cannot spin about an axis it is not
+standing on. At `ctrl_dt` 0.02 the post-settle window asks for 2.5 rad
+(143 deg), short of a full revolution.
+
+**Not built:** a second probe world that replays the DR-patched contact
+physics (feet at `geom_priority = 1`) to tell "the policy unlearned turning"
+from "the policy turns only in the physics it trained in". That distinction
+only exists once foot-friction DR is actually on in a keeper run.
+
+### Gait KPIs
+
+`eval/gait.py`'s `gait_metrics`, pure numpy over the per-foot clearance and
+vertical velocity the rollout records. A **swing** is a contiguous run of
+clearance above 5 mm in the post-settle window.
+
+| Field | Meaning |
+|---|---|
+| `swings` | Scorable swings found, pooled over every foot. The sample count behind all four medians below. |
+| `swing_apex_med_m` | Median peak clearance of a swing, metres. |
+| `swing_apex_p90_m` | 90th percentile of the same. |
+| `touchdown_v_med` | Median downward vertical speed on the last airborne step, m/s. |
+| `touchdown_softness_med` | Median of `touchdown_v / sqrt(2*g*apex)`: the touchdown speed over what free fall from that swing's own apex would have delivered. `1.0` is a foot dropped like a brick; lower is a foot flown in. |
+
+Three runs are not counted as swings: shorter than 2 steps (contact noise,
+not a step taken), still airborne when the record ends (no touchdown to
+measure), and already airborne at the first measured step (the settle window
+may have cut the apex off, so the number would be a floor rather than a
+peak). With no scorable swing the row reads `swings: 0` and `null` for every
+median — an unmeasured apex written as `0.0` would average into a keeper
+comparison as though a foot had been measured lying on the floor.
+
+The metrics work for any foot count. They fold into nothing: velocity
+tracking error scores both a skimming gait and a stand-and-lift farm as
+healthy, which is the gap these two numbers close.
+
+Apexes and the 5 mm airborne band are physical heights above the floor
+(`_foot_clearance` reads sole height; see
+`docs/lessons/foot-clearance.md`).
+
+### Servo tracking error
+
+| Field | Meaning |
+|---|---|
+| `tracking_err_rms` | RMS of `\|ctrl - qpos\|` over the post-settle window, pooled across steps and actuated joints. |
+| `tracking_err_p95` | 95th percentile of the same. |
+
+`ctrl` is the setpoint the servo was asked to hold, `qpos` the angle the
+joint reached. This is what actuator stiffness work targets, and it is
+invisible to every velocity metric: a policy can hit its commanded body
+velocity with every joint sagging behind its setpoint. The p95 says whether
+the error is spread evenly or lives in a few joints — an RMS over twelve
+joints hides one that has given up. Both are `null` when the row did not
+outlive the settle window.
+
+Only a position-servo preset makes this a servo error. Under `ideal_torque`,
+`ctrl` is a torque in Nm and the subtraction is dimensionally meaningless.
+`run.json`'s `actuator_gains.model` is what tells a reader which preset
+produced the run. Every preset shipped today resolves to `pd` — both robots'
+`deploy_pd` and `sizing_ideal`, and asimov's `encos_datasheet` — so the
+caveat is future-proofing, not a live footnote.
+
+### The `actuator_gains` block (`run.json`)
+
+`run.json` carries two actuator records. `actuators` is what the config asked
+for: `cfg.actuators` verbatim, preset name and `overrides` included.
+`actuator_gains` is what the **built model got**, read back off its actuator
+params after preset loading and after `actuators.overrides` merging.
+
+| Field | Meaning |
+|---|---|
+| `preset` | The preset name, `cfg.actuators.name`. |
+| `model` | The actuator model the preset resolved to: `pd`, `ideal_torque`, … |
+| `joints` | Actuated joints in canonical order. This is also the column order of `kp` and `kd`. |
+| `kp` | Per actuator, `actuator_gainprm[:, 0]`. |
+| `kd` | Per actuator, `-actuator_biasprm[:, 2]`. |
+
+The two blocks differ whenever an override patches a gain: an
+`actuators.overrides` entry never appears in the preset yaml, so a stamp read
+from the yaml would record numbers the run never used.
+
+For a `pd` preset those params **are** the PD gains —
+`actuators/models.py`'s `PositionPD.inject` writes `gainprm = (kp, 0, 0)` and
+`biasprm = (0, -kp, -kd)`. For `ideal_torque` they are not gains at all:
+`gainprm[0]` is `1.0` and there is no bias term, so the block reads `1.0`
+and `0.0`. It is stamped anyway. `model` is what makes the numbers readable,
+and a `run.json` whose shape depended on the actuator model would need
+branching at every reader.
+
+There are no runtime `pd_kp` / `pd_kd` override knobs. The actuator-preset
+axis already covers that: a different stiffness is a different preset, or an
+`actuators.overrides` entry on the group that needs it, and both land in this
+block.
+
+## Eval videos
+
+`./run.sh eval --run runs/<name>` renders one battery scenario to MP4 —
+the same scripted command trajectories `battery.json` measures, so a clip
+and its battery row describe the same trajectory.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--scenario NAME` | `walk_ramp` | Any `eval/battery.py::battery_scenarios` name. |
+| `--steps N` | the scenario's own length | Truncates the rollout. |
+| `--video-size WxH` | `640x480` | Rendered frame size. When the model's offscreen buffer is smaller, `eval/render.py`'s SceneView widens a private model copy, so any size works without touching the robot XML. The stacked `--plot-*` panels follow the frame width. |
+| `--overlay-torque` | off | A signed bar per actuator drawn into the frame itself (`eval/overlays.py`), normalized by that joint's own cap, one colour per joint group, red lines at ±1. The instantaneous view of the same signal `--plot-torque` traces over the episode: saturation is visible at the moment it happens. |
+| `--plot-torque` | off | A normalized-torque strip under the render: every joint's torque over its own actuator cap, one colour per joint group, dashed lines at ±1. Normalized because this robot's per-joint force ranges are heterogeneous — a single N·m cap line across a hip and an ankle means nothing. |
+| `--plot-joints` | off | A per-joint target-vs-state grid: one row per joint group, one column per side, achieved position solid and the policy's target dashed. |
+| `--joint NAME` | — | Swaps the grid for a single-joint zoom panel. Implies `--plot-joints`. |
+| `--push` | off | Restores the run's own random pushes. |
+
+**Rows of the joint grid share a y-range** (`sharey="row"`). That is what
+makes left/right asymmetry readable: per-axes autoscaling would rescale each
+column to fill its own box, and a left knee swinging four times as far as
+the right would look identical to it.
+
+**Rollouts are push-free by default.** A mid-video kick reads as a policy
+failure to anyone watching the clip, and the battery disables pushes for the
+same reason. `eval/video.py` states this itself rather than inheriting it,
+so the two conventions can be changed independently.
+
+Panels are opt-in: a plain render pays none of their per-step device
+transfers. Each is drawn ONCE for the whole episode and replayed with a
+moving cursor column stamped in, so video assembly costs one matplotlib pass
+per panel instead of one per frame.
+
+**GL backend.** `eval/video.py` sets `MUJOCO_GL=egl` on **linux only** (via
+`setdefault`, so an exported value wins). macOS has no EGL and forcing it
+there breaks offscreen rendering, so darwin keeps its default (CGL). Only
+the darwin path has been exercised in this repo; treat linux/egl as untested
+until a GPU-box run confirms it.
+
+## Early stopping (`early_stop`)
+
+Off by default. When on, the trainer ends a run whose eval reward has stopped
+climbing. The rule is `plateau_stop` in `src/humanoid_lab/train.py`, a pure
+function of the eval rewards seen so far:
+
+- A reward is a new best only when it beats the running best by **more** than
+  `min_delta`. A gain of exactly `min_delta` does not count.
+- A plateau is `patience` consecutive evals with no new best.
+- The rule returns no verdict until `max(min_evals, patience + 1)` evals
+  exist.
+
+The progress callback appends each eval reward to a list and raises
+`EarlyStop` when the rule fires. `main()` catches it around the `ppo.train`
+call. Brax writes a checkpoint at every eval, so the newest checkpoint in
+`runs/<name>/checkpoints` is the early-stopped policy, and the reported
+metrics come from the last completed eval.
+
+`run.json` carries two fields whether or not the feature is on:
+`early_stopped` (bool) and `stopped_at_steps` (the last eval's step count,
+which on a completed run is the final eval's).
+
+Patience counts evals, not steps, so `ppo.num_evals` sets how much training
+each unit of patience buys. At the default 100M-step budget with brax's
+`num_evals`, one eval is several million steps.
+
+**Calibrate `min_delta` above the eval noise before trusting it.** A
+`min_delta` inside the noise band lets noise reset the patience clock and
+the run never stops. The defaults are uncalibrated starting numbers:
+measure the eval noise first by evaluating one checkpoint repeatedly, and
+raise `patience` for overnight runs.
 
 ## `run.sh` verbs
 
@@ -242,9 +816,17 @@ Read from `run.sh` as it stands today:
 | `smoke` | `JAX_PLATFORMS=cpu python -m humanoid_lab.train smoke=true wandb.enable=false` | CPU pipeline check. |
 | `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
-| `test` | `python -m pytest tests -q` | Runs the test suite. |
+| `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
+| `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
+| `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
+| `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
+| `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
+| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH]`. Writes `<run>/battery.json` unless `--out` says otherwise. |
+| `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
+| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
+| `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
 
 ## Configs compose only from the editable install
 

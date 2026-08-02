@@ -8,7 +8,38 @@ case "${1:-}" in
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
-  test)  shift; "$PY" -m pytest tests -q "$@" ;;
+  # Warp contact/constraint budget measurement. Forced onto
+  # CPU like `check`: it is a sizing probe, and the jax backend is where the
+  # active-contact count is readable without a GPU box. Passthrough args:
+  # --robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out path.json].
+  check-contacts) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_contacts "$@" ;;
+  # dr.foot_friction end to end: builds the randomized models and checks the
+  # friction inside each foot-floor contact equals that env's draw (contact
+  # priority makes the foot's value win; see dr/randomize.py). NOT forced
+  # onto CPU: the point is the box's own backend, and warp on a GPU host is
+  # the answer a training run uses. Passthrough args: --robot NAME --preset
+  # NAME [--backend auto|warp|jax] [--num-envs N] [--range LO HI].
+  check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
+  # The split (tests/unit/test_suite_split.py guards it):
+  # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
+  # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
+  test)  shift; "$PY" -m pytest tests/unit -q "$@" ;;
+  # JAX_COMPILATION_CACHE_DIR makes the MJX compiles persist across runs, so
+  # a re-run of the slow suite skips the tens of seconds of XLA compilation.
+  # The MIN_COMPILE_TIME_SECS=0 override stores every compile, not just the
+  # ones over jax's default 1 s threshold.
+  test-slow)
+    shift
+    export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
+    export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+    "$PY" -m pytest tests/integration -q "$@"
+    ;;
+  test-all)
+    shift
+    export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
+    export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+    "$PY" -m pytest tests/unit tests/integration -q "$@"
+    ;;
   # Single-purpose verb: just the checkpoint rollout -> runs/<name>/sizing_data.npz.
   # Passthrough args: --run runs/<name> [--episodes N] [--steps N] [--seed N].
   sizing-collect) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.sizing.collect "$@" ;;
@@ -46,7 +77,7 @@ case "${1:-}" in
     [[ -n "$motors" ]] && report_args+=(--motors "$motors")
     "$PY" -m humanoid_lab.sizing.report "${report_args[@]}"
     ;;
-  # PLAN.md build step 10: fixed eval battery -> runs/<name>/battery.json.
+  # Fixed eval battery -> runs/<name>/battery.json.
   # Passthrough args: --run runs/<name> [--out path.json].
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
@@ -77,10 +108,21 @@ case "${1:-}" in
   # eval/video.py sets MUJOCO_GL=egl unless already exported -- see its
   # module docstring. Only exercised on darwin so far in this repo; treat
   # the linux/egl path as untested until a GPU-box run confirms it.
-  # Passthrough args: --run runs/<name> [--scenario name] [--steps N] [--out path.mp4].
+  # Rollouts are push-free by default (the battery's measurement
+  # convention); --push restores the run's own random pushes.
+  # Passthrough args: --run runs/<name> [--scenario name] [--steps N]
+  # [--out path.mp4] [--seed N] [--video-size WxH] [--overlay-torque]
+  # [--plot-torque] [--plot-joints] [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
+  # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
+  # latest checkpoint (see docs/deploy.md). Forced
+  # onto CPU like `battery`: the export runs mjx.forward once and no
+  # physics. Both round-trip validations run against a temp directory, so a
+  # failed export leaves the destination as it found it.
+  # Passthrough args: --run runs/<name> [--out DIR].
+  export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|test|sizing-collect|sizing-report|battery|report|eval} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

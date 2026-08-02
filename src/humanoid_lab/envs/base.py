@@ -1,14 +1,15 @@
 """Robot-agnostic MJX env base, shared by every task.
 
-Ported from w01-tek's wojtek_rl/base.py: same shape (model loading,
-actuator address tables, IMU/foot helpers, obs catalog + include-list
-mechanism), but every robot-specific detail routes through a RobotSpec and a
-resolved actuator preset instead of hardcoded joint/site/geom names. Task
-envs (envs/joystick.py) subclass this and provide their own config, reset,
-step and reward composition.
+Holds model loading, actuator address tables, IMU/foot helpers and the obs
+catalog + include-list mechanism. Every robot-specific detail routes through
+a RobotSpec and a resolved actuator preset, so no joint, site or geom name is
+hardcoded here. Task envs (envs/joystick.py) subclass this and provide their
+own config, reset, step and reward composition.
 """
 
 from __future__ import annotations
+
+import copy
 
 import jax
 import jax.numpy as jp
@@ -24,6 +25,13 @@ from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale as preset_action_scale
 from humanoid_lab.robot.presets import load_actuator_preset
 from humanoid_lab.robot.spec import RobotSpec, load_robot_spec, validate_against_model
+
+
+# Largest end-of-settle |qvel| (rad/s, m/s) still read as "came to rest", for
+# the real_pose_ref guard. A converged settle is orders of magnitude under it
+# (roboto_origin's home keyframe ends at 7e-5); a biped on its way over is
+# orders of magnitude above (asimov_v1's knees_bent, 0.15).
+_SETTLE_REST_SPEED = 1e-2
 
 
 def _free_joint_addr(model: mujoco.MjModel) -> tuple[int, int]:
@@ -88,12 +96,30 @@ class HumanoidEnv(mjx_env.MjxEnv):
         sim = self._config.sim
         self._backend = resolve_backend(sim.backend)
         self._mjx_model = mjx.put_model(self._mj_model, impl=self._backend)
+        # Warp contact budgets: an explicit sim config value wins, else the
+        # robot's own measured sim_budget block (robot.yaml). Only warp
+        # reads them, and running warp without a budget would drop contacts
+        # silently, so that combination refuses here instead.
+        budget = self._robot_spec.sim_budget
+        self._naconmax_per_env = (
+            sim.naconmax_per_env if sim.naconmax_per_env is not None
+            else budget.get("naconmax_per_env")
+        )
+        self._njmax = sim.njmax if sim.njmax is not None else budget.get("njmax")
+        if self._backend == "warp" and (self._naconmax_per_env is None or self._njmax is None):
+            raise ValueError(
+                f"backend 'warp' needs contact budgets, and robot "
+                f"'{self._robot_spec.name}' has no sim_budget block in its "
+                "robot.yaml (and the sim config sets none). Measure with "
+                "./run.sh check-contacts and record naconmax_per_env/njmax "
+                "in robot.yaml"
+            )
         self._make_data_fn = make_data_fn(
             self._backend,
             self._mj_model,
             self._mjx_model,
-            sim.naconmax_per_env,
-            sim.njmax,
+            self._naconmax_per_env,
+            self._njmax,
             sim.num_envs,
         )
 
@@ -141,8 +167,15 @@ class HumanoidEnv(mjx_env.MjxEnv):
         joint_range = np.array([m.joint(n).range for n in rs.actuated_joints])
         center = (joint_range[:, 0] + joint_range[:, 1]) / 2.0
         half = (joint_range[:, 1] - joint_range[:, 0]) / 2.0 * self._preset.soft_limit_factor
-        lo = np.where(ctrllimited, ctrlrange[:, 0], center - half)
-        hi = np.where(ctrllimited, ctrlrange[:, 1], center + half)
+        # The soft joint limits themselves, always in RADIANS whatever the
+        # actuator model's ctrl unit is. _ctrl_lo/_ctrl_hi below are them for
+        # a pd preset and the actuator's own force envelope in Nm for an
+        # ideal-torque one, so anything that clips an ANGLE (the settled-pose
+        # anchor) has to read these two rather than those.
+        self._soft_lo = np.asarray(center - half)
+        self._soft_hi = np.asarray(center + half)
+        lo = np.where(ctrllimited, ctrlrange[:, 0], self._soft_lo)
+        hi = np.where(ctrllimited, ctrlrange[:, 1], self._soft_hi)
         self._ctrl_lo = jp.array(lo)
         self._ctrl_hi = jp.array(hi)
 
@@ -161,19 +194,25 @@ class HumanoidEnv(mjx_env.MjxEnv):
             )
         self._foot_geom_foot_idx = jp.array(foot_idx)
 
-        # Foot-site resting height above the floor at the reset keyframe
-        # pose. foot_sites are named MJCF sites, not the sole surface
-        # itself, so they sit a few mm above the geoms that actually touch
-        # the ground; a planted foot's raw site z never reaches 0. Computed
-        # once here (mj_forward on the CPU model at construct time, plain
-        # numpy -- never traced) and subtracted from site z wherever gait
-        # clearance is scored, so a planted foot reads ~0 clearance
-        # (w01-tek's own geom-bottom semantic, reproduced without needing a
-        # geom-bottom computation at every step).
+        # Vertical distance from each foot site to the lowest point of that
+        # foot's own collision geoms (capsule bottoms), measured once at the
+        # reset keyframe (mj_forward on the CPU model at construct time,
+        # plain numpy -- never traced). foot_sites are named MJCF sites, not
+        # the sole surface, so they sit a few mm above the geoms that touch
+        # the ground; subtracting this offset makes _foot_clearance read the
+        # sole's height above the floor -- ~0 for a planted foot, and
+        # independent of how far the keyframe floats the robot (see
+        # docs/lessons/foot-clearance.md for the bug this replaced).
         rest_data = mujoco.MjData(m)
         rest_data.qpos[:] = home_qpos_np
         mujoco.mj_forward(m, rest_data)
-        self._foot_site_rest_z = jp.array(rest_data.site_xpos[self._foot_site_ids, 2])
+        site_z = rest_data.site_xpos[self._foot_site_ids, 2]
+        geom_bottom = rest_data.geom_xpos[self._foot_geom_ids, 2] - np.asarray(
+            m.geom_size[self._foot_geom_ids, 0]
+        )
+        sole_z = np.full(self._n_feet, np.inf)
+        np.minimum.at(sole_z, foot_idx, geom_bottom)
+        self._foot_site_sole_offset = jp.array(site_z - sole_z)
 
         # Sensor addresses declared by robot.yaml's `sensors` map (gyro,
         # quat, linvel, acc); absent keys fall back to a qpos/qvel-derived
@@ -183,6 +222,156 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # Free-joint (floating base) qpos/qvel addresses: fallback obs path
         # plus fall/push logic that needs the base height or planar qvel.
         self._base_qadr, self._base_vadr = _free_joint_addr(m)
+
+        # Reward/reset anchor (see real_pose_ref in the task's default_config).
+        # Off, these ARE the keyframe arrays -- the same objects, so the
+        # legacy path is bit-exact rather than numerically equal.
+        #
+        # NOT the ctrl anchor. `_default_pose` above stays what
+        # ctrl_from_action centers on and what the joint_pos observation
+        # subtracts; only the `pose`/`stand_still` reference and the reset
+        # pose move. Keeping the two anchors separate matters because
+        # re-centering the action space on a sagged pose would silently
+        # change what a zero action commands and what the policy reads back.
+        self._settle_ctrl = None
+        if self._config.get("real_pose_ref", False):
+            settle_ctrl, settled_qpos = self._settle_pose()
+            self._check_settled(settled_qpos)
+            self._settle_ctrl = settle_ctrl
+            self._pose_anchor = jp.array(settled_qpos[np.asarray(self._qadr)])
+            self._reset_qpos = jp.array(settled_qpos)
+        else:
+            self._pose_anchor = self._default_pose
+            self._reset_qpos = self._home_qpos
+
+    def _catalog_probe_info(self) -> dict:
+        """The `info` entries `_obs_catalog` reads, as zeros.
+
+        Lets a caller build the catalog on fresh data without a rollout;
+        only the resulting shapes are meaningful. A task env that adds
+        catalog entries fed from `info` extends this too.
+        """
+        return {"last_action": jp.zeros(self.action_size)}
+
+    # -- settled-pose anchor -------------------------------------------------
+    def _settle_pose(self):
+        """Settle a quasi-rigid copy of the model and return (ctrl, qpos).
+
+        One settle, because this env has a single standing pose. If a
+        commanded stand height ever lands here, the extension is a grid:
+        settle a rung per height and interpolate the anchor on the commanded
+        height.
+
+        The copy is deliberately not this run's plant. Every actuator becomes
+        the same stiff position servo (kp 400, kd 20) with its force cap
+        removed, so the pose that comes out is a function of the geometry and
+        the soft-limit envelope alone: every gain set and every actuator
+        model at a given `soft_limit_factor` anchors on the same one. kp 400
+        leaves about 5e-3 rad of residual sag, which is the accepted
+        tolerance. implicitfast plus a 5e-4 timestep keep that stiff servo
+        integrable whatever the training sim_dt is.
+
+        The end-of-settle velocity lands in `self._settle_qvel` rather than
+        in the return value: `_check_settled` needs it to tell a settled pose
+        from a snapshot of a fall, and the (ctrl, qpos) pair is what callers
+        and tests actually read.
+
+        Plain MuJoCo on the CPU model, run once at construction, never
+        traced. About 0.2 s.
+        """
+        m = copy.deepcopy(self._mj_model)
+        # The actuator TYPES are overwritten here as well as the prm arrays,
+        # because a torque preset's params are not a servo's.
+        # The `ideal_torque` actuator model injects biastype NONE actuators
+        # whose ctrl is a torque, and overwriting gainprm/biasprm on one of
+        # those leaves `force = 400*ctrl` -- a torque command of 400x the
+        # target angle, not a servo. Forcing the TYPES makes the settle
+        # identical for every actuator model, which is the entire point of
+        # the mechanism. ctrllimited goes with them: a torque preset's
+        # ctrlrange is in Nm, and the targets below are radians, clipped to
+        # the soft joint limits in their own unit.
+        m.actuator_gaintype[:] = mujoco.mjtGain.mjGAIN_FIXED
+        m.actuator_biastype[:] = mujoco.mjtBias.mjBIAS_AFFINE
+        m.actuator_ctrllimited[:] = 0
+        m.actuator_gainprm[:, 0] = 400.0
+        m.actuator_biasprm[:, 1] = -400.0
+        m.actuator_biasprm[:, 2] = -20.0
+        m.actuator_forcerange[:, 0] = -1e6
+        m.actuator_forcerange[:, 1] = 1e6
+        m.opt.timestep = 5e-4
+        m.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+
+        # Clip with the preset's SOFT JOINT LIMITS, not the raw ctrlrange and
+        # not _ctrl_lo/_ctrl_hi. The targets here are angles: step() clips a
+        # pd preset's motor targets to the soft limits, so a pose settled
+        # past them is one the policy can never command. The ctrlrange cannot
+        # serve as the angle envelope here because the presets are not all
+        # position servos. A pd preset's raw ctrlrange is [0, 0]
+        # (ctrllimited=False), and clipping to it would command every joint
+        # to zero; an ideal_torque preset's _ctrl_hi is
+        # its forcerange in Nm, and clipping radians to +-120 does nothing at
+        # all. Reading the angle envelope directly keeps the clip in one unit
+        # for every actuator model.
+        #
+        # So the anchor is invariant across actuator MODELS and gain sets at
+        # a given soft_limit_factor. It is NOT invariant to the factor, and
+        # should not be: a preset that tightens the runtime envelope moves
+        # the pose the policy can hold, which is preset policy, not an
+        # actuator detail.
+        ctrl = np.clip(np.asarray(self._default_pose), self._soft_lo, self._soft_hi)
+
+        data = mujoco.MjData(m)
+        mujoco.mj_resetData(m, data)
+        data.qpos[:] = np.asarray(self._home_qpos)
+        data.ctrl[:] = ctrl
+        for _ in range(int(round(2.0 / m.opt.timestep))):
+            mujoco.mj_step(m, data)
+        self._settle_qvel = data.qvel.copy()
+        return ctrl, data.qpos.copy()
+
+    def _check_settled(self, qpos) -> None:
+        """Reject a settle that did not end standing still.
+
+        A collapsed settle must not become a silent anchor.
+
+        Two conditions, because a biped needs both. The height check catches
+        the robot that fell over (asimov_v1's `home` keyframe stands it on
+        straight legs with the CoM about 2 cm behind the heel; held rigid it
+        topples backward and comes to rest at 0.111 m). The at-rest check
+        catches the one that is still going over at the two-second cut
+        (asimov_v1's `knees_bent` is at 0.614 m and 0.15 rad/s there, and on
+        the floor by four seconds) -- a height check alone would anchor on a
+        snapshot of a fall. A settle that converges leaves five orders of
+        magnitude of margin: roboto_origin's `home` ends at 7e-5 rad/s.
+
+        The at-rest condition exists because these robots are bipeds. A
+        statically stable quadruped never has to ask whether its keyframe is
+        a standing equilibrium; a biped does, and a height check alone cannot
+        answer it.
+        """
+        height = float(qpos[self._base_qadr + 2])
+        floor = float(self._config.fall.min_height)
+        name = self._robot_spec.name
+        if not np.all(np.isfinite(qpos)):
+            raise ValueError(
+                f"real_pose_ref: the settle for robot '{name}' diverged "
+                f"(non-finite qpos, settled height {height})"
+            )
+        if height < floor:
+            raise ValueError(
+                f"real_pose_ref: robot '{name}' settled at height {height:.4f} m, below "
+                f"fall.min_height {floor} -- the '{self._reset_keyframe}' keyframe does not "
+                "hold this robot up, so the settled pose is a fallen one and cannot anchor "
+                "the pose rewards"
+            )
+        speed = float(np.abs(self._settle_qvel).max())
+        if speed > _SETTLE_REST_SPEED:
+            raise ValueError(
+                f"real_pose_ref: robot '{name}' was still moving at {speed:.4f} (max |qvel|) "
+                f"when the settle ended at height {height:.4f} m -- the "
+                f"'{self._reset_keyframe}' keyframe is not a standing equilibrium, and a "
+                "snapshot of a fall cannot anchor the pose rewards"
+            )
 
     def _customize_model(self, m: mujoco.MjModel) -> None:
         """Task-specific tweaks applied before the model is put on device."""
@@ -237,14 +426,22 @@ class HumanoidEnv(mjx_env.MjxEnv):
         world_linvel = data.qvel[self._base_vadr : self._base_vadr + 3]
         return brax_math.rotate(world_linvel, brax_math.quat_inv(self._quat(data)))
 
-    def _accel(self, data):
-        if "acc" in self._sensor_adr:
-            adr = self._sensor_adr["acc"]
-            return data.sensordata[adr : adr + 3]
-        raise KeyError("robot.yaml declares no 'acc' sensor and there is no qpos/qvel fallback for it")
 
     def _foot_site_pos(self, data):
         return data.site_xpos[self._foot_site_ids]
+
+    def _foot_clearance(self, data):
+        """Per-foot sole height above the floor: site z minus the measured
+        site-to-sole offset.
+
+        A planted foot reads ~0 (up to solver penetration), a swing apex
+        reads its physical height, and the reading does not move with the
+        reset keyframe's float margin -- so `feet_phase`'s stance target of
+        0, `apex_target` and `glide_height` mean physical metres. Assumes
+        capsule foot geoms (geom_size[0] is the radius), the same
+        assumption `_foot_contact` makes.
+        """
+        return self._foot_site_pos(data)[:, 2] - self._foot_site_sole_offset
 
     def _foot_linvel(self, data):
         """Per-foot linear velocity at the foot_sites points (world frame)."""
@@ -288,20 +485,8 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
     @property
     def actor_obs_names(self):
-        """Resolved actor observation list: the task's ordered obs.state,
-        filtered by the obs.include whitelist when one is set (sensor-suite
-        presets name what the robot HAS; task signals it doesn't list are
-        dropped too, so presets must include them explicitly)."""
-        include = self._config.obs.get("include", ())
-        names = list(self._config.obs.state)
-        if include:
-            names = [n for n in names if n in include]
-        if not names:
-            raise ValueError(
-                f"obs.include {list(include)} leaves no actor observations "
-                f"(task obs.state: {list(self._config.obs.state)})"
-            )
-        return names
+        """Resolved actor observation list: the task's ordered obs.state."""
+        return list(self._config.obs.state)
 
     def _build_obs(self, data, info, rng=None):
         """Observations declared by the env config.
@@ -329,3 +514,4 @@ class HumanoidEnv(mjx_env.MjxEnv):
             "state": state,
             "privileged_state": gather(self._config.obs.privileged),
         }
+

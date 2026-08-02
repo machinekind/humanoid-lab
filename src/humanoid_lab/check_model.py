@@ -1,6 +1,6 @@
 """CLI: gate-check a robot's built mjx model for NaN divergence.
 
-    JAX_PLATFORMS=cpu python -m humanoid_lab.check_model --robot asimov_v1 --preset sizing_ideal
+    JAX_PLATFORMS=cpu python -m humanoid_lab.check_model --robot roboto_origin --preset deploy_pd
 
 Loads robots/<robot>/mjx/<preset>.xml (building it in-memory via build_spec,
 without writing to disk, if the file doesn't exist yet), then for EVERY
@@ -16,7 +16,7 @@ jax/warp convention this repo uses elsewhere.
 Fails on NaN in qpos/qvel OR on |qvel| exceeding --max-qvel (default 100
 rad/s): MuJoCo's bad-qacc auto-reset keeps a diverging simulation
 huge-but-finite, so an isfinite check alone waves through gross
-instability. Adapted from w01-tek's training/wojtek_rl/check_model_mjx.py.
+instability.
 """
 
 from __future__ import annotations

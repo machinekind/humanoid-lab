@@ -19,12 +19,24 @@ NAME` swaps the grid for a single-joint zoom panel and implies
 --plot-joints. All three are opt-in (off by default -- plain video output
 is the same code path as before); panel rendering lives in eval/plots.py.
 
-MUJOCO_GL: mirrors w01-tek wojtek_rl/eval.py's own handling exactly --
-`egl` is set (via setdefault, so an already-exported MUJOCO_GL wins) only
-on linux, where headless GPU boxes need it; darwin is left on its default
-(CGL), which is what this repo's Mac dev box actually has. Forcing egl on
-darwin breaks offscreen rendering there, so this must run before `mujoco`
-is imported anywhere in the process.
+`--video-size WxH` sets the rendered frame size (the SceneView widens a
+private model copy when the model's offscreen buffer is smaller).
+`--overlay-torque` draws eval/overlays.py's per-actuator bar strip into
+the frame itself: an instantaneous saturation view, where `--plot-torque`
+is the full-episode trace below the frame. Both normalize by each joint's
+own actuator cap.
+
+`--push` restores the run's own random pushes for the rollout. They are OFF
+by default, matching the battery's measurement convention: a mid-video kick
+reads as a policy failure to anyone watching the clip. The default is stated
+here (see push_override), not merely inherited from the battery's
+measurement env -- this module owns what its own renders show.
+
+MUJOCO_GL: `egl` is set (via setdefault, so an already-exported MUJOCO_GL
+wins) only on linux, where headless GPU boxes need it; darwin is left on its
+default (CGL), which is what this repo's Mac dev box actually has. Forcing
+egl on darwin breaks offscreen rendering there, so this must run before
+`mujoco` is imported anywhere in the process.
 """
 
 import os
@@ -34,32 +46,40 @@ if sys.platform == "linux":  # headless GPU boxes; macOS uses its default GL (CG
     os.environ.setdefault("MUJOCO_GL", "egl")
 
 import argparse
-import shutil
 from pathlib import Path
 
 import jax
 import mujoco
 import numpy as np
 
-from humanoid_lab.eval.battery import battery_scenarios, load_checkpoint_policy
+from humanoid_lab.eval.battery import (
+    battery_scenarios,
+    load_checkpoint_policy,
+)
 from humanoid_lab.eval.plots import joint_grid, joint_zoom, torque_strip
+from humanoid_lab.eval.render import DEFAULT_SIZE, SceneView, frame_size
+from humanoid_lab.eval.writer import write_video
 
 
-def _pick_camera(mj_model: mujoco.MjModel):
-    """Prefer a named MJCF camera already in the model over synthesizing
-    one. source/xmls/asimov.xml ships several `mode="track"` cameras
-    mounted on the pelvis (front_camera, side_camera, ...) -- use the
-    first of a small side-view preference list that exists in this model.
-    If none exist (a future robot's XML has no cameras), fall back to a
-    free MjvCamera tracking the floating-base body instead of editing the
-    XML (out of scope for this module -- generated XML is build output,
-    see PLAN.md's ops rules)."""
-    for name in ("side_camera", "front_camera", "track"):
-        try:
-            mj_model.camera(name)
-            return name
-        except KeyError:
-            continue
+def push_override(push: bool) -> dict:
+    """This module's own push decision, as an env override block.
+
+    Written explicitly in both directions rather than relying on the
+    battery's measurement env happening to disable pushes: what a rendered
+    clip shows is this module's contract with whoever watches it. `--push`
+    sets `enable` only, so the run's own `interval_steps` and `vel` are
+    whatever it trained with.
+    """
+    return {"push": {"enable": bool(push)}}
+
+
+def _pick_camera(mj_model: mujoco.MjModel, preferred: str | None = None):
+    """robot.yaml's `eval_camera` when declared (validated to exist against
+    the compiled model at spec load), else a free MjvCamera tracking the
+    floating-base body. No camera names are guessed from the model: which
+    view a robot's eval videos use is that robot's own call."""
+    if preferred is not None:
+        return preferred
 
     free = [
         i for i in range(mj_model.njnt) if mj_model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
@@ -130,33 +150,35 @@ def render_video(
     steps: int | None = None,
     out: Path | None = None,
     seed: int = 0,
-    width: int = 640,
-    height: int = 480,
+    video_size: tuple[int, int] = DEFAULT_SIZE,
     plot_torque: bool = False,
     plot_joints: bool = False,
     joint: str | None = None,
+    push: bool = False,
+    overlay_torque: bool = False,
 ) -> Path:
-    run, env, _ckpt, inf = load_checkpoint_policy(run_dir)
+    run, env, _ckpt, inf = load_checkpoint_policy(run_dir, push_override(push))
 
     # Actuator column order == robot_spec.actuated_joints order (robot/build.py's
     # injection loop: "for joint_name in robot_spec.actuated_joints", the
     # "canonical order: the action/obs contract"). eval/plots.py's builders
     # assume this order for their joint_names argument.
     joint_names = list(env.robot_spec.actuated_joints)
-    plot_joints = plot_joints or joint is not None  # --joint implies --plot-joints
+    # `--joint NAME` alone is enough: one joint's zoom panel is a joint panel.
+    plot_joints = plot_joints or joint is not None
     if joint is not None and joint not in joint_names:
         sys.exit(f"unknown joint {joint!r}; valid joints: {joint_names}")
 
     reset, step = jax.jit(env.reset), jax.jit(env.step)
 
-    scenarios = battery_scenarios(env.dt)
+    scenarios = battery_scenarios(env.dt, env._config.command)
     if scenario not in scenarios:
         raise KeyError(f"unknown scenario {scenario!r}; have {sorted(scenarios)}")
     cmd_at, n_steps = scenarios[scenario]
     if steps is not None:
         n_steps = steps
 
-    camera = _pick_camera(env.mj_model)
+    camera = _pick_camera(env.mj_model, env.robot_spec.eval_camera)
     render_every = max(1, round(1 / (30 * env.dt)))
     fps = 1.0 / (env.dt * render_every)
 
@@ -169,18 +191,18 @@ def render_video(
     qadr = np.asarray(env._qadr) if capture else None
     torques, targets, positions = [], [], []
 
-    mj_model = env.mj_model
-    data = mujoco.MjData(mj_model)
     frames = []
     frame_times = []  # sim time of each entry in `frames`, recorded explicitly
-    with mujoco.Renderer(mj_model, height=height, width=width) as renderer:
+
+    def overlay_force():
+        # Per-rendered-frame device transfer, paid only when the overlay is on.
+        return np.asarray(state.data.actuator_force) if overlay_torque else None
+
+    with SceneView(env, size=video_size, camera=camera, torque=overlay_torque) as view:
         # Always capture the initial pose: a scenario that falls at step 0
         # (e.g. an untrained checkpoint on `stand`) must still write a
         # nonzero-length video.
-        data.qpos[:] = np.asarray(state.data.qpos)
-        mujoco.mj_forward(mj_model, data)
-        renderer.update_scene(data, camera=camera)
-        frames.append(renderer.render())
+        frames.append(view.frame(state.data.qpos, torque=overlay_force()))
         frame_times.append(0.0)
 
         for i in range(n_steps):
@@ -191,9 +213,9 @@ def render_video(
             state = step(state, act)
 
             if capture:
-                # This env has no action-delay machinery (envs/joystick.py's
-                # module docstring: w01-tek's delay/latency/action-filter
-                # machinery is deliberately not ported), and step() passes
+                # This env has no action-delay, latency or action-filter
+                # machinery (see envs/joystick.py's module docstring), and
+                # step() passes
                 # the clipped motor_targets straight to mjx_env.step
                 # (joystick.py step(), ~line 290-308) -- so post-step ctrl
                 # IS the policy's clipped PD target for this step. No
@@ -206,10 +228,7 @@ def render_video(
                 print(f"fell at step {i}")
                 break
             if (i + 1) % render_every == 0:
-                data.qpos[:] = np.asarray(state.data.qpos)
-                mujoco.mj_forward(mj_model, data)
-                renderer.update_scene(data, camera=camera)
-                frames.append(renderer.render())
+                frames.append(view.frame(state.data.qpos, torque=overlay_force()))
                 frame_times.append((i + 1) * env.dt)
 
     if plot_torque or plot_joints:
@@ -219,18 +238,7 @@ def render_video(
         )
 
     out = out or (run_dir / f"{scenario}.mp4")
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    import mediapy
-
-    if shutil.which("ffmpeg") is None:
-        # No system ffmpeg (common on a bare Mac); fall back to the binary
-        # bundled with imageio-ffmpeg, already a project dependency.
-        import imageio_ffmpeg
-
-        mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
-
-    mediapy.write_video(str(out), frames, fps=fps)
+    write_video(out, frames, fps)
     print(f"scenario {scenario}  run {run['run_name']}  {len(frames)} frames -> {out}")
     return out
 
@@ -242,14 +250,31 @@ def main():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--video-size", type=frame_size, default=DEFAULT_SIZE, metavar="WxH",
+        help="rendered frame size (default 640x480); the stacked --plot panels follow the frame width",
+    )
+    ap.add_argument(
+        "--overlay-torque", action="store_true",
+        help="draw the per-actuator torque bars into the frame itself, normalized by each "
+        "joint's own cap (an instantaneous view; --plot-torque is the full-episode strip)",
+    )
     ap.add_argument("--plot-torque", action="store_true", help="append a normalized-torque strip below the render")
     ap.add_argument("--plot-joints", action="store_true", help="append a joint target-vs-state grid below that")
     ap.add_argument("--joint", default=None, help="single-joint zoom panel instead of the grid (implies --plot-joints)")
+    ap.add_argument(
+        "--push", action="store_true",
+        help="keep the run's own random pushes for this rollout; the default "
+        "is push-free, matching the battery's measurement convention (a "
+        "mid-video kick reads as a policy failure)",
+    )
     args = ap.parse_args()
 
     render_video(
         args.run, args.scenario, args.steps, args.out, args.seed,
+        video_size=args.video_size,
         plot_torque=args.plot_torque, plot_joints=args.plot_joints, joint=args.joint,
+        push=args.push, overlay_torque=args.overlay_torque,
     )
 
 

@@ -8,12 +8,8 @@ into it. Video assembly then costs one matplotlib pass per panel plus O(T)
 cheap array copies, instead of O(T) matplotlib redraws -- replotting per
 frame is what makes video rendering slow, not the rendering itself.
 
-Design (cursor_strip) is ported from w01-tek's training/wojtek_rl/eval.py
-(_cursor_strip / _torque_strip / _joint_plot / _joint_grid, commit
-b3223eb) -- see eval/video.py's docstring for this repo's other w01-tek
-provenance. Joint grouping here comes from RobotSpec.joint_groups
-(left/right pairs per named group, robot.yaml) rather than w01-tek's
-quadruped leg-prefix parsing: this is a biped, not a quadruped, and group
+Joint grouping comes from RobotSpec.joint_groups (left/right pairs per
+named group, robot.yaml) rather than from parsing leg-name prefixes: group
 membership is already an explicit, validated part of the robot spec.
 """
 
@@ -135,11 +131,11 @@ def torque_strip(
 
     This robot's actuators have heterogeneous per-joint force ranges (a hip
     motor and an ankle motor don't share a torque scale), so a single N*m
-    cap line across every joint -- w01-tek's _torque_strip convention,
-    valid there because one quadruped motor spec covers every joint -- does
-    not mean anything here. Normalizing puts every joint on the same +-1
-    actuator-limit scale regardless of its underlying N*m range, and the
-    dashed lines at +-1 mark that shared limit.
+    cap line across every joint -- which only makes sense when one motor
+    spec covers every joint -- does not mean anything here. Normalizing puts
+    every joint on the same +-1 actuator-limit scale regardless of its
+    underlying N*m range, and the dashed lines at +-1 mark that shared
+    limit.
 
     One color per joint group (plt.get_cmap("tab10"), indexed by the
     group's position in `joint_groups`); both joints of a left/right pair
