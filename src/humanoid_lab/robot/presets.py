@@ -76,8 +76,9 @@ class ActuatorPreset:
     """Parsed contents of an actuators/<name>.yaml preset file.
 
     action_scale_rad, when set, is a flat action scale in radians for every
-    joint. It replaces the action_scale_factor formula. pd model only: an
-    ideal-torque ctrl is a torque, not an angle.
+    joint. It replaces the action_scale_factor formula for the pd model.
+    Other models ignore it, as they ignore action_scale_factor: their ctrl
+    is not an angle.
     """
 
     model: str
@@ -120,12 +121,6 @@ def load_actuator_preset(
         )
 
     action_scale_rad = raw.get("action_scale_rad")
-    if action_scale_rad is not None and model != "pd":
-        raise ValueError(
-            f"{yaml_path}: action_scale_rad is an angle; model '{model}' does "
-            "not take one (pd only)"
-        )
-
     return ActuatorPreset(
         model=model,
         soft_limit_factor=float(raw.get("soft_limit_factor", 0.9)),
@@ -175,11 +170,11 @@ def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, flo
     """The per-joint action_scale for this preset's model.
 
     pd: action_scale_factor * effort_limit / kp, or the flat
-    action_scale_rad when set. ideal_torque: effort_limit. See
-    ActuatorModel.action_scale.
+    action_scale_rad when set. ideal_torque: effort_limit; it ignores both
+    scale fields. See ActuatorModel.action_scale.
     """
     params_by_joint = resolve(preset, robot_spec)
-    if preset.action_scale_rad is not None:
+    if preset.action_scale_rad is not None and preset.model == "pd":
         return {joint_name: preset.action_scale_rad for joint_name in params_by_joint}
     model = ACTUATOR_MODELS[preset.model]
     return {

@@ -113,6 +113,7 @@ def test_armed_distance_term_refuses_a_robot_without_the_pair():
     (conformance covers that); armed, it must refuse."""
     cfg = default_config()
     cfg.episode_length = 50
+    cfg.reset_keyframe = "standing"  # toy_robot has no "home"
     cfg.reward.scales.feet_distance = 0.1
     toy = paths.REPO_ROOT / "tests" / "data" / "toy_robot"
     with pytest.raises(ValueError, match="ankle_roll"):

@@ -2,8 +2,6 @@
 shipped yaml files alone -- no model is built here.
 """
 
-import pytest
-
 from humanoid_lab import paths
 from humanoid_lab.robot.presets import action_scale, load_actuator_preset
 from humanoid_lab.robot.spec import load_robot_spec
@@ -30,17 +28,14 @@ def test_sizing_ideal_keeps_the_formula_path():
     assert len(set(scales.values())) > 1
 
 
-def test_action_scale_rad_refuses_a_non_pd_model(tmp_path):
-    yaml_dir = tmp_path / "actuators"
-    yaml_dir.mkdir()
-    (yaml_dir / "bad.yaml").write_text(
-        "model: ideal_torque\n"
-        "action_scale_rad: 0.25\n"
-        "groups:\n"
-        "  knee: {effort_limit: 10.0}\n"
+def test_a_non_pd_model_ignores_action_scale_rad():
+    """Like action_scale_factor: an ideal-torque ctrl is not an angle. This
+    keeps `--set model=ideal_torque` comparisons working on deploy_pd."""
+    preset = load_actuator_preset(
+        ROBOTO_DIR, "deploy_pd", overrides={"model": "ideal_torque"}
     )
-    with pytest.raises(ValueError, match="action_scale_rad"):
-        load_actuator_preset(tmp_path, "bad")
+    scales = action_scale(preset, load_robot_spec(ROBOTO_DIR))
+    assert all(s != 0.25 for s in scales.values())
 
 
 def test_action_scale_rad_can_arrive_as_an_override():

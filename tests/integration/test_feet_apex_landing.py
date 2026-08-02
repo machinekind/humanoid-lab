@@ -181,7 +181,18 @@ def test_the_new_terms_are_appended_at_the_end_of_the_reward_dict(env):
         jp.zeros(n_feet, dtype=bool),
         jp.zeros(n_feet, dtype=bool),
     )
-    assert list(rewards)[-2:] == ["feet_apex", "feet_landing"]
+    assert list(rewards)[-10:] == [
+        "feet_apex",
+        "feet_landing",
+        "pose_l1",
+        "joint_pos_limits",
+        "joint_vel",
+        "joint_acc",
+        "upward",
+        "feet_distance",
+        "knee_distance",
+        "feet_contact_without_cmd",
+    ]
 
 
 # -- the scripted swing ----------------------------------------------------

@@ -202,9 +202,9 @@ A preset also picks the actuator model. Implemented models are `pd` and
 `ideal_torque`. `dc_motor_speed_saturation` and `delayed` are registered but
 raise `NotImplementedError`. A `pd` preset also sets `soft_limit_factor` and
 `action_scale_factor`, or a flat `action_scale_rad` (radians per unit
-action, every joint the same) that replaces the factor formula; the loader
-refuses it on a non-pd model. roboto_origin's `deploy_pd` pins upstream's
-0.25 rad. See `src/humanoid_lab/robot/presets.py` for the full
+action, every joint the same) that replaces the factor formula. Non-pd
+models ignore both scale fields. roboto_origin's `deploy_pd` pins
+upstream's 0.25 rad. See `src/humanoid_lab/robot/presets.py` for the full
 field contract.
 
 `load_actuator_preset` (`src/humanoid_lab/robot/presets.py`) deep-merges
