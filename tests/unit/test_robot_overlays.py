@@ -32,8 +32,7 @@ ROBOTO_PORTED_SCALES = {
     "feet_distance": 0.1,
     "knee_distance": 0.1,
     "feet_contact_without_cmd": 0.1,
-    # Off on purpose: upstream's pose regularizer is the per-group L1
-    # (pose_l1), not a uniform L2 on top of it.
+    # Off: pose_l1 replaces the L2 pose term.
     "pose": 0.0,
 }
 
@@ -89,14 +88,25 @@ def test_roboto_origin_overlay_wins_over_the_task_and_dr_bases():
     assert cfg.task.env.reward.feet_distance_range == [0.16, 0.50]
     assert cfg.task.env.reward.knee_distance_range == [0.18, 0.35]
 
-    # Mapped DR ranges: EventCfg.scale_joint_parameters (armature),
-    # EventCfg.scale_actuator_gains (joint_gains), EventCfg.
-    # randomize_rigid_body_com (com_offset) (base_config.py).
-    assert cfg.dr.dof.armature == [0.5, 1.5]
+    # Mapped DR ranges (base_config.py's EventCfg).
+    assert cfg.dr.dof.armature == [0.8, 1.2]
     assert cfg.dr.joint_gains.gain_pct == 0.1
     assert cfg.dr.joint_gains.kd_pct == 0.1
     assert cfg.dr.com_offset.xy == 0.025
     assert cfg.dr.com_offset.z == 0.05
+    assert cfg.dr.foot_friction.range == [0.333, 1.778]
+    assert cfg.dr.base_mass_add.kg == 1.0
+
+    # The overlay pins ranges, not switches. The run config arms them.
+    assert cfg.dr.foot_friction.enable is False
+    assert cfg.dr.base_mass_add.enable is False
+
+    # EventCfg.push_robot schedule and magnitudes.
+    assert cfg.task.env.push.interval_steps_range == [500, 750]
+    assert cfg.task.env.push.vel == 0.5
+    assert cfg.task.env.push.vel_z == 0.2
+    assert cfg.task.env.push.ang_vel_rp == 0.52
+    assert cfg.task.env.push.ang_vel_yaw == 0.78
 
     # Untouched DR sub-fields still come from the base configs/dr/default.yaml.
     assert cfg.dr.dof.damping == [0.9, 1.1]
@@ -129,8 +139,7 @@ def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
     assert env_cfg.reward.scales.stand_still == defaults.reward.scales.stand_still
     assert len(env_cfg.reward.scales) == len(defaults.reward.scales)
 
-    # The group-weight map replaces default_config's None wholesale, and the
-    # band tuples arrive tuple-coerced.
+    # The group-weight map replaces default_config's None wholesale.
     assert dict(env_cfg.reward.pose_l1_weights) == {
         "thigh_yaw": 0.03,
         "thigh_roll": 0.03,

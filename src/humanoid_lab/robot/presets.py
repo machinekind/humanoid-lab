@@ -75,10 +75,9 @@ def _validate_preset_keys(data: dict, label: str) -> None:
 class ActuatorPreset:
     """Parsed contents of an actuators/<name>.yaml preset file.
 
-    action_scale_rad, when set, is a flat per-joint action scale in radians
-    (RoboParty's scheme: every joint moves the same angle per unit action)
-    and replaces the action_scale_factor formula outright. pd-family models
-    only: an ideal-torque ctrl is a torque, not an angle.
+    action_scale_rad, when set, is a flat action scale in radians for every
+    joint. It replaces the action_scale_factor formula. pd model only: an
+    ideal-torque ctrl is a torque, not an angle.
     """
 
     model: str
@@ -123,8 +122,8 @@ def load_actuator_preset(
     action_scale_rad = raw.get("action_scale_rad")
     if action_scale_rad is not None and model != "pd":
         raise ValueError(
-            f"{yaml_path}: action_scale_rad is an angle and only the pd model's "
-            f"ctrl is one; model '{model}' scales its actions its own way"
+            f"{yaml_path}: action_scale_rad is an angle; model '{model}' does "
+            "not take one (pd only)"
         )
 
     return ActuatorPreset(
@@ -176,9 +175,8 @@ def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, flo
     """The per-joint action_scale for this preset's model.
 
     pd: action_scale_factor * effort_limit / kp, or the flat
-    action_scale_rad when the preset sets one (load_actuator_preset already
-    refused it on a non-pd model). ideal_torque: effort_limit
-    (action_scale_factor does not apply). See ActuatorModel.action_scale.
+    action_scale_rad when set. ideal_torque: effort_limit. See
+    ActuatorModel.action_scale.
     """
     params_by_joint = resolve(preset, robot_spec)
     if preset.action_scale_rad is not None:

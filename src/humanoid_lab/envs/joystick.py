@@ -190,9 +190,22 @@ def default_config() -> config_dict.ConfigDict:
             pure_back_prob=0.0,
             back_vx=(-0.8, -0.2),
         ),
-        # Untuned starting values; re-derive for each robot's mass and
-        # leg length.
-        push=config_dict.create(enable=True, interval_steps=200, vel=0.4),
+        # Untuned starting values; re-derive per robot. Base kick: planar,
+        # uniform direction, magnitude `vel`, every `interval_steps`.
+        # Optional knobs, each off by default. Off = the legacy trace and
+        # RNG stream, bit-identical. interval_steps_range draws the gap to
+        # the next push (steps). vel_z adds a vertical kick (+-m/s).
+        # ang_vel_rp / ang_vel_yaw add angular kicks (+-rad/s). Kicks add
+        # to the base velocity; upstream's push overwrites it.
+        push=config_dict.create(
+            enable=True,
+            interval_steps=200,
+            vel=0.4,
+            interval_steps_range=None,
+            vel_z=0.0,
+            ang_vel_rp=0.0,
+            ang_vel_yaw=0.0,
+        ),
         # No-progress termination, CaT-style (arXiv 2403.18765): an env whose
         # measured progress keeps falling short of its command is cut
         # probabilistically. Forfeiting the rest of the episode is the whole
@@ -328,17 +341,13 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity-damping share of stand_still (position share is 1;
             # only the ratio matters, scales.stand_still prices the sum).
             stand_still_vel_weight=0.2,
-            # Per-group relative weights of the pose_l1 term: a map
-            # joint_group -> weight, resolved onto the actuated joints at
-            # construction. None = every joint at 1.0; with a map, a group
-            # absent from it contributes at 0 and a group the robot does not
-            # have refuses at construction. scales.pose_l1 prices the
-            # weighted sum, so only the ratios here matter.
+            # pose_l1 weights: a map joint_group -> weight. None = 1.0 for
+            # every joint. A group not in the map gets 0. An unknown group
+            # fails at construction. scales.pose_l1 prices the sum, so only
+            # the ratios matter here.
             pose_l1_weights=None,
-            # Lateral separation bands for the two distance terms, m,
-            # measured between the bodies carrying each side's ankle_roll /
-            # knee joint, in the base frame. These are isaaclab's
-            # body_distance_y defaults; robot overlays pin measured ones.
+            # Separation bands for feet_distance / knee_distance, m, base
+            # frame. isaaclab defaults; robot overlays pin measured ones.
             feet_distance_range=(0.2, 0.5),
             knee_distance_range=(0.2, 0.5),
             # UNTUNED starting values, carried from the quadruped
@@ -369,8 +378,7 @@ def default_config() -> config_dict.ConfigDict:
                 # policy trained with it glides its feet into stance instead
                 # of striking the floor at swing free-fall speed.
                 feet_landing=0.0,
-                # Terms ported from RoboParty's robolab velocity recipe (the
-                # ported section of rewards/terms.py), all 0 = off here;
+                # Ported robolab terms (rewards/terms.py), 0 = off.
                 # roboto_origin's overlay pins the upstream weights.
                 pose_l1=0.0,
                 joint_pos_limits=0.0,
@@ -456,15 +464,11 @@ class Joystick(HumanoidEnv):
         # hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll); an explicit
         # deviation, left uniform rather than guessing a split.
         self._pose_weight = jp.ones(self.action_size)
-        # pose_l1's per-group split IS configurable (reward.pose_l1_weights);
-        # the soft joint limits double as joint_pos_limits' band.
         self._pose_l1_weight = self._resolve_group_weights(
             self._config.reward.get("pose_l1_weights", None)
         )
         self._soft_lo_j = jp.array(self._soft_lo)
         self._soft_hi_j = jp.array(self._soft_hi)
-        # Separation-band body pairs: the bodies carrying each side's
-        # ankle_roll and knee joints (a biped has exactly one per side).
         self._ankle_pair = self._group_body_pair("ankle_roll")
         self._knee_pair = self._group_body_pair("knee")
 
@@ -479,8 +483,7 @@ class Joystick(HumanoidEnv):
         )
 
     def _resolve_group_weights(self, group_map):
-        """Per-joint weight vector from a joint_group -> weight map (see
-        reward.pose_l1_weights in default_config)."""
+        """Per-joint weights from a joint_group -> weight map."""
         if group_map is None:
             return jp.ones(self.action_size)
         rs = self._robot_spec
@@ -497,20 +500,19 @@ class Joystick(HumanoidEnv):
         return jp.array(weights)
 
     def _group_body_pair(self, group: str) -> tuple[int, int]:
-        """The two body ids carrying `group`'s joints, for a separation band."""
+        """The two body ids that carry `group`'s joints."""
         joints = self._robot_spec.joint_groups.get(group, ())
         if len(joints) != 2:
             raise ValueError(
-                f"the '{group}' joint group must name exactly one joint per side "
-                f"for its separation band, got {list(joints)}"
+                f"joint group '{group}' must name one joint per side for its "
+                f"separation band, got {list(joints)}"
             )
         m = self._mj_model
         a, b = (int(m.jnt_bodyid[m.joint(n).id]) for n in joints)
         return a, b
 
     def _body_y_separation(self, data, pair):
-        """|y| distance between two bodies, in the base frame (the frame
-        upstream's body_distance_y measures in)."""
+        """|y| distance between two bodies, base frame."""
         delta = data.xpos[pair[0]] - data.xpos[pair[1]]
         return jp.abs(brax_math.rotate(delta, brax_math.quat_inv(self._quat(data)))[1])
 
@@ -658,6 +660,12 @@ class Joystick(HumanoidEnv):
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
         }
+        if self._config.push.enable and self._config.push.get("interval_steps_range", None):
+            # Seed the random push schedule. Config-gated: the extra split
+            # exists only when the schedule is armed.
+            lo, hi = (int(v) for v in self._config.push.interval_steps_range)
+            info["rng"], r_cd = jax.random.split(info["rng"])
+            info["push_countdown"] = jax.random.randint(r_cd, (), lo, hi + 1)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
@@ -696,14 +704,47 @@ class Joystick(HumanoidEnv):
 
         data = state.data
         if self._config.push.enable:
-            push_now = (info["step_count"] % self._config.push.interval_steps) == (
-                self._config.push.interval_steps - 1
-            )
+            pc = self._config.push
+            # Each knob is config-gated and draws off fold_in(r_push,
+            # 0x100 + i), the offset rule of _sample_command. An off knob
+            # does not change the trace.
+            interval_range = pc.get("interval_steps_range", None)
+            if interval_range:
+                # The countdown fires at zero, then redraws the gap.
+                lo, hi = (int(v) for v in interval_range)
+                push_now = info["push_countdown"] <= 0
+                next_cd = jax.random.randint(
+                    jax.random.fold_in(r_push, 0x100 + 1), (), lo, hi + 1
+                )
+                info["push_countdown"] = jp.where(
+                    push_now, next_cd, info["push_countdown"] - 1
+                )
+            else:
+                push_now = (info["step_count"] % pc.interval_steps) == (
+                    pc.interval_steps - 1
+                )
             push = jax.random.uniform(r_push, (2,), minval=-1.0, maxval=1.0)
-            push = push / (jp.linalg.norm(push) + 1e-6) * self._config.push.vel
+            push = push / (jp.linalg.norm(push) + 1e-6) * pc.vel
             qvel = data.qvel.at[self._base_vadr : self._base_vadr + 2].add(
                 jp.where(push_now, push, jp.zeros(2))
             )
+            if pc.get("vel_z", 0.0):
+                kick_z = jax.random.uniform(
+                    jax.random.fold_in(r_push, 0x100 + 2),
+                    minval=-pc.vel_z,
+                    maxval=pc.vel_z,
+                )
+                qvel = qvel.at[self._base_vadr + 2].add(jp.where(push_now, kick_z, 0.0))
+            ang_rp = pc.get("ang_vel_rp", 0.0)
+            ang_yaw = pc.get("ang_vel_yaw", 0.0)
+            if ang_rp or ang_yaw:
+                bound = jp.array([ang_rp, ang_rp, ang_yaw])
+                kick_ang = jax.random.uniform(
+                    jax.random.fold_in(r_push, 0x100 + 3), (3,), minval=-bound, maxval=bound
+                )
+                qvel = qvel.at[self._base_vadr + 3 : self._base_vadr + 6].add(
+                    jp.where(push_now, kick_ang, jp.zeros(3))
+                )
             data = data.replace(qvel=qvel)
 
         data = mjx_env.step(self._mjx_model, data, motor_targets, self.n_substeps)
@@ -943,9 +984,8 @@ class Joystick(HumanoidEnv):
             * shape_gate,
             "feet_landing": terms.feet_landing(foot_vel[:, 2], foot_clearance, cfg.glide_height)
             * moving,
-            # The ported robolab terms (rewards/terms.py's ported section)
-            # sit after the whole pre-port set, for the same
-            # order-stability reason as feet_apex above.
+            # Ported robolab terms, after the pre-port set for the same
+            # order reason as feet_apex.
             "pose_l1": terms.pose_l1(qpos_act, self._pose_anchor, self._pose_l1_weight),
             "joint_pos_limits": terms.joint_pos_limits(
                 qpos_act, self._soft_lo_j, self._soft_hi_j
@@ -959,9 +999,8 @@ class Joystick(HumanoidEnv):
             "knee_distance": terms.distance_band(
                 self._body_y_separation(data, self._knee_pair), *cfg.knee_distance_range
             ),
-            # Masked like stand_still: this is the zero-command "plant both
-            # feet" reward. Upstream gates on |cmd| < 0.01 where our ~moving
-            # uses the shared speed deadband.
+            # Zero-command mask, like stand_still. Upstream gates on
+            # |cmd| < 0.01; ~moving uses the shared deadband.
             "feet_contact_without_cmd": terms.feet_contact_without_cmd(contact, gravity[2])
             * (~moving),
         }

@@ -9,11 +9,10 @@
 # soft_limit_factor: 0.9, matching upstream's soft_joint_pos_limit_factor
 #   0.90.
 #
-# action_scale_rad: 0.25, upstream's own scheme verbatim: a flat 0.25 rad
-#   action scale on every joint (RobotCfg.action_scale, also pinned in
-#   RPOFlatEnvCfg.__post_init__). It replaces the factor*effort/kp formula
-#   for this preset, so upstream's action-rate and smoothness weights
-#   price the same physical quantity here that they price there.
+# action_scale_rad: 0.25, upstream's scheme verbatim: a flat 0.25 rad
+#   action scale on every joint (RobotCfg.action_scale). It replaces the
+#   factor*effort/kp formula, so the upstream action-rate weights price
+#   the same quantity here.
 #
 # armature: 0.01 for every group. This is upstream's flat placeholder
 #   value, not a measured reflected inertia -- upstream publishes no
