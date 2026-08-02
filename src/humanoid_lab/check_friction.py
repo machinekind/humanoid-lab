@@ -73,10 +73,16 @@ def probe(robot: str, preset: str, backend: str, num_envs: int, friction_range) 
         return jax.lax.scan(body, data, None, length=SETTLE_STEPS)[0]
 
     out = jax.jit(jax.vmap(run, in_axes=(in_axes,)))(model_v)
-    contact = getattr(out, "_impl", out).contact
-    geom = np.asarray(contact.geom)
-    dist = np.asarray(contact.dist)
-    friction = np.asarray(contact.friction)
+    impl = getattr(out, "_impl", out)
+    if hasattr(impl, "contact"):
+        geom = np.asarray(impl.contact.geom)
+        dist = np.asarray(impl.contact.dist)
+        friction = np.asarray(impl.contact.friction)
+    else:
+        # DataWarp flattens the contact struct into contact__* leaves.
+        geom = np.asarray(impl.contact__geom)
+        dist = np.asarray(impl.contact__dist)
+        friction = np.asarray(impl.contact__friction)
 
     names = list(env.robot_spec.foot_geoms)
     base = np.asarray(env.mjx_model.geom_friction)[foot_ids, 0]
