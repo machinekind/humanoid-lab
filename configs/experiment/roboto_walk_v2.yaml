@@ -1,8 +1,10 @@
 # @package _global_
-# roboto_walk_v1: the first proper roboto_origin run. Recipe and deltas:
-# docs/plans/roboto-first-run.md. The robot overlay pins the reward
-# weights, push schedule, and DR ranges. This file arms the DR switches
-# and sets the PPO knobs brax has.
+# roboto_walk_v2: roboto_origin run 2. Recipe, the run-1 zero-swing verdict
+# and the v2 reward deltas (feet_air_time_biped, phase_sigma) all live in
+# docs/plans/roboto-first-run.md; the deltas themselves are pinned in the
+# robot overlay, which also carries the reward weights, push schedule, and
+# DR ranges. This file arms the DR switches and sets the PPO knobs brax
+# has, unchanged from run 1.
 defaults:
   - override /robot: roboto_origin
   - override /task: joystick

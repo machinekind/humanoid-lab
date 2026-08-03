@@ -42,7 +42,8 @@ the budget below matches that, not the old run.
    `upward` 0.4, `feet_contact_without_cmd` 0.1. The torso and arm
    deviation weight is what holds the arms still; the distance bands are
    what prevent leg crossing. Keep our existing shapes where a same-name
-   upstream term differs (`feet_slip`, `feet_air_time`, `stand_still`);
+   upstream term differs (`feet_slip`, `stand_still`; run 1 also kept
+   `feet_air_time`, whose upstream shape run 2 ports -- see Run 2);
    the overlay comments already record those deltas.
 2. **Action scale.** Add a flat-radians mode to the ActuatorPreset schema
    and set `deploy_pd` to upstream's flat 0.25 rad. Our
@@ -84,24 +85,54 @@ the budget below matches that, not the old run.
 - **Heading command.** Upstream steers yaw through a heading controller;
   we sample `wz` directly inside the same +-1.57 envelope.
 
+## Run 2: make stepping pay
+
+Run 1 (`roboto_walk_v1`, the full 1.209e9 budget) executed the recipe
+without failures and reached reward 17.6, but never stepped:
+`feet_air_time` stayed at 0 for the whole run, the battery shows every
+command served by leaning and foot-shuffling, and every episode still
+ends in a fall. Evidence: the [run report](https://claude.ai/code/artifact/69344fbf-f826-4a54-be31-325b5d5fc16a)
+and wandb run cdoixkux.
+
+The defect is the one upstream shape run 1 kept unported. Their
+`feet_air_time_positive_biped` pays every step of single stance, so the
+gradient toward lifting a foot exists from the first policy. Our
+`feet_air_time` pays only at landing, which a zero-swing policy never
+reaches, and `feet_phase` at `phase_sigma` 0.002 is flat at zero
+clearance.
+
+Run 2 changes exactly two things, both pinned in the roboto overlay:
+
+1. `feet_air_time_biped`, the upstream shape ported into
+   `rewards/terms.py`: weight 0.25, threshold 0.4 s. The landing-event
+   `feet_air_time` goes to 0 so a swing is not priced twice.
+2. `phase_sigma` 0.002 -> 0.01, so a partial lift scores.
+
+`feet_apex` and `shaping_tracking_gate` stay off: they are our own
+measured knobs, not upstream's, and they only enter if run 2 still
+shuffles. Everything else -- budget, PPO, DR, actuators, network -- is
+run 1 verbatim, and the experiment preset is renamed `roboto_walk_v2`.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
 
-The run config is `configs/experiment/roboto_walk_v1.yaml`. It pins
+The run config is `configs/experiment/roboto_walk_v2.yaml`. It pins
 robot, preset, network, DR switches, and PPO knobs.
 
-1. Local: `./run.sh train experiment=roboto_walk_v1 --cfg job --resolve`,
+1. Local: `./run.sh train experiment=roboto_walk_v2 --cfg job --resolve`,
    then `./run.sh test`, then a smoke with the experiment and tiny PPO
    sizes re-pinned on the CLI.
 2. GPU box: `./run.sh check-contacts` and
    `./run.sh check-friction --robot roboto_origin --preset deploy_pd
    --backend warp`.
-3. Bounded run, about 3e7 steps: `EXPERIMENT=roboto_walk_v1` and
+3. Bounded run, about 3e7 steps: `EXPERIMENT=roboto_walk_v2` and
    `RUN_ARGS="ppo.num_timesteps=3e7"`. Gate: tracking reward rises on
-   wandb, an eval video (`--overlay-torque`) looks sane, battery passes.
+   wandb, an eval video (`--overlay-torque`) looks sane, battery passes,
+   and -- the run-2 signal -- `reward/feet_air_time_biped` earns and
+   `feet_air_time` (swing completions) lifts off zero.
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
-   EXPERIMENT=roboto_walk_v1 SEED=0 RUN_NAME=roboto_walk_v1
+   EXPERIMENT=roboto_walk_v2 SEED=0 RUN_NAME=roboto_walk_v2
    ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
    the real node class. wandb on.
 5. After: `battery`, `report`, an eval video per battery scenario, and
@@ -114,4 +145,6 @@ rough terrain and the height scanner; the observation-history and
 action-delay port; contact-based termination.
 
 Changelog: 2026-08-02, prerequisites implemented on this branch; the
-ladder now uses the roboto_walk_v1 experiment preset.
+ladder now uses the roboto_walk_v1 experiment preset. 2026-08-03, run 2
+added after run 1's zero-swing verdict: feet_air_time_biped port,
+phase_sigma widening, preset renamed roboto_walk_v2.
