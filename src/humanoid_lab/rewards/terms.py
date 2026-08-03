@@ -241,3 +241,18 @@ def feet_contact_without_cmd(contact, gravity_z):
     feet_contact_without_cmd). The zero-command mask is the caller's."""
     upright = jp.clip(-gravity_z, 0.0, 0.7) / 0.7
     return jp.all(contact) * upright
+
+
+def feet_air_time_biped(air_time, contact_time, in_contact, threshold: float):
+    """Per-step single-stance reward (upstream feet_air_time_positive_biped):
+    while exactly one foot is in contact, pay the smaller of the feet's
+    current mode times (air time for the swing foot, contact time for the
+    stance foot), clamped at `threshold`. Double support and flight pay zero.
+
+    Unlike feet_air_time above, which pays once per completed swing at
+    landing, this pays from the first instant a foot lifts, so a policy that
+    has never made a step still sees a gradient toward making one. The
+    zero-command mask is the caller's."""
+    in_mode_time = jp.where(in_contact, contact_time, air_time)
+    single_stance = jp.sum(in_contact.astype(jp.int32)) == 1
+    return jp.minimum(jp.min(jp.where(single_stance, in_mode_time, 0.0)), threshold)

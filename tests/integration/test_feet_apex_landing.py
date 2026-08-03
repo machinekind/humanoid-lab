@@ -181,7 +181,7 @@ def test_the_new_terms_are_appended_at_the_end_of_the_reward_dict(env):
         jp.zeros(n_feet, dtype=bool),
         jp.zeros(n_feet, dtype=bool),
     )
-    assert list(rewards)[-10:] == [
+    assert list(rewards)[-11:] == [
         "feet_apex",
         "feet_landing",
         "pose_l1",
@@ -192,6 +192,7 @@ def test_the_new_terms_are_appended_at_the_end_of_the_reward_dict(env):
         "feet_distance",
         "knee_distance",
         "feet_contact_without_cmd",
+        "feet_air_time_biped",
     ]
 
 

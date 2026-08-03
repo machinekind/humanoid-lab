@@ -299,10 +299,15 @@ def default_config() -> config_dict.ConfigDict:
             # per step against honest walking's ~0.25. Gated, a stride pays
             # in proportion to how well the command is being served and
             # standing pays nothing for lifting legs. Gated set:
-            # feet_air_time and feet_apex. Not feet_phase, and not the
-            # feet_landing penalty -- see _compute_rewards.
+            # feet_air_time, feet_air_time_biped and feet_apex. Not
+            # feet_phase, and not the feet_landing penalty -- see
+            # _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
+            # feet_air_time_biped clamp, s (upstream feet_air_time_positive_
+            # biped's threshold): single-stance dwell beyond this earns no
+            # extra per-step pay.
+            biped_air_time_threshold=0.4,
             # Tolerance cone around upright for the orientation penalty,
             # half-angle in degrees (0 = the legacy penalty, bit-exact). The
             # penalty is sin^2 of the base's tilt from vertical; with a cone
@@ -388,6 +393,11 @@ def default_config() -> config_dict.ConfigDict:
                 feet_distance=0.0,
                 knee_distance=0.0,
                 feet_contact_without_cmd=0.0,
+                # Per-step single-stance dwell (upstream
+                # feet_air_time_positive_biped), 0 = off. The landing-event
+                # feet_air_time above never fires on a policy with zero
+                # swings; this one pays from the first instant of a lift.
+                feet_air_time_biped=0.0,
             ),
         ),
     )
@@ -661,6 +671,8 @@ class Joystick(HumanoidEnv):
             "last_last_action": jp.zeros(self.action_size),
             "last_torque": jp.zeros(self.action_size),
             "feet_air_time": jp.zeros(self._n_feet),
+            # Stance-dwell mirror of feet_air_time, for feet_air_time_biped.
+            "feet_contact_time": jp.zeros(self._n_feet),
             # Per-swing peak clearance, for feet_apex (see step()). Seeded
             # unconditionally, like feet_air_time: the info pytree must not
             # change shape with the reward scales.
@@ -780,6 +792,7 @@ class Joystick(HumanoidEnv):
 
         info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
         info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
+        info["feet_contact_time"] = jp.where(contact_filt, info["feet_contact_time"] + self.dt, 0.0)
         info["last_contact"] = contact
         info["last_last_action"] = info["last_action"]
         info["last_action"] = action
@@ -939,10 +952,10 @@ class Joystick(HumanoidEnv):
 
         # Gait-shaping gate (see shaping_tracking_gate in default_config):
         # the positive gait terms follow the linear tracking kernel, after
-        # the product gate when that is on. Gated set: feet_air_time and
-        # feet_apex. feet_phase stays ungated on purpose -- it is the
-        # clock-following gradient, and it has to survive at zero tracking
-        # because stepping is how tracking starts.
+        # the product gate when that is on. Gated set: feet_air_time,
+        # feet_air_time_biped and feet_apex. feet_phase stays ungated on
+        # purpose -- it is the clock-following gradient, and it has to
+        # survive at zero tracking because stepping is how tracking starts.
         shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
 
         # sin^2 of the tilt from vertical, less the tolerance cone (see
@@ -1017,5 +1030,22 @@ class Joystick(HumanoidEnv):
             # |cmd| < 0.01; ~moving uses the shared deadband.
             "feet_contact_without_cmd": terms.feet_contact_without_cmd(contact, gravity[2])
             * (~moving),
+            # The mode times read the pre-update info on purpose: the
+            # bookkeeping above runs after the reward call (the landing-event
+            # feet_air_time needs the completed swing's time), so this term
+            # sees each dwell one control step late. A dt lag against a 0.4 s
+            # clamp does not change the shape. Gated by `moving`, not
+            # upstream's |cmd_xy| > 0.1: our pure-spin commands need steps
+            # too. In the shape_gate set with the other positive gait terms,
+            # since single-stance dwell is stand-and-lift income by
+            # definition.
+            "feet_air_time_biped": terms.feet_air_time_biped(
+                info["feet_air_time"],
+                info["feet_contact_time"],
+                contact | info["last_contact"],
+                cfg.get("biped_air_time_threshold", 0.4),
+            )
+            * moving
+            * shape_gate,
         }
         return rewards, fall

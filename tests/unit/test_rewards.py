@@ -181,6 +181,53 @@ def test_feet_air_time_cap_bounds_reward():
     assert capped == pytest.approx(0.5 - 0.1)
 
 
+# -- feet_air_time_biped ---------------------------------------------------
+
+
+def test_feet_air_time_biped_pays_zero_in_double_support():
+    out = terms.feet_air_time_biped(
+        jp.array([0.0, 0.0]), jp.array([0.3, 0.5]), jp.array([True, True]), threshold=0.4
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_air_time_biped_pays_zero_in_flight():
+    out = terms.feet_air_time_biped(
+        jp.array([0.2, 0.3]), jp.array([0.0, 0.0]), jp.array([False, False]), threshold=0.4
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_air_time_biped_pays_the_smaller_mode_time_in_single_stance():
+    # Stance foot 0.3 s into contact, swing foot 0.1 s into its swing: the
+    # min prices the shorter dwell, so BOTH times have to grow to earn more.
+    out = terms.feet_air_time_biped(
+        jp.array([0.0, 0.1]), jp.array([0.3, 0.0]), jp.array([True, False]), threshold=0.4
+    )
+    assert out == pytest.approx(0.1)
+
+
+def test_feet_air_time_biped_clamps_at_the_threshold():
+    out = terms.feet_air_time_biped(
+        jp.array([0.0, 0.9]), jp.array([1.2, 0.0]), jp.array([True, False]), threshold=0.4
+    )
+    assert out == pytest.approx(0.4)
+
+
+def test_feet_air_time_biped_pays_from_the_first_instant_of_a_lift():
+    """The run-1 defect this term exists to fix: a policy with zero completed
+    swings must still see more reward one control step into a lift than it
+    sees standing on both feet."""
+    dt = 0.02
+    lifted = terms.feet_air_time_biped(
+        jp.array([0.0, dt]), jp.array([0.5, 0.0]), jp.array([True, False]), threshold=0.4
+    )
+    standing = terms.feet_air_time_biped(
+        jp.array([0.0, 0.0]), jp.array([0.5, 0.5]), jp.array([True, True]), threshold=0.4
+    )
+    assert float(lifted) > float(standing)
+
+
 # -- feet_apex / feet_landing ----------------------------------------------
 
 
