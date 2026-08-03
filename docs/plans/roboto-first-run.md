@@ -113,6 +113,14 @@ measured knobs, not upstream's, and they only enter if run 2 still
 shuffles. Everything else -- budget, PPO, DR, actuators, network -- is
 run 1 verbatim, and the experiment preset is renamed `roboto_walk_v2`.
 
+Gate verdict (2026-08-03): PASS on the v1-gate sizing. Reward reaches
++8.8 by 20M steps (v1 gate: +5.8 by 12M) and swings appear from zero:
+`feet_air_time_biped` earns from the first epoch and landing events
+multiply (short swings under 0.1 s; lengthening them is the full
+budget's job). Full evidence, the 2x2 attribution matrix, and the
+sizing lesson below:
+[gate report](https://claude.ai/code/artifact/c6c62b9f-9260-461c-ade8-442622083058).
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -126,11 +134,15 @@ robot, preset, network, DR switches, and PPO knobs.
 2. GPU box: `./run.sh check-contacts` and
    `./run.sh check-friction --robot roboto_origin --preset deploy_pd
    --backend warp`.
-3. Bounded run, about 3e7 steps: `EXPERIMENT=roboto_walk_v2` and
-   `RUN_ARGS="ppo.num_timesteps=3e7"`. Gate: tracking reward rises on
-   wandb, an eval video (`--overlay-torque`) looks sane, battery passes,
-   and -- the run-2 signal -- `reward/feet_air_time_biped` earns and
-   `feet_air_time` (swing completions) lifts off zero.
+3. Bounded run, about 3e7 steps, ALWAYS at the v1-gate sizing: 4096
+   envs, batch 128, one GPU. At the full-run sizing (16384/512, 4 GPU)
+   a 3e7 run sits entirely inside the recipe's flat early phase (value
+   loss astronomical from epoch 0, policy frozen) and reads as a false
+   FAIL; the v1 full run shows escape happens between 59M and 134M
+   steps, which a bounded run never reaches. Gate: tracking reward
+   rises on wandb, an eval video (`--overlay-torque`) looks sane,
+   battery passes, and -- the run-2 signal -- `reward/feet_air_time_biped`
+   earns and `feet_air_time` (swing completions) lifts off zero.
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
    EXPERIMENT=roboto_walk_v2 SEED=0 RUN_NAME=roboto_walk_v2
    ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
@@ -147,4 +159,6 @@ action-delay port; contact-based termination.
 Changelog: 2026-08-02, prerequisites implemented on this branch; the
 ladder now uses the roboto_walk_v1 experiment preset. 2026-08-03, run 2
 added after run 1's zero-swing verdict: feet_air_time_biped port,
-phase_sigma widening, preset renamed roboto_walk_v2.
+phase_sigma widening, preset renamed roboto_walk_v2. 2026-08-03, gate
+PASS; gate sizing pinned to 4096/128/1 GPU after the full-sizing false
+alarm.
