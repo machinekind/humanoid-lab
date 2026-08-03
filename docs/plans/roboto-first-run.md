@@ -161,4 +161,5 @@ ladder now uses the roboto_walk_v1 experiment preset. 2026-08-03, run 2
 added after run 1's zero-swing verdict: feet_air_time_biped port,
 phase_sigma widening, preset renamed roboto_walk_v2. 2026-08-03, gate
 PASS; gate sizing pinned to 4096/128/1 GPU after the full-sizing false
-alarm.
+alarm. 2026-08-03, full run up as job job-01 (v1 recipe verbatim,
+roboto_walk_v2 preset).
