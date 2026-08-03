@@ -32,6 +32,10 @@ ROBOTO_PORTED_SCALES = {
     "feet_distance": 0.1,
     "knee_distance": 0.1,
     "feet_contact_without_cmd": 0.1,
+    "feet_air_time_biped": 0.25,
+    # Off: the per-step feet_air_time_biped replaces the landing-event
+    # shape (run 2, docs/plans/roboto-first-run.md).
+    "feet_air_time": 0.0,
     # Off: pose_l1 replaces the L2 pose term.
     "pose": 0.0,
 }
@@ -80,6 +84,7 @@ def test_roboto_origin_overlay_wins_over_the_task_and_dr_bases():
         "pose_l1_weights",
         "feet_distance_range",
         "knee_distance_range",
+        "phase_sigma",
     ]
     # joint_deviation_l1's group split and body_distance_y's bands
     # (rpo_env_cfg.py).
@@ -131,13 +136,15 @@ def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
     for key, value in ROBOTO_PORTED_SCALES.items():
         assert env_cfg.reward.scales[key] == value, key
 
+    # The one non-scale reward field the overlay pins (run 2).
+    assert env_cfg.reward.phase_sigma == 0.01
+
     # Unlisted reward fields keep default_config's values.
     defaults = joystick_default_config()
     assert env_cfg.reward.tracking_sigma == defaults.reward.tracking_sigma
-    assert env_cfg.reward.phase_sigma == defaults.reward.phase_sigma
+    assert env_cfg.reward.biped_air_time_threshold == defaults.reward.biped_air_time_threshold
     assert env_cfg.reward.torque_limit_frac == defaults.reward.torque_limit_frac
     assert env_cfg.reward.scales.feet_phase == defaults.reward.scales.feet_phase
-    assert env_cfg.reward.scales.feet_air_time == defaults.reward.scales.feet_air_time
     assert env_cfg.reward.scales.feet_slip == defaults.reward.scales.feet_slip
     assert env_cfg.reward.scales.stand_still == defaults.reward.scales.stand_still
     assert len(env_cfg.reward.scales) == len(defaults.reward.scales)

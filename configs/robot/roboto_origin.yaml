@@ -64,7 +64,7 @@ task:
     # is the resolved config's only task.env.reward content, and at env
     # construction registry._apply_overrides (make_env, the path train.py
     # uses) deep-merges task.env onto default_config() entry by entry.
-    # Every reward entry not listed here -- tracking_sigma, phase_sigma,
+    # Every reward entry not listed here -- tracking_sigma,
     # torque_limit_frac, and the scales with no same-shape upstream term --
     # keeps its Python default; the not-ported block at the bottom records
     # the upstream values whose shape does not match ours. Weight transfer
@@ -143,6 +143,18 @@ task:
         feet_distance: 0.1
         knee_distance: 0.1
         feet_contact_without_cmd: 0.1
+        # RPORewardCfg.feet_air_time weight (rpo_env_cfg.py,
+        # mdp.feet_air_time_positive_biped). Same shape since the
+        # feet_air_time_biped port: per-step single-stance mode time,
+        # clamped at reward.biped_air_time_threshold (their 0.4 s).
+        # Residual difference: theirs gates on |cmd_xy| > 0.1, ours on the
+        # shared deadband, which counts yaw commands too. roboto_walk_v1
+        # trained without this term and never lifted a foot; the run 2
+        # rationale is in docs/plans/roboto-first-run.md.
+        feet_air_time_biped: 0.25
+        # Our landing-event shape, off for upstream parity: alongside the
+        # per-step term above it would price the same swing twice.
+        feet_air_time: 0.0
         # Upstream has no L2 pose term; pose_l1 is its regularizer. Off to
         # avoid pricing the deviation twice.
         pose: 0.0
@@ -164,6 +176,11 @@ task:
       # body_distance_y bands (rpo_env_cfg.py), m.
       feet_distance_range: [0.16, 0.50]
       knee_distance_range: [0.18, 0.35]
+      # Ours, not upstream (their recipe has no gait clock). The Python
+      # default 0.002 makes feet_phase flat at zero clearance, so a policy
+      # that never lifts sits outside the kernel's gradient; widened so a
+      # partial lift is scored (run 2, docs/plans/roboto-first-run.md).
+      phase_sigma: 0.01
 
 dr:
   dof:
@@ -200,11 +217,6 @@ dr:
 # the upstream weight would scale a different quantity. Numbers recorded
 # here so a future reward/DR pass has them in-repo. All from
 # rpo_env_cfg.py's RPORewardCfg or base_config.py's EventCfg unless noted:
-#   feet_air_time (mdp.feet_air_time_positive_biped): weight 0.25,
-#     threshold 0.4 -- shape differs: theirs is a per-step reward of the
-#     current single-stance mode time clamped to the threshold; ours
-#     (terms.feet_air_time) is a per-landing event reward of
-#     (air_time - min_air_time) at first contact.
 #   feet_slide: weight -0.3 -- shape differs: theirs penalizes the linear
 #     norm |v_xy| of each contacting foot; ours (terms.feet_slip) the
 #     squared speed v_xy^2, a different power law.
