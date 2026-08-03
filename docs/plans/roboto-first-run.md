@@ -121,6 +121,20 @@ budget's job). Full evidence, the 2x2 attribution matrix, and the
 sizing lesson below:
 [gate report](https://claude.ai/code/artifact/c6c62b9f-9260-461c-ade8-442622083058).
 
+Full-run verdict (2026-08-03, job job-01,
+wandb 7n62pp8j,
+[full report](https://claude.ai/code/artifact/ffb483c5-7a12-4a0f-86b5-a608b7f9ed1d)):
+reward 21.8 (v1: 17.6) but still no walking. The policy moved from
+v1's zero contact breaks to rhythmic micro-steps: flight times around
+0.1 s, single-stance income earned, but clearance stays under the
+battery's 5 mm swing threshold, and command serving is bit-for-bit
+v1's leaning (spin still dead). The new terms pay for lift-off and
+single support, none pays for HEIGHT, and the optimizer collected them
+with millimeter lifts. Run 3 candidate: enable `feet_apex` (prices the
+swing's peak against a 5 cm target at landing; now that landings exist
+it has events to pay), optionally `shaping_tracking_gate`. Not a
+keeper; the deploy pair is exported but unpublished.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -162,4 +176,5 @@ added after run 1's zero-swing verdict: feet_air_time_biped port,
 phase_sigma widening, preset renamed roboto_walk_v2. 2026-08-03, gate
 PASS; gate sizing pinned to 4096/128/1 GPU after the full-sizing false
 alarm. 2026-08-03, full run up as job job-01 (v1 recipe verbatim,
-roboto_walk_v2 preset).
+roboto_walk_v2 preset). 2026-08-03, full-run verdict: micro-steps, not
+walking; eval chain and wandb links recorded above.
