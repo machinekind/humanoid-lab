@@ -185,6 +185,26 @@ huge-at-epoch-0 plus flat reward, absent here). Evidence:
 [gate report](https://claude.ai/code/artifact/e3f01b4a-3943-4ab2-8a23-b32731c2d717).
 Full run up as job job-04 (16384/512, 4 GPU, v2 sizing verbatim).
 
+Full-run verdict (2026-08-05, train job job-04, eval job-05,
+[full report](https://claude.ai/code/artifact/00289d8d-d306-4323-a9f7-81e84016b5b9)):
+FAIL on the pre-registered criteria. walk_ramp vx error 0.496 vs v2's
+0.494, battery swings 0 everywhere (clearance never crosses 5 mm),
+spin still dead (-3.6 deg on a -360 command); final reward 22.09 (v2:
+21.79) -- which is exactly why the verdict criterion is vel_err, not
+reward. The new fact is a SIZING PARADOX: at the gate sizing
+(4096/128) feet_apex income per step reached 1.15e-3 by 30M, while the
+full sizing (16384/512) ends 1.2e9 at 0.19e-3, six times lower, having
+collapsed to 0.04e-3 right after the dead phase -- the 16384/512 dead
+phase appears to select the leaning basin, not merely delay learning.
+Run 4 recommendation: the full budget at the gate sizing (4096 envs,
+batch 128, rewards untouched) -- a clean test of the sizing hypothesis
+with two independent evidence points (both v2's and v3's gates learn
+richer gaits than their full runs on identical code), and faithful to
+upstream's own 4096 x 12000 recipe. The pre-registered
+`shaping_tracking_gate` moves to run 5, for a policy that steps tall
+but ignores commands. Not a keeper; the deploy pair is exported
+(max |diff| 6.6e-07) but unpublished.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -235,4 +255,6 @@ added: feet_apex 5.0, preset renamed roboto_walk_v3, budget unchanged.
 2026-08-04, after adversarial review: apex_target re-derived to 0.08,
 verdict criterion moved to vel_err, run 4 (shaping_tracking_gate)
 pre-registered. 2026-08-04, gate PASS (job-03); full run up as job
-job-04.
+job-04. 2026-08-05, full-run verdict: still no walking, sizing
+paradox recorded; run 4 recommendation = full budget at the gate
+sizing, shaping_tracking_gate moves to run 5.
