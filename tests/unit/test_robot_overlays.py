@@ -88,6 +88,7 @@ def test_roboto_origin_overlay_wins_over_the_task_and_dr_bases():
         "feet_distance_range",
         "knee_distance_range",
         "phase_sigma",
+        "apex_target",
     ]
     # joint_deviation_l1's group split and body_distance_y's bands
     # (rpo_env_cfg.py).
@@ -139,8 +140,9 @@ def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
     for key, value in ROBOTO_PORTED_SCALES.items():
         assert env_cfg.reward.scales[key] == value, key
 
-    # The one non-scale reward field the overlay pins (run 2).
+    # The non-scale reward fields the overlay pins (runs 2 and 3).
     assert env_cfg.reward.phase_sigma == 0.01
+    assert env_cfg.reward.apex_target == 0.08
 
     # Unlisted reward fields keep default_config's values.
     defaults = joystick_default_config()

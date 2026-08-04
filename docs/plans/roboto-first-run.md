@@ -144,20 +144,36 @@ thing, pinned in the roboto overlay:
 
 1. `feet_apex: 5.0` (was 0). Ours, not upstream's: pays each completed
    swing once, at touchdown, for how close its peak clearance came to
-   `apex_target` (default 0.05 m). Run 2's rhythmic landings give it
-   events to pay from the first epoch. The weight is the w01-tek
-   stiff-ladder value for this exact term, where it measured 3 to 5 cm
-   swings; the term is sparse (once per landing) so it needs an order
-   more weight than the per-step terms.
+   `apex_target`. Run 2's rhythmic landings give it events to pay from
+   the first epoch. The weight is the w01-tek stiff-ladder value for this
+   exact term, where it measured 3 to 5 cm swings; the term is sparse
+   (once per landing) so it needs an order more weight than the per-step
+   terms.
+2. `apex_target: 0.08` (was the 0.05 default), the re-derivation the
+   default's own comment asks for: this env's gait clock demands 0.08 m
+   of swing (`gait.swing_height`), and 0.05 is the quadruped leg's
+   number. One reward delta, both knobs of the same term. The gate job
+   job-02 predates this pin and ran at 0.05; it gates the train path
+   and the earn signal, which the target value does not change.
 
-`shaping_tracking_gate` stays off: it multiplies the shaping terms by
-tracking quality, and with tracking still poor it would choke the
-stepping gradient run 2 just established. It stays in reserve for a run
-that steps but ignores commands. Budget stays 1.209e9: v1 and v2 both
-plateau by ~400M (v2 peaks at +22.7 @ 403M and is flat for the last
-800M), so steps were not the binding constraint; if the v3 curve is
-still climbing at cutoff, an extension becomes its own ladder step.
-The preset is renamed `roboto_walk_v3`.
+An adversarial review of this plan (2026-08-04) pinned down what run 3
+does and does not test: feet_apex is translation-neutral (a stomper and
+a walker collect the same apex income; only the tracking differential,
+about 0.6-0.7/step under a 0.5 m/s command, favors walking, and v2
+proved that differential alone does not buy translation). So run 3
+tests "does the robot lift," not "does it walk", and its verdict
+criterion is `vel_err`, not reward: walk_ramp vx error must beat v2's
+0.494, and battery swings must appear (median apex over 2 cm). Run 4 is
+pre-registered now so a stomping v3 costs one ladder step, not a
+redesign cycle: `shaping_tracking_gate: true`, the measured anti-stomp
+knob (under an unserved command k_lin ~ 0.37, so the gate scales
+shaping ~3x in walking's favor without zeroing the gradient).
+
+Budget stays 1.209e9: v1 and v2 both plateau by ~400M (v2 peaks at
++22.7 @ 403M and is flat for the last 800M), so steps were not the
+binding constraint; if the v3 curve is still climbing at cutoff, an
+extension becomes its own ladder step. The preset is renamed
+`roboto_walk_v3`.
 
 ## Run ladder
 
@@ -179,8 +195,11 @@ robot, preset, network, DR switches, and PPO knobs.
    FAIL; the v1 full run shows escape happens between 59M and 134M
    steps, which a bounded run never reaches. Gate: tracking reward
    rises on wandb, an eval video (`--overlay-torque`) looks sane,
-   battery passes, and -- the run-3 signal -- `reward/feet_apex` earns
-   and swing apexes lift toward 5 cm.
+   battery passes, and -- the run-3 signal -- `reward/feet_apex`'s
+   per-step average RISES over the gate window (v2's micro-swings
+   already collect a trickle, so merely nonzero proves nothing; and the
+   apex tracker under-reads 2-step flights, so early flatness is not a
+   FAIL either).
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
    EXPERIMENT=roboto_walk_v3 SEED=0 RUN_NAME=roboto_walk_v3
    ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
@@ -203,3 +222,6 @@ alarm. 2026-08-03, full run up as job job-01 (v1 recipe verbatim,
 roboto_walk_v2 preset). 2026-08-03, full-run verdict: micro-steps, not
 walking; eval chain and wandb links recorded above. 2026-08-04, run 3
 added: feet_apex 5.0, preset renamed roboto_walk_v3, budget unchanged.
+2026-08-04, after adversarial review: apex_target re-derived to 0.08,
+verdict criterion moved to vel_err, run 4 (shaping_tracking_gate)
+pre-registered.

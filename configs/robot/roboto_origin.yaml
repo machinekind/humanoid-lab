@@ -156,13 +156,13 @@ task:
         # per-step term above it would price the same swing twice.
         feet_air_time: 0.0
         # Ours, not upstream. Pays each completed swing, at touchdown, for
-        # how close its PEAK clearance came to reward.apex_target (the
-        # 0.05 m default). roboto_walk_v2 earned the air-time terms with
-        # millimeter lifts: rhythmic contact breaks, clearance under 5 mm,
-        # because lift-off and single stance are paid but height is not.
-        # 5.0 is the w01-tek stiff-ladder value for this exact term, where
-        # it measured 3-5 cm swings; the term is sparse (once per landing)
-        # so it needs an order more weight than the per-step terms (run 3,
+        # how close its PEAK clearance came to reward.apex_target.
+        # roboto_walk_v2 earned the air-time terms with millimeter lifts:
+        # rhythmic contact breaks, clearance under 5 mm, because lift-off
+        # and single stance are paid but height is not. 5.0 is the w01-tek
+        # stiff-ladder value for this exact term, where it measured 3-5 cm
+        # swings; the term is sparse (once per landing) so it needs an
+        # order more weight than the per-step terms (run 3,
         # docs/plans/roboto-first-run.md).
         feet_apex: 5.0
         # Upstream has no L2 pose term; pose_l1 is its regularizer. Off to
@@ -191,6 +191,12 @@ task:
       # that never lifts sits outside the kernel's gradient; widened so a
       # partial lift is scored (run 2, docs/plans/roboto-first-run.md).
       phase_sigma: 0.01
+      # The re-derived value the Python default's comment asks for: this
+      # env's gait clock (gait.swing_height) asks for 0.08 m of swing, and
+      # the 0.05 default is the quadruped's leg, not this one. Keeping
+      # them apart would saturate feet_apex at 62% of the clock's ask
+      # (run 3, docs/plans/roboto-first-run.md).
+      apex_target: 0.08
 
 dr:
   dof:
