@@ -176,6 +176,15 @@ binding constraint; if the v3 curve is still climbing at cutoff, an
 extension becomes its own ladder step. The preset is renamed
 `roboto_walk_v3`.
 
+Gate verdict (2026-08-04, job job-03): PASS. `feet_apex` income per
+step rises monotonically from 10M on (0.06 to 1.15e-3, accelerating
+over the last three points), reward -5.5 to ~+8 by 30M (v2 gate: +8.8
+by 20M), episodes 70 to ~690 steps, KL stable. The late v_loss growth
+matches the known non-blocking signature (the blocking one is
+huge-at-epoch-0 plus flat reward, absent here). Evidence:
+[gate report](https://claude.ai/code/artifact/e3f01b4a-3943-4ab2-8a23-b32731c2d717).
+Full run up as job job-04 (16384/512, 4 GPU, v2 sizing verbatim).
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -225,4 +234,5 @@ walking; eval chain and wandb links recorded above. 2026-08-04, run 3
 added: feet_apex 5.0, preset renamed roboto_walk_v3, budget unchanged.
 2026-08-04, after adversarial review: apex_target re-derived to 0.08,
 verdict criterion moved to vel_err, run 4 (shaping_tracking_gate)
-pre-registered.
+pre-registered. 2026-08-04, gate PASS (job-03); full run up as job
+job-04.
