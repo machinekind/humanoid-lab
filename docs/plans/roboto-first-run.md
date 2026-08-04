@@ -152,9 +152,10 @@ thing, pinned in the roboto overlay:
 2. `apex_target: 0.08` (was the 0.05 default), the re-derivation the
    default's own comment asks for: this env's gait clock demands 0.08 m
    of swing (`gait.swing_height`), and 0.05 is the quadruped leg's
-   number. One reward delta, both knobs of the same term. The gate job
-   job-02 predates this pin and ran at 0.05; it gates the train path
-   and the earn signal, which the target value does not change.
+   number. One reward delta, both knobs of the same term. The first
+   gate submission (job-02) died in a node failure before logging a
+   step; the gate re-ran as job job-03 with this pin in place, so the
+   gate and the full run share the target.
 
 An adversarial review of this plan (2026-08-04) pinned down what run 3
 does and does not test: feet_apex is translation-neutral (a stomper and
