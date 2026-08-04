@@ -135,14 +135,38 @@ swing's peak against a 5 cm target at landing; now that landings exist
 it has events to pay), optionally `shaping_tracking_gate`. Not a
 keeper; the deploy pair is exported but unpublished.
 
+## Run 3: price the swing height
+
+Run 2 proved the air-time gradient works and exposed what it cannot buy:
+the optimizer collected lift-off and single-stance income with millimeter
+lifts, because no term prices clearance HEIGHT. Run 3 changes exactly one
+thing, pinned in the roboto overlay:
+
+1. `feet_apex: 5.0` (was 0). Ours, not upstream's: pays each completed
+   swing once, at touchdown, for how close its peak clearance came to
+   `apex_target` (default 0.05 m). Run 2's rhythmic landings give it
+   events to pay from the first epoch. The weight is the w01-tek
+   stiff-ladder value for this exact term, where it measured 3 to 5 cm
+   swings; the term is sparse (once per landing) so it needs an order
+   more weight than the per-step terms.
+
+`shaping_tracking_gate` stays off: it multiplies the shaping terms by
+tracking quality, and with tracking still poor it would choke the
+stepping gradient run 2 just established. It stays in reserve for a run
+that steps but ignores commands. Budget stays 1.209e9: v1 and v2 both
+plateau by ~400M (v2 peaks at +22.7 @ 403M and is flat for the last
+800M), so steps were not the binding constraint; if the v3 curve is
+still climbing at cutoff, an extension becomes its own ladder step.
+The preset is renamed `roboto_walk_v3`.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
 
-The run config is `configs/experiment/roboto_walk_v2.yaml`. It pins
+The run config is `configs/experiment/roboto_walk_v3.yaml`. It pins
 robot, preset, network, DR switches, and PPO knobs.
 
-1. Local: `./run.sh train experiment=roboto_walk_v2 --cfg job --resolve`,
+1. Local: `./run.sh train experiment=roboto_walk_v3 --cfg job --resolve`,
    then `./run.sh test`, then a smoke with the experiment and tiny PPO
    sizes re-pinned on the CLI.
 2. GPU box: `./run.sh check-contacts` and
@@ -155,10 +179,10 @@ robot, preset, network, DR switches, and PPO knobs.
    FAIL; the v1 full run shows escape happens between 59M and 134M
    steps, which a bounded run never reaches. Gate: tracking reward
    rises on wandb, an eval video (`--overlay-torque`) looks sane,
-   battery passes, and -- the run-2 signal -- `reward/feet_air_time_biped`
-   earns and `feet_air_time` (swing completions) lifts off zero.
+   battery passes, and -- the run-3 signal -- `reward/feet_apex` earns
+   and swing apexes lift toward 5 cm.
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
-   EXPERIMENT=roboto_walk_v2 SEED=0 RUN_NAME=roboto_walk_v2
+   EXPERIMENT=roboto_walk_v3 SEED=0 RUN_NAME=roboto_walk_v3
    ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
    the real node class. wandb on.
 5. After: `battery`, `report`, an eval video per battery scenario, and
@@ -177,4 +201,5 @@ phase_sigma widening, preset renamed roboto_walk_v2. 2026-08-03, gate
 PASS; gate sizing pinned to 4096/128/1 GPU after the full-sizing false
 alarm. 2026-08-03, full run up as job job-01 (v1 recipe verbatim,
 roboto_walk_v2 preset). 2026-08-03, full-run verdict: micro-steps, not
-walking; eval chain and wandb links recorded above.
+walking; eval chain and wandb links recorded above. 2026-08-04, run 3
+added: feet_apex 5.0, preset renamed roboto_walk_v3, budget unchanged.
