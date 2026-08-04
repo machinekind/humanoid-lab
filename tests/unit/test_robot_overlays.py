@@ -36,6 +36,9 @@ ROBOTO_PORTED_SCALES = {
     # Off: the per-step feet_air_time_biped replaces the landing-event
     # shape (run 2, docs/plans/roboto-first-run.md).
     "feet_air_time": 0.0,
+    # Once-per-landing swing-peak payment against reward.apex_target;
+    # the w01-tek stiff-ladder weight (run 3, docs/plans/roboto-first-run.md).
+    "feet_apex": 5.0,
     # Off: pose_l1 replaces the L2 pose term.
     "pose": 0.0,
 }

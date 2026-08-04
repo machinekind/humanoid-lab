@@ -155,6 +155,16 @@ task:
         # Our landing-event shape, off for upstream parity: alongside the
         # per-step term above it would price the same swing twice.
         feet_air_time: 0.0
+        # Ours, not upstream. Pays each completed swing, at touchdown, for
+        # how close its PEAK clearance came to reward.apex_target (the
+        # 0.05 m default). roboto_walk_v2 earned the air-time terms with
+        # millimeter lifts: rhythmic contact breaks, clearance under 5 mm,
+        # because lift-off and single stance are paid but height is not.
+        # 5.0 is the w01-tek stiff-ladder value for this exact term, where
+        # it measured 3-5 cm swings; the term is sparse (once per landing)
+        # so it needs an order more weight than the per-step terms (run 3,
+        # docs/plans/roboto-first-run.md).
+        feet_apex: 5.0
         # Upstream has no L2 pose term; pose_l1 is its regularizer. Off to
         # avoid pricing the deviation twice.
         pose: 0.0
