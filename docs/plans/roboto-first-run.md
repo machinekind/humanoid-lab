@@ -176,7 +176,8 @@ binding constraint; if the v3 curve is still climbing at cutoff, an
 extension becomes its own ladder step. The preset is renamed
 `roboto_walk_v3`.
 
-Gate verdict (2026-08-04, job job-03): PASS. `feet_apex` income per
+Gate verdict (2026-08-04, job job-03,
+wandb jghk30b9): PASS. `feet_apex` income per
 step rises monotonically from 10M on (0.06 to 1.15e-3, accelerating
 over the last three points), reward -5.5 to ~+8 by 30M (v2 gate: +8.8
 by 20M), episodes 70 to ~690 steps, KL stable. The late v_loss growth
@@ -186,6 +187,7 @@ huge-at-epoch-0 plus flat reward, absent here). Evidence:
 Full run up as job job-04 (16384/512, 4 GPU, v2 sizing verbatim).
 
 Full-run verdict (2026-08-05, train job job-04, eval job-05,
+wandb ob4mbu2s,
 [full report](https://claude.ai/code/artifact/00289d8d-d306-4323-a9f7-81e84016b5b9)):
 FAIL on the pre-registered criteria. walk_ramp vx error 0.496 vs v2's
 0.494, battery swings 0 everywhere (clearance never crosses 5 mm),
