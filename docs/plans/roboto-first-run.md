@@ -282,6 +282,25 @@ purpose (the policy tracks commands); it stays in reserve as a
 tracking-sharpening option. Keeper/HF decision is Marcin's; the
 deploy pair is exported and unpublished.
 
+Run 4b, the budget extension (Marcin's call after watching the
+videos: the gait works but limps). Warm-start from run 4's final
+checkpoint via the stock `restore` key
+(`restore=runs/roboto_walk_v4/checkpoints/001201766400`; brax
+restores normalizer + policy + value params, optimizer state and the
+step counter start fresh), same preset, sizing, and seed, another
+1.209e9 steps -- 2.4e9 total, the w01-tek-terrain scale. Warm-start
+over a from-scratch 2.4e9 run because the checkpoint exists, ~4h
+beats a from-scratch rerun against the queue walltime limit, and the question is whether
+the still-climbing curve anneals the limp, not whether a longer run
+reproduces it. The epoch-0 readout doubles as the restore gate: a
+restored policy opens near reward 48 / episode 975 (a silent restore
+failure would open at -5.5 / 70 like a scratch run). Extension
+criteria, pre-registered: walk_ramp antiphase above 0.675 (the limp
+signature; turn/spin sit at 0.90+) and vx error below 0.234, with no
+falls and swings retained; stand vibration below 0.5 would clear the
+only ATTENTION flag. The limp itself is also a visual call on the
+videos.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -341,4 +360,6 @@ on Marcin's go: sizing-hypothesis mechanism and discriminating signal
 recorded above, preset renamed roboto_walk_v4, no new gate.
 2026-08-05, run 4 verdict: PASS on both criteria, first walking
 policy; sizing hypothesis confirmed, 4096/128 is the default sizing
-from here on.
+from here on. 2026-08-05, run 4b added on Marcin's go: budget
+extension by warm-start, criteria pre-registered on the limp
+signature.
