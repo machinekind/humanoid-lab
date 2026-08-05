@@ -362,4 +362,10 @@ recorded above, preset renamed roboto_walk_v4, no new gate.
 policy; sizing hypothesis confirmed, 4096/128 is the default sizing
 from here on. 2026-08-05, run 4b added on Marcin's go: budget
 extension by warm-start, criteria pre-registered on the limp
-signature.
+signature. 2026-08-05, run 4b false start: the first submission
+(job-08) passed the restore override in RUN_ARGS, which
+hpc/train.job overwrites (its contract is EXTRA), so the run
+silently started from scratch -- caught by the restore gate at the
+first readout (reward -5.5 and the 134M point retracing run 4's
+curve), cancelled at 40 min, resubmitted as job-09 with
+EXTRA=restore=... .
