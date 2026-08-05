@@ -1,10 +1,11 @@
 # @package _global_
-# roboto_walk_v3: roboto_origin run 3. Recipe, the run-2 micro-step verdict
-# and the v3 reward delta (feet_apex on) all live in
-# docs/plans/roboto-first-run.md; the delta itself is pinned in the
-# robot overlay, which also carries the reward weights, push schedule, and
-# DR ranges. This file arms the DR switches and sets the PPO knobs brax
-# has, unchanged from run 1.
+# roboto_walk_v4: roboto_origin run 4, the sizing-hypothesis test. Rewards,
+# DR, and budget are unchanged from run 3 (its verdict and the sizing
+# mechanism live in docs/plans/roboto-first-run.md); the run-4 delta is the
+# PPO sizing, which lives in the submit line (NUM_ENVS=4096 BATCH=128, one
+# GPU), not in this file. The robot overlay carries the reward weights,
+# push schedule, and DR ranges. This file arms the DR switches and sets
+# the PPO knobs brax has, unchanged from run 1.
 defaults:
   - override /robot: roboto_origin
   - override /task: joystick

@@ -77,8 +77,8 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
 
 
-def test_roboto_walk_v3_arms_dr_and_pins_the_upstream_ppo_knobs():
-    cfg = _compose(["experiment=roboto_walk_v3"])
+def test_roboto_walk_v4_arms_dr_and_pins_the_upstream_ppo_knobs():
+    cfg = _compose(["experiment=roboto_walk_v4"])
 
     assert cfg.robot.name == "roboto_origin"
     assert cfg.actuators.name == "deploy_pd"

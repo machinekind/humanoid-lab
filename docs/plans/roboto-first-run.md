@@ -207,14 +207,66 @@ upstream's own 4096 x 12000 recipe. The pre-registered
 but ignores commands. Not a keeper; the deploy pair is exported
 (max |diff| 6.6e-07) but unpublished.
 
+## Run 4: the sizing hypothesis
+
+Same code, same rewards, same 1.209e9 budget as run 3; the only change
+is the PPO sizing, from 16384 envs / batch 512 / 4 GPUs back to the
+gate's 4096 / 128 / 1 GPU. Why sizing would decide WHAT is learned
+rather than merely how fast -- three mechanisms, each with a measured
+track in runs 2 and 3:
+
+1. The budget is counted in env steps, not optimizer updates. 4x more
+   envs per iteration means 4x fewer gradient updates on the same
+   budget (~3000 vs upstream's ~12000), at the same fixed LR 1e-4
+   (brax has no adaptive-KL schedule), so the network simply moves 4x
+   less per unit of data. The critic needs a fixed number of updates
+   to fit a reward scale that includes -200 terminations; counted in
+   env steps that warm-up now takes 4x longer. Measured: the 16384/512
+   dead phase (v_loss 3.3e7 at epoch 0, policy frozen at KL ~2e-4)
+   lasts to 59-134M, while 4096/128 learns from ~5M.
+2. The dead phase is not neutral: it spends the exploration the sparse
+   terms need. At epoch 0 the random policy's flailing pays feet_apex
+   0.13/episode; nothing reinforces it while the advantages are
+   garbage, and survival pressure prunes exactly those trajectories.
+   By 134M apex is down to 0.02: when learning finally starts, the
+   swing data is no longer in the batch. Basin selection, not delay.
+3. Small-batch gradient noise doubles as exploration in weight space.
+   At batch 128 one lucky high-clearance trajectory can dominate a
+   minibatch and move the policy; at 512 it is averaged away against
+   hundreds of leaning episodes.
+
+Two independent evidence points: run 2's 2x2 diagnostic (identical
+code learns at 4096/128 by 30M and is dead at 16384/512 at 59M, with
+v1's rewards too, so it is the sizing, not the reward port) and run
+3's apex trajectory (gate 1.15e-3/step at 30M vs the full run's
+0.04e-3 right after the dead phase, 0.19e-3 at 1.2e9). The competing
+explanation -- the gate curves are a honeymoon that would have
+collapsed anyway -- survives both points, and run 4 is the
+discriminating test: if the 4096/128 curve holds the gate's apex
+growth past 30M (order 1e-3/step in the 100-400M window where the v3
+full run sat at 0.04e-3), the hypothesis stands even if the final
+policy does not fully walk; if it collapses onto the v3 full-run
+trajectory, sizing is exonerated and the reward ladder resumes at run
+5 (`shaping_tracking_gate`).
+
+No new gate: run 3's gate (job-03, PASS) ran this exact config at
+this exact sizing, and run 4's first 30M double as its reproduction
+check (same seed 0). Walking verdict criteria unchanged from run 3:
+walk_ramp vx error below v2's 0.494 and battery swings with median
+apex over 2 cm. Throughput from the gate (3e7 steps in 12:12 wall
+including compile, one hopper) puts the full budget at about 5h;
+submitted on `<gpu-partition>` with a fixed walltime limit. The preset is renamed
+`roboto_walk_v4`, content unchanged from v3: the sizing lives in the
+submit line, not the yaml.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
 
-The run config is `configs/experiment/roboto_walk_v3.yaml`. It pins
+The run config is `configs/experiment/roboto_walk_v4.yaml`. It pins
 robot, preset, network, DR switches, and PPO knobs.
 
-1. Local: `./run.sh train experiment=roboto_walk_v3 --cfg job --resolve`,
+1. Local: `./run.sh train experiment=roboto_walk_v4 --cfg job --resolve`,
    then `./run.sh test`, then a smoke with the experiment and tiny PPO
    sizes re-pinned on the CLI.
 2. GPU box: `./run.sh check-contacts` and
@@ -233,9 +285,11 @@ robot, preset, network, DR switches, and PPO knobs.
    apex tracker under-reads 2-step flights, so early flatness is not a
    FAIL either).
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
-   EXPERIMENT=roboto_walk_v3 SEED=0 RUN_NAME=roboto_walk_v3
-   ./jobs/train.sh`. NUM_ENVS/BATCH from `jobs/preflight_sizing.sh` on
-   the real node class. wandb on.
+   EXPERIMENT=roboto_walk_v4 SEED=0 RUN_NAME=roboto_walk_v4
+   NUM_ENVS=4096 BATCH=128 ./jobs/train.sh` on one GPU: run 4 pins the
+   gate sizing by design (see the sizing-hypothesis section); the
+   preflight-sizing sweep is for throughput runs, not this one. wandb
+   on.
 5. After: `battery`, `report`, an eval video per battery scenario, and
    `export` of the deploy pair.
 
@@ -259,4 +313,6 @@ verdict criterion moved to vel_err, run 4 (shaping_tracking_gate)
 pre-registered. 2026-08-04, gate PASS (job-03); full run up as job
 job-04. 2026-08-05, full-run verdict: still no walking, sizing
 paradox recorded; run 4 recommendation = full budget at the gate
-sizing, shaping_tracking_gate moves to run 5.
+sizing, shaping_tracking_gate moves to run 5. 2026-08-05, run 4 added
+on Marcin's go: sizing-hypothesis mechanism and discriminating signal
+recorded above, preset renamed roboto_walk_v4, no new gate.
