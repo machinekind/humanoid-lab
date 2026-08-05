@@ -259,6 +259,29 @@ submitted on `<gpu-partition>` with a fixed walltime limit. The preset is rename
 `roboto_walk_v4`, content unchanged from v3: the sizing lives in the
 submit line, not the yaml.
 
+Verdict (2026-08-05, train job job-06, 3h48 on one hopper, eval
+job-07, wandb z4nzo8dm,
+[full report](https://claude.ai/code/artifact/383b1526-bbf1-4d21-bed3-52b28bd92fd0)):
+PASS on both pre-registered criteria -- the first walking policy of
+the campaign. walk_ramp vx error 0.234 (criterion: below 0.494; v3:
+0.496), swings in every moving scenario with median apex 6.5-9.3 cm
+against the 8 cm target (criterion: over 2 cm; v3: zero swings
+anywhere), and the spin probes, dead since run 1, complete: 340 deg
+on +360, -343 on -360 (v3: -4.6/-3.6). Zero falls, torque_sat 0; the
+only ATTENTION flag is stand vibration 0.62. The sizing hypothesis is
+confirmed on the discriminating signal with two orders of magnitude
+to spare: apex per step held the gate's growth through the 100-400M
+window (0.55 -> 3.1 -> 20e-3, where v3 sat at 0.04e-3) and ended at
+40e-3, 200x v3's 0.19e-3 on identical rewards; final reward 48.4 vs
+22.1. GPU-hours match v3 (3h48 x 1 vs 58min x 4), so 4096/128/1 GPU
+becomes the default sizing for every subsequent run. Remaining
+quality items for later rungs: stand vibration, medium-hard
+touchdowns (softness 0.24-0.43), vx error still 0.234. Run 5
+(shaping_tracking_gate) is no longer needed for its pre-registered
+purpose (the policy tracks commands); it stays in reserve as a
+tracking-sharpening option. Keeper/HF decision is Marcin's; the
+deploy pair is exported and unpublished.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -316,3 +339,6 @@ paradox recorded; run 4 recommendation = full budget at the gate
 sizing, shaping_tracking_gate moves to run 5. 2026-08-05, run 4 added
 on Marcin's go: sizing-hypothesis mechanism and discriminating signal
 recorded above, preset renamed roboto_walk_v4, no new gate.
+2026-08-05, run 4 verdict: PASS on both criteria, first walking
+policy; sizing hypothesis confirmed, 4096/128 is the default sizing
+from here on.
