@@ -368,4 +368,18 @@ hpc/train.job overwrites (its contract is EXTRA), so the run
 silently started from scratch -- caught by the restore gate at the
 first readout (reward -5.5 and the 134M point retracing run 4's
 curve), cancelled at 40 min, resubmitted as job-09 with
-EXTRA=restore=... .
+EXTRA=restore=... . 2026-08-05, run 4b verdict (train job-09,
+3h49, restore gate PASS at 49.3, eval job-10,
+wandb n0bhubrv,
+[report](https://claude.ai/code/artifact/d8486e75-45f7-4b32-8da8-4fa75be77d25)):
+PASS on both extension criteria -- walk_ramp vx err 0.187 (was
+0.234), antiphase 0.740 (was 0.675); softer touchdowns (0.36),
+apex med 7.6 cm, spins 347/-343, zero falls. But the training curve
+sat flat at reward 46-49 for the whole second 1.2e9 (apex/step
+38-44e-3): the battery gains are real yet bought at a full budget of
+diminishing returns, so the next rung should change the signal (leg
+symmetry term or tracking sharpening), not add steps. stand
+vibration unchanged at 0.65 (the one ATTENTION flag);
+walk_to_stop antiphase slipped 0.672 -> 0.658. Not auto-promoted;
+keeper/HF decision is Marcin's. Videos in
+~/Documents/robot/roboto_walk_v4_ext/.
