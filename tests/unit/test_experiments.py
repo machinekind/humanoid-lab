@@ -77,8 +77,8 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
 
 
-def test_roboto_walk_v4_arms_dr_and_pins_the_upstream_ppo_knobs():
-    cfg = _compose(["experiment=roboto_walk_v4"])
+def test_roboto_walk_v5_arms_the_style_package_on_top_of_the_v4_recipe():
+    cfg = _compose(["experiment=roboto_walk_v5"])
 
     assert cfg.robot.name == "roboto_origin"
     assert cfg.actuators.name == "deploy_pd"
@@ -89,9 +89,20 @@ def test_roboto_walk_v4_arms_dr_and_pins_the_upstream_ppo_knobs():
     assert cfg.dr.motor_strength.enable is True
     assert cfg.dr.motor_strength.range == [1.0, 1.0]
 
-    # rpo_agent_cfg.py values.
+    # rpo_agent_cfg.py values, unchanged from v4.
     assert cfg.ppo.discounting == 0.994
     assert cfg.ppo.gae_lambda == 0.9
     assert cfg.ppo.entropy_cost == 0.005
     assert cfg.ppo.learning_rate == 1.0e-4
     assert cfg.ppo.num_timesteps == 1.2e9
+
+    # The style package itself: both new terms armed, the slower clock with
+    # its matching single-stance clamp, and the energy price tripled over
+    # the roboto_origin overlay's ported -1e-4 (the experiment overlay
+    # composes after the robot overlay, so this file must win).
+    scales = cfg.task.env.reward.scales
+    assert scales.knee_stance == -2.0
+    assert scales.gait_symmetry == -2.0
+    assert scales.energy == -3.0e-4
+    assert cfg.task.env.gait.freq == [0.9, 1.4]
+    assert cfg.task.env.reward.biped_air_time_threshold == 0.5

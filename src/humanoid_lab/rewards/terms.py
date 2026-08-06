@@ -256,3 +256,42 @@ def feet_air_time_biped(air_time, contact_time, in_contact, threshold: float):
     in_mode_time = jp.where(in_contact, contact_time, air_time)
     single_stance = jp.sum(in_contact.astype(jp.int32)) == 1
     return jp.minimum(jp.min(jp.where(single_stance, in_mode_time, 0.0)), threshold)
+
+
+def knee_stance(knee_qpos, contact, tol: float):
+    """Penalize knee flexion beyond `tol` while that leg's foot is in
+    contact: sum(contact * max(|q_knee| - tol, 0)^2).
+
+    None of the existing terms prices the stance leg's shape, so a
+    permanently crouched stance is reward-neutral and the optimizer keeps
+    it. Charging flexion only DURING contact leaves the swing leg free to
+    bend as much as the step needs; the tolerance leaves the shock-absorbing
+    flexion at touchdown unpriced and charges only the standing crouch.
+
+    `knee_qpos` must be ordered to match `contact` (foot_sites order); the
+    caller owns that alignment."""
+    excess = jp.maximum(jp.abs(knee_qpos) - tol, 0.0)
+    return jp.sum(jp.square(excess) * contact)
+
+
+def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float):
+    """Relative left-right asymmetry of the completed swing and stance
+    durations: for each pair, ((d0 - d1) / max(mean(d), floor))^2, summed
+    over the two pairs.
+
+    The velocity/gait terms price each step on its own, so a gait that
+    limps -- one leg taking systematically longer swings than the other --
+    pays the same as an even one. This term reads the caller's per-foot
+    EMAs of completed swing and stance durations and charges their relative
+    difference, so a 20% limp costs the same at any cadence.
+
+    Each pair arms only once BOTH feet have a completed duration on record:
+    the first step of an episode is one-legged by definition, and charging
+    that transient would penalize starting to walk at all. The floor bounds
+    the denominator away from zero for the freshly-armed case."""
+
+    def rel_sq(d):
+        armed = (d[0] > 0.0) & (d[1] > 0.0)
+        return jp.square((d[0] - d[1]) / jp.maximum(0.5 * (d[0] + d[1]), floor)) * armed
+
+    return rel_sq(air_dur_ema) + rel_sq(stance_dur_ema)

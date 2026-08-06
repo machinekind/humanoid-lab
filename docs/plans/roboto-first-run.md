@@ -301,37 +301,97 @@ falls and swings retained; stand vibration below 0.5 would clear the
 only ATTENTION flag. The limp itself is also a visual call on the
 videos.
 
+## Run 5: the style package
+
+Run 4b settled that the v4 signal, not the budget, is the binding
+constraint: a full second 1.2e9 bought battery inches on a flat curve.
+Marcin's directive for run 5: the fastest visible move toward natural
+walking without imitation (mocap/AMP is explicitly off the table). One
+package of four coordinated reward-signal changes, each aimed at a
+defect visible on the v4_ext videos:
+
+- `knee_stance` -2.0 (tol 0.15 rad, new term): nothing in the v4 signal
+  prices the stance leg's shape, so the permanently-crouched knee
+  (home keyframe holds 0.3 rad) is reward-neutral and the optimizer
+  keeps it. Charging stance-leg flexion beyond the cone -- swing leg
+  free, touchdown absorption inside the cone free -- asks the policy to
+  carry the body straighter, the single biggest "this is not walking"
+  visual. Masked by `moving`: at zero command the stand terms anchor
+  the knees on the keyframe's 0.3, and an unmasked cone would fight
+  that anchor into standing dither.
+- `gait_symmetry` -2.0 (new term): the limp signature priced directly.
+  Per-foot EMAs of completed swing and stance durations, charged on
+  their relative left-right difference, cadence-invariant, armed only
+  once both feet have a completed duration on record (the first step of
+  an episode is one-legged by definition). walk_ramp antiphase 0.740
+  against 0.90+ on turn/spin is the number this term exists to move.
+  This is a reward term, not mirrored-world augmentation -- the
+  augmentation route is falsified (w01-tek v3 post-mortem: mirrored
+  worlds symmetrize the data, not the policy).
+- `gait.freq` 1.0-2.0 -> 0.9-1.4 Hz, `biped_air_time_threshold` 0.4 ->
+  0.5 s: the clock is the cadence generator (feet_phase scores against
+  it and the policy observes it), so the shuffle is partly commanded.
+  A slower clock buys longer strides at the same speed; the raised
+  clamp keeps the longer swings it asks for (up to ~0.55 s at duty
+  0.5) paid instead of clipped at 0.4 s.
+- `energy` -1e-4 -> -3e-4: a triple, not an order of magnitude --
+  enough to lean the optimum toward pendulum-like motion without
+  making standing the best-paid behavior.
+
+From scratch, not warm-started from v4_ext: run 4's own mechanism says
+behavior basins are selected early, and a policy already settled into a
+crouched shuffle is exactly the basin the new terms are supposed to
+price out of existence -- warm-starting would hand it back as the
+starting point. Sizing 4096/128/1 GPU (the run-4 default), seed 0,
+budget 1.2e9, DR and PPO knobs unchanged from v4.
+
+Four confounded changes in one run is a deliberate trade against
+Marcin's speed directive, de-risked by a bounded gate: 3e8 steps
+(about 1h wall on one hopper), long enough to clear the dead phase and
+show the new terms optimizing. Gate criteria: tracking reward rising;
+`reward/knee_stance` and `reward/gait_symmetry` per-step magnitudes
+FALLING over the gate window (the new signals must actually optimize,
+not just subtract); battery on the gate checkpoint shows swings with
+no falls; eval video sane. Pre-committed on gate FAIL: cut the package
+to gait_symmetry + energy (drop knee_stance and the clock change
+first), then isolate.
+
+Full-run criteria, pre-registered: walk_ramp antiphase above 0.85
+(v4_ext: 0.740); walk_ramp vx error below 0.20 (v4_ext: 0.187, so
+hold, not regress); walk_ramp swings 8-13 per 300 steps (below
+v4_ext's 14 = the cadence actually dropped, above zero-risk floor =
+still stepping); median apex at or above 6.5 cm (no regress); zero
+falls and zero torque saturation. The straighter stance leg is a
+visual call on the videos, recorded in the report next to the
+numbers.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
 
-The run config is `configs/experiment/roboto_walk_v4.yaml`. It pins
-robot, preset, network, DR switches, and PPO knobs.
+The run config is `configs/experiment/roboto_walk_v5.yaml`. It pins
+robot, preset, network, DR switches, PPO knobs, and the style package.
 
-1. Local: `./run.sh train experiment=roboto_walk_v4 --cfg job --resolve`,
+1. Local: `./run.sh train experiment=roboto_walk_v5 --cfg job --resolve`,
    then `./run.sh test`, then a smoke with the experiment and tiny PPO
    sizes re-pinned on the CLI.
 2. GPU box: `./run.sh check-contacts` and
    `./run.sh check-friction --robot roboto_origin --preset deploy_pd
    --backend warp`.
-3. Bounded run, about 3e7 steps, ALWAYS at the v1-gate sizing: 4096
-   envs, batch 128, one GPU. At the full-run sizing (16384/512, 4 GPU)
-   a 3e7 run sits entirely inside the recipe's flat early phase (value
-   loss astronomical from epoch 0, policy frozen) and reads as a false
-   FAIL; the v1 full run shows escape happens between 59M and 134M
-   steps, which a bounded run never reaches. Gate: tracking reward
-   rises on wandb, an eval video (`--overlay-torque`) looks sane,
-   battery passes, and -- the run-3 signal -- `reward/feet_apex`'s
-   per-step average RISES over the gate window (v2's micro-swings
-   already collect a trickle, so merely nonzero proves nothing; and the
-   apex tracker under-reads 2-step flights, so early flatness is not a
-   FAIL either).
+3. Bounded run at 3e8 steps (run 5's gate; earlier rungs used 3e7),
+   ALWAYS at the 4096/128/1-GPU sizing. At the old full-run sizing
+   (16384/512, 4 GPU) a bounded run sits entirely inside the recipe's
+   flat early phase (value loss astronomical from epoch 0, policy
+   frozen) and reads as a false FAIL; the v1 full run shows escape
+   happens between 59M and 134M steps. Gate criteria for run 5 are in
+   its section above (new-term magnitudes falling, battery swings, no
+   falls, sane video).
 4. Full run: `ROBOT=roboto_origin ACTUATORS=deploy_pd
-   EXPERIMENT=roboto_walk_v4 SEED=0 RUN_NAME=roboto_walk_v4
-   NUM_ENVS=4096 BATCH=128 ./jobs/train.sh` on one GPU: run 4 pins the
-   gate sizing by design (see the sizing-hypothesis section); the
-   preflight-sizing sweep is for throughput runs, not this one. wandb
-   on.
+   EXPERIMENT=roboto_walk_v5 SEED=0 RUN_NAME=roboto_walk_v5
+   NUM_ENVS=4096 BATCH=128 ./jobs/train.sh` on one GPU (cluster-side:
+   hpc/train.job with the same NUM_ENVS/BATCH exports; extra Hydra
+   overrides go in EXTRA, never RUN_ARGS -- the run-4b false start).
+   wandb on.
 5. After: `battery`, `report`, an eval video per battery scenario, and
    `export` of the deploy pair.
 
@@ -382,4 +442,8 @@ symmetry term or tracking sharpening), not add steps. stand
 vibration unchanged at 0.65 (the one ATTENTION flag);
 walk_to_stop antiphase slipped 0.672 -> 0.658. Not auto-promoted;
 keeper/HF decision is Marcin's. Videos in
-~/Documents/robot/roboto_walk_v4_ext/.
+~/Documents/robot/roboto_walk_v4_ext/. 2026-08-06, run 5 added on
+Marcin's go ("dawaj pakiet"): the style package -- knee_stance and
+gait_symmetry terms, slower gait clock, energy x3 -- preset renamed
+roboto_walk_v5, from scratch at the run-4 sizing, gate 3e8 and
+full-run criteria pre-registered above.

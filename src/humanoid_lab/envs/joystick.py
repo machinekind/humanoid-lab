@@ -343,6 +343,18 @@ def default_config() -> config_dict.ConfigDict:
             # torque_limit hinge fires above this fraction of each
             # actuator's forcerange cap.
             torque_limit_frac=0.85,
+            # knee_stance: stance-leg knee flexion tolerance, rad. Flexion
+            # inside the cone is free (touchdown shock absorption lives
+            # there); beyond it the stance leg's knee is charged
+            # quadratically. roboto_origin's home keyframe holds the knee
+            # at 0.3, so 0.15 asks the stance leg to carry the body
+            # straighter than the crouch it resets into.
+            knee_stance_tol=0.15,
+            # gait_symmetry: per-event EMA weight folding each completed
+            # swing/stance duration into its foot's running average, and
+            # the denominator floor (s) of the relative-difference kernel.
+            gait_symmetry_alpha=0.25,
+            gait_symmetry_floor=0.1,
             # Velocity-damping share of stand_still (position share is 1;
             # only the ratio matters, scales.stand_still prices the sum).
             stand_still_vel_weight=0.2,
@@ -398,9 +410,25 @@ def default_config() -> config_dict.ConfigDict:
                 # feet_air_time above never fires on a policy with zero
                 # swings; this one pays from the first instant of a lift.
                 feet_air_time_biped=0.0,
+                # Style terms, 0 = off. Config-gated harder than the rest:
+                # at scale 0 they add no info keys, no reward/* metric keys
+                # and nothing to the trace, so the recorded goldens (which
+                # compare the full metric-name set) stay bit-exact.
+                # knee_stance charges stance-leg knee flexion beyond
+                # knee_stance_tol; gait_symmetry charges the relative
+                # left-right difference of the completed swing/stance
+                # duration EMAs (the limp signature).
+                knee_stance=0.0,
+                gait_symmetry=0.0,
             ),
         ),
     )
+
+
+# Scales keys whose whole machinery is config-gated on a nonzero scale (see
+# the scales comment above): reset() seeds their reward/* metrics only when
+# armed, matching _compute_rewards, which computes them only when armed.
+_STYLE_TERMS = ("knee_stance", "gait_symmetry")
 
 
 # (probability key, range key, command box axis) for each pure draw that
@@ -493,6 +521,13 @@ class Joystick(HumanoidEnv):
                 "with one joint per side"
             )
 
+        # Style-term gates (see _STYLE_TERMS): static Python booleans, so an
+        # off term never enters the trace, the info dict or the metric set.
+        self._knee_stance_on = bool(scales.knee_stance)
+        self._gait_symmetry_on = bool(scales.gait_symmetry)
+        if self._knee_stance_on:
+            self._knee_qidx = self._foot_ordered_group_qidx("knee")
+
         c = self._config.command
         self._cmd_vmax = self._cmd_speed(jp.array([max(abs(c.vx[0]), abs(c.vx[1])), 0.0, 0.0]))
 
@@ -519,6 +554,39 @@ class Joystick(HumanoidEnv):
             for name in rs.joint_groups[group]:
                 weights[joint_index[name]] = float(weight)
         return jp.array(weights)
+
+    def _foot_ordered_group_qidx(self, group: str):
+        """Indices into the actuated-joint arrays for `group`'s joints,
+        reordered so entry i belongs to the same leg as foot_sites[i].
+
+        knee_stance multiplies per-knee flexion by per-foot contact, so the
+        two arrays must agree on which side is which. Group order is not
+        guaranteed to match foot_sites order, so both are matched on their
+        "left"/"right" name token; a robot whose names carry no side token
+        refuses here, at construction, instead of silently gating the wrong
+        leg."""
+        rs = self._robot_spec
+        joints = rs.joint_groups.get(group, ())
+        if len(joints) != len(rs.foot_sites):
+            raise ValueError(
+                f"reward.scales.knee_stance needs a '{group}' joint group "
+                f"with one joint per foot; got {len(joints)} joints for "
+                f"{len(rs.foot_sites)} feet"
+            )
+
+        def side(name):
+            tokens = [t for t in ("left", "right") if t in name]
+            if len(tokens) != 1:
+                raise ValueError(
+                    f"cannot infer a side from '{name}': reward.scales."
+                    f"knee_stance pairs {group} joints with feet by their "
+                    "'left'/'right' name token"
+                )
+            return tokens[0]
+
+        by_side = {side(j): j for j in joints}
+        joint_index = {name: i for i, name in enumerate(rs.actuated_joints)}
+        return jp.array([joint_index[by_side[side(f)]] for f in rs.foot_sites])
 
     def _group_body_pair(self, group: str) -> tuple[int, int] | None:
         """The two body ids that carry `group`'s joints. None when the
@@ -682,6 +750,12 @@ class Joystick(HumanoidEnv):
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
         }
+        if self._gait_symmetry_on:
+            # Per-foot EMAs of completed swing/stance durations, for
+            # gait_symmetry. Config-gated like push_countdown: while the
+            # term is off the info pytree is unchanged.
+            info["air_dur_ema"] = jp.zeros(self._n_feet)
+            info["stance_dur_ema"] = jp.zeros(self._n_feet)
         if self._config.push.enable and self._config.push.get("interval_steps_range", None):
             # Seed the random push schedule. Config-gated: the extra split
             # exists only when the schedule is armed.
@@ -691,8 +765,14 @@ class Joystick(HumanoidEnv):
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
-        # metrics pytree structure across steps.
-        metrics = {f"reward/{k}": jp.zeros(()) for k in self._config.reward.scales}
+        # metrics pytree structure across steps. Off style terms are absent
+        # on BOTH sides: _compute_rewards skips them, so seeding them here
+        # would break that parity (and the goldens' metric-name set).
+        metrics = {
+            f"reward/{k}": jp.zeros(())
+            for k in self._config.reward.scales
+            if k not in _STYLE_TERMS or self._config.reward.scales[k]
+        }
         if self._config.no_progress.enable:
             # Optimistic seed: a fresh episode starts at progress ratio 1, so
             # the hazard can only come from measured shortfall, never from the
@@ -789,6 +869,25 @@ class Joystick(HumanoidEnv):
         )
 
         rewards, fall = self._compute_rewards(data, info, action, first_contact, contact)
+
+        if self._gait_symmetry_on:
+            # Fold each completed mode duration into its foot's EMA on the
+            # event step: a landing closes a swing, a liftoff closes a
+            # stance. Runs after the reward call (which reads the previous
+            # step's EMAs) and before the mode-time resets below, which
+            # erase the completed durations.
+            alpha = self._config.reward.gait_symmetry_alpha
+            lift_off = (info["feet_contact_time"] > 0) & ~contact_filt
+            info["air_dur_ema"] = jp.where(
+                first_contact,
+                (1.0 - alpha) * info["air_dur_ema"] + alpha * info["feet_air_time"],
+                info["air_dur_ema"],
+            )
+            info["stance_dur_ema"] = jp.where(
+                lift_off,
+                (1.0 - alpha) * info["stance_dur_ema"] + alpha * info["feet_contact_time"],
+                info["stance_dur_ema"],
+            )
 
         info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
         info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
@@ -1048,4 +1147,25 @@ class Joystick(HumanoidEnv):
             * moving
             * shape_gate,
         }
+        # Style terms, config-gated (see __init__): absent at scale 0, so
+        # the goldens' metric set and float-add order are untouched. Both
+        # are penalties, so neither joins the shape_gate set (the
+        # feet_landing rationale above). knee_stance is masked by `moving`:
+        # at a zero command stand_still and pose_l1 anchor the knees on the
+        # home keyframe's 0.3 rad, and an unmasked cone would fight that
+        # anchor into exactly the standing dither it must not add.
+        if self._knee_stance_on:
+            rewards["knee_stance"] = (
+                terms.knee_stance(
+                    qpos_act[self._knee_qidx], contact, cfg.knee_stance_tol
+                )
+                * moving
+            )
+        if self._gait_symmetry_on:
+            rewards["gait_symmetry"] = (
+                terms.gait_symmetry(
+                    info["air_dur_ema"], info["stance_dur_ema"], cfg.gait_symmetry_floor
+                )
+                * moving
+            )
         return rewards, fall

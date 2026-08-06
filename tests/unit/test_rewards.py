@@ -439,3 +439,77 @@ def test_feet_contact_without_cmd_scales_with_uprightness_and_clamps():
     assert terms.feet_contact_without_cmd(both, jp.array(-0.7)) == pytest.approx(1.0)
     assert terms.feet_contact_without_cmd(both, jp.array(-0.35)) == pytest.approx(0.5)
     assert terms.feet_contact_without_cmd(both, jp.array(0.5)) == pytest.approx(0.0)
+
+
+# -- knee_stance -------------------------------------------------------------
+
+
+def test_knee_stance_is_free_inside_the_tolerance():
+    out = terms.knee_stance(jp.array([0.1, -0.12]), jp.array([True, True]), tol=0.15)
+    assert out == pytest.approx(0.0)
+
+
+def test_knee_stance_charges_only_the_leg_in_contact():
+    # Same flexion on both knees; only the stance leg pays, so the swing
+    # leg is free to bend as much as the step needs.
+    both = terms.knee_stance(jp.array([0.35, 0.35]), jp.array([True, True]), tol=0.15)
+    stance_only = terms.knee_stance(jp.array([0.35, 0.35]), jp.array([True, False]), tol=0.15)
+    airborne = terms.knee_stance(jp.array([0.35, 0.35]), jp.array([False, False]), tol=0.15)
+    assert both == pytest.approx(2 * 0.2**2)
+    assert stance_only == pytest.approx(0.2**2)
+    assert airborne == pytest.approx(0.0)
+
+
+def test_knee_stance_is_quadratic_in_the_excess_flexion():
+    near = float(terms.knee_stance(jp.array([0.25]), jp.array([True]), tol=0.15))
+    far = float(terms.knee_stance(jp.array([0.35]), jp.array([True]), tol=0.15))
+    assert near == pytest.approx(0.1**2)
+    assert far == pytest.approx(0.2**2)
+
+
+def test_knee_stance_charges_hyperextension_too():
+    # |q| in the excess: a knee locked past straight is as priced as a
+    # crouch, so the term cannot be gamed by bending the other way.
+    out = terms.knee_stance(jp.array([-0.35]), jp.array([True]), tol=0.15)
+    assert out == pytest.approx(0.2**2)
+
+
+# -- gait_symmetry -----------------------------------------------------------
+
+
+def test_gait_symmetry_is_zero_for_an_even_gait():
+    out = terms.gait_symmetry(jp.array([0.35, 0.35]), jp.array([0.4, 0.4]), floor=0.1)
+    assert out == pytest.approx(0.0)
+
+
+def test_gait_symmetry_charges_the_relative_difference():
+    # 20% swing asymmetry around a 0.35 s mean: (0.07/0.35)^2 = 0.04.
+    out = terms.gait_symmetry(
+        jp.array([0.385, 0.315]), jp.array([0.4, 0.4]), floor=0.1
+    )
+    assert out == pytest.approx((0.07 / 0.35) ** 2, rel=1e-5)
+
+
+def test_gait_symmetry_is_cadence_invariant():
+    slow = terms.gait_symmetry(jp.array([0.44, 0.36]), jp.array([0.5, 0.5]), floor=0.1)
+    fast = terms.gait_symmetry(jp.array([0.22, 0.18]), jp.array([0.25, 0.25]), floor=0.1)
+    assert float(slow) == pytest.approx(float(fast), rel=1e-5)
+
+
+def test_gait_symmetry_stays_disarmed_until_both_feet_have_stepped():
+    """The first step of an episode is one-legged by definition: one foot
+    has a completed swing on record and the other still reads zero. Charging
+    that state would penalize starting to walk at all."""
+    first_step = terms.gait_symmetry(
+        jp.array([0.09, 0.0]), jp.array([0.0, 0.0]), floor=0.1
+    )
+    assert first_step == pytest.approx(0.0)
+
+
+def test_gait_symmetry_arms_per_pair():
+    # Swings recorded on both feet, stances not yet: only the swing pair
+    # charges.
+    out = terms.gait_symmetry(
+        jp.array([0.385, 0.315]), jp.array([0.4, 0.0]), floor=0.1
+    )
+    assert out == pytest.approx((0.07 / 0.35) ** 2, rel=1e-5)
