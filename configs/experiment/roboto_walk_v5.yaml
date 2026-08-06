@@ -1,20 +1,18 @@
 # @package _global_
-# roboto_walk_v5: roboto_origin run 5, the style package. Run 4b showed the
-# v4 signal is the binding constraint, not the budget: the curve sat flat
-# through a whole second 1.2e9 while battery inched (docs/plans/
-# roboto-first-run.md, run 4b verdict). Four coordinated changes against
-# v4's reward, all aimed at how the walk looks:
-#   - knee_stance -2.0 (tol 0.15 rad): the stance leg carries the body
-#     straighter than the home keyframe's 0.3 rad crouch.
-#   - gait_symmetry -2.0: the limp signature (walk_ramp antiphase 0.740 vs
-#     0.90+ on turn/spin) priced directly, as the relative left-right
-#     difference of the completed swing/stance duration EMAs.
-#   - gait.freq 0.9-1.4 Hz (from 1.0-2.0): the clock is the cadence
-#     generator, so lowering it buys longer strides instead of a shuffle.
-#     biped_air_time_threshold rises 0.4 -> 0.5 s so the longer swings the
-#     slower clock asks for (up to ~0.55 s at duty 0.5) stay paid.
-#   - energy -3e-4 (x3 the ported upstream weight): smoother,
-#     pendulum-leaning motion.
+# roboto_walk_v5: roboto_origin run 5, the style package -- CUT after the
+# gate-1 FAIL (job job-11: the full four-change package collapsed into
+# stand-under-command by 3e8; zero swings in every battery scenario). The
+# pre-committed cut in docs/plans/roboto-first-run.md applies: knee_stance
+# and the clock change are dropped, gait_symmetry and the energy triple
+# stay. Gate-1 taught that knee_stance (tol 0.15 rad) taxes the loading-
+# response flexion walking needs, so it priced the gait itself; and a
+# policy that never steps never arms gait_symmetry, so standing pays no
+# symmetry charge either -- the stand basin was the package's optimum.
+# What stays, against v4's signal:
+#   - gait_symmetry -2.0 (new term): the limp signature priced directly,
+#     as the relative left-right difference of the completed swing/stance
+#     duration EMAs; arms only once both feet have stepped.
+#   - energy -3e-4 (x3 the ported upstream weight): smoother motion.
 # PPO sizing stays in the submit line (NUM_ENVS=4096 BATCH=128, one GPU),
 # the run-4 default. DR switches and PPO knobs are unchanged from v4.
 defaults:
@@ -37,12 +35,8 @@ dr:
 
 task:
   env:
-    gait:
-      freq: [0.9, 1.4]
     reward:
-      biped_air_time_threshold: 0.5
       scales:
-        knee_stance: -2.0
         gait_symmetry: -2.0
         energy: -3.0e-4
 

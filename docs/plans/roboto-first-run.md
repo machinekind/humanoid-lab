@@ -365,6 +365,34 @@ falls and zero torque saturation. The straighter stance leg is a
 visual call on the videos, recorded in the report next to the
 numbers.
 
+Gate 1 verdict (2026-08-06, train job-11, 54:55, eval job-12,
+wandb 6qbyy66n): FAIL, and cleanly diagnostic. Zero swings in every
+battery scenario -- the policy stands bolt upright under every
+command (walk_ramp vx err 0.501, spins at -2/+10 deg on +-360). The
+full package never left the stand basin the whole ladder fought to
+escape: feet_apex per episode 0.14 -> 0.05 and flat to 3e8, where
+run 4 at the same point read ~2 (40x more, already walking).
+Standing pays ~0.45/step of the additive tracking kernels plus
+~0.65/step of feet_phase (sigma 0.01 scores a zero-clearance foot at
+two-thirds of the kernel); the package's walk taxes tipped the
+escape economics the wrong way. Two term-level findings from the
+curves: knee_stance's raw magnitude rose monotonically (2.5 -> 13.8
+per episode) -- the tol 0.15 cone taxes the loading-response flexion
+walking NEEDS, so it is a tax on gait, not on crouch; and
+gait_symmetry fell to ~0.1 as stepping vanished -- a policy that
+never steps never arms the term, so standing is symmetry-free by
+construction. The pre-committed cut applies and the curves endorse
+it: knee_stance and the clock change dropped, gait_symmetry -2.0 and
+energy -3e-4 stay (energy's measured cost while standing is ~0.17
+per episode, too small to be the killer). Gate 2 =
+roboto_walk_v5_gate2, same 3e8 bound, same criteria; 3e8 is also
+exactly the window in which run 4 escaped the stand basin at this
+sizing, so a second FAIL is a real signal, not impatience. A rung
+that re-approaches the stance-knee idea later must price flexion
+only OUTSIDE the gait's own loading window (or gate on slow knee
+velocity), and the symmetry term needs a step-rate floor before it
+can be trusted alone.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -446,4 +474,8 @@ keeper/HF decision is Marcin's. Videos in
 Marcin's go ("dawaj pakiet"): the style package -- knee_stance and
 gait_symmetry terms, slower gait clock, energy x3 -- preset renamed
 roboto_walk_v5, from scratch at the run-4 sizing, gate 3e8 and
-full-run criteria pre-registered above.
+full-run criteria pre-registered above. 2026-08-06, gate 1 FAIL
+(job-11): full package collapsed into stand-under-command, verdict
+and term-level diagnosis above; pre-committed cut applied (preset now
+carries gait_symmetry + energy only), gate 2 submitted as
+roboto_walk_v5_gate2.
