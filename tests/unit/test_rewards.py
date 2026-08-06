@@ -513,3 +513,17 @@ def test_gait_symmetry_arms_per_pair():
         jp.array([0.385, 0.315]), jp.array([0.4, 0.0]), floor=0.1
     )
     assert out == pytest.approx((0.07 / 0.35) ** 2, rel=1e-5)
+
+
+def test_gait_symmetry_caps_the_first_steps_transient():
+    """A first clumsy gait saturates each pair near (2d/d)^2 = 4; the cap
+    bounds that worst case so the exploration path to walking is never
+    taxed harder than scale*cap per step (the gate-1/2 collapse)."""
+    stumble = terms.gait_symmetry(
+        jp.array([0.4, 0.001]), jp.array([0.5, 0.001]), floor=0.1, cap=1.0
+    )
+    assert stumble == pytest.approx(1.0)
+    limp = terms.gait_symmetry(
+        jp.array([0.385, 0.315]), jp.array([0.4, 0.4]), floor=0.1, cap=1.0
+    )
+    assert limp == pytest.approx((0.07 / 0.35) ** 2, rel=1e-5)

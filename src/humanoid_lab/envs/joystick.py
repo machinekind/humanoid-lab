@@ -351,10 +351,16 @@ def default_config() -> config_dict.ConfigDict:
             # straighter than the crouch it resets into.
             knee_stance_tol=0.15,
             # gait_symmetry: per-event EMA weight folding each completed
-            # swing/stance duration into its foot's running average, and
-            # the denominator floor (s) of the relative-difference kernel.
+            # swing/stance duration into its foot's running average, the
+            # denominator floor (s) of the relative-difference kernel, and
+            # the cap on the summed relative asymmetry. The cap bounds the
+            # per-step charge at scale*cap: the run-5 gates measured that
+            # an uncapped charge taxes the near-maximal asymmetry of the
+            # first clumsy steps hard enough that the optimizer takes
+            # standing instead (see terms.gait_symmetry).
             gait_symmetry_alpha=0.25,
             gait_symmetry_floor=0.1,
+            gait_symmetry_cap=1.0,
             # Velocity-damping share of stand_still (position share is 1;
             # only the ratio matters, scales.stand_still prices the sum).
             stand_still_vel_weight=0.2,
@@ -1164,7 +1170,10 @@ class Joystick(HumanoidEnv):
         if self._gait_symmetry_on:
             rewards["gait_symmetry"] = (
                 terms.gait_symmetry(
-                    info["air_dur_ema"], info["stance_dur_ema"], cfg.gait_symmetry_floor
+                    info["air_dur_ema"],
+                    info["stance_dur_ema"],
+                    cfg.gait_symmetry_floor,
+                    cfg.get("gait_symmetry_cap", 1.0),
                 )
                 * moving
             )

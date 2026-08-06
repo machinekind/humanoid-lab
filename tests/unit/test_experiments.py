@@ -103,7 +103,7 @@ def test_roboto_walk_v5_arms_the_cut_style_package_on_top_of_the_v4_recipe():
     # are gone: no overrides at all, so the env keeps its Python defaults
     # (knee_stance 0.0 = off, freq 1.0-2.0, threshold 0.4).
     scales = cfg.task.env.reward.scales
-    assert scales.gait_symmetry == -2.0
+    assert scales.gait_symmetry == -1.0
     assert scales.energy == -3.0e-4
     assert "knee_stance" not in scales
     assert "gait" not in cfg.task.env

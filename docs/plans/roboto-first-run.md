@@ -393,6 +393,26 @@ only OUTSIDE the gait's own loading window (or gate on slow knee
 velocity), and the symmetry term needs a step-rate floor before it
 can be trusted alone.
 
+Gate 2 verdict (2026-08-07, train job-13, 55:55, eval job-14,
+wandb ss4ithq2): FAIL the same way -- zero swings, standing under
+every command, apex per episode flat at ~0.05 from 30M on (the run-3
+gate, same recipe minus the style terms, read ~0.77 at 30M). That
+acquits the budget and convicts the remaining term: energy's
+measured standing cost is ~0.17/episode (noise), but gait_symmetry
+at -2.0 charges CONTINUOUSLY once armed, and a first clumsy gait
+saturates the relative-asymmetry kernel near its (2d/d)^2 = 4
+per-pair maximum -- about 0.32/step of tax on exactly the fragile
+first-steps window, while standing never arms the term and collects
+~0.45/step of tracking free. The exploration path to walking was
+priced out, not walking itself. Gate 3 applies the isolate step with
+the mechanism fixed: reward.gait_symmetry_cap (new knob, default
+1.0) clips the summed relative asymmetry, bounding the worst-case
+fee at scale*cap*dt, and the weight drops to -1.0 -- worst case
+-0.02/step during exploration, a settled 20% limp still pays ~0.5
+per episode. Same 3e8 bound, same criteria. If gate 3 fails too, the
+style rung stops for a design review: no more submissions on this
+branch without Marcin.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -478,4 +498,8 @@ full-run criteria pre-registered above. 2026-08-06, gate 1 FAIL
 (job-11): full package collapsed into stand-under-command, verdict
 and term-level diagnosis above; pre-committed cut applied (preset now
 carries gait_symmetry + energy only), gate 2 submitted as
-roboto_walk_v5_gate2.
+roboto_walk_v5_gate2. 2026-08-07, gate 2 FAIL (job-13): still
+standing; uncapped continuous symmetry charge convicted, verdict
+above. Gate 3 = capped term (gait_symmetry_cap 1.0) at weight -1.0,
+submitted as roboto_walk_v5_gate3; a third FAIL stops the rung for
+design review.

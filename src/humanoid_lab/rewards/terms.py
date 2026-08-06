@@ -274,10 +274,10 @@ def knee_stance(knee_qpos, contact, tol: float):
     return jp.sum(jp.square(excess) * contact)
 
 
-def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float):
+def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float, cap: float = 1.0):
     """Relative left-right asymmetry of the completed swing and stance
     durations: for each pair, ((d0 - d1) / max(mean(d), floor))^2, summed
-    over the two pairs.
+    over the two pairs and clipped at `cap`.
 
     The velocity/gait terms price each step on its own, so a gait that
     limps -- one leg taking systematically longer swings than the other --
@@ -288,10 +288,21 @@ def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float):
     Each pair arms only once BOTH feet have a completed duration on record:
     the first step of an episode is one-legged by definition, and charging
     that transient would penalize starting to walk at all. The floor bounds
-    the denominator away from zero for the freshly-armed case."""
+    the denominator away from zero for the freshly-armed case.
+
+    The cap bounds the worst case, and it is what makes the term safe to
+    arm at all: the run-5 gates measured that an UNCAPPED charge kills the
+    gait before it forms. A first clumsy gait has near-maximal relative
+    asymmetry (each pair saturates near (2d/d)^2 = 4, two pairs ~8), so at
+    weight -2.0 the uncapped term taxed the fragile first-steps window at
+    ~0.32/step while standing -- which never arms the term -- collected
+    ~0.45/step of tracking for free. The optimizer took standing, twice
+    (gates job-11, job-13). Capped, the exploration-phase fee is bounded
+    at scale*cap per step while a settled limp (rel_sq well under the cap)
+    still pays in proportion to its asymmetry."""
 
     def rel_sq(d):
         armed = (d[0] > 0.0) & (d[1] > 0.0)
         return jp.square((d[0] - d[1]) / jp.maximum(0.5 * (d[0] + d[1]), floor)) * armed
 
-    return rel_sq(air_dur_ema) + rel_sq(stance_dur_ema)
+    return jp.minimum(rel_sq(air_dur_ema) + rel_sq(stance_dur_ema), cap)
