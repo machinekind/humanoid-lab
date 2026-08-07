@@ -534,4 +534,6 @@ training-time apex; activity-scaled penalties tax the fragile
 first-steps margin however small the charge. Style rung STOPPED;
 design-review options (warm-start v4_ext + capped symmetry /
 symmetry-as-income / run-5 reserve) recorded above, decision is
-Marcin's.
+Marcin's. Gates report:
+[artifact 5393f71c](https://claude.ai/code/artifact/5393f71c-9a26-43b0-8600-90823b8bad72);
+gate videos in ~/Documents/robot/roboto_walk_v5_gate{,2,3}/.
