@@ -413,6 +413,32 @@ per episode. Same 3e8 bound, same criteria. If gate 3 fails too, the
 style rung stops for a design review: no more submissions on this
 branch without Marcin.
 
+Gate 3 verdict (2026-08-07, train job-15, 57:17, eval job-17 --
+the first eval, job-16, ran against the WRONG run dir through a sed
+slip, `v5gate2` not matching `v5_gate2`, and re-scored gate 2's
+checkpoint; resubmitted correctly -- wandb i2k1q2pp): FAIL on the
+pre-registered battery criterion, zero swings in every scenario,
+standing under every command. The cap worked as designed (charge
+~0.005/step, far under the cap) and the training curve moved where
+gates 1-2 were flat: apex per episode rose 0.04 -> 0.18 through the
+window. But 0.18 is micro-motion under training noise (pushes, DR,
+stochastic actions); the deterministic eval policy still stands. The
+mechanism, three gates deep, is now clear: ANY penalty that scales
+with stepping activity taxes the fragile phase where stepping barely
+pays -- the optimizer sits at the indifference point however small
+the absolute charge, because what matters is the marginal advantage
+of the first steps, not the episode total. THE STYLE RUNG STOPS HERE
+per the gate-2 pre-commit. Design-review options for Marcin, in
+recommended order: (a) warm-start v4_ext + the capped symmetry term:
+the from-scratch argument was for reshaping the gait, but a limp fix
+is a WITHIN-basin adjustment -- start inside the walking basin and
+let the term shift the policy there (run 4b proved restore); (b)
+flip symmetry to an income (pay matched left-right pairs instead of
+charging mismatch), which pushes exploration toward stepping instead
+of away from it; (c) abandon the style rung and take the run-5
+reserve (shaping_tracking_gate as tracking sharpening). No more
+cluster submissions on this rung without his call.
+
 ## Run ladder
 
 Each step gates the next. Cluster submissions wait for explicit go-ahead.
@@ -502,4 +528,10 @@ roboto_walk_v5_gate2. 2026-08-07, gate 2 FAIL (job-13): still
 standing; uncapped continuous symmetry charge convicted, verdict
 above. Gate 3 = capped term (gait_symmetry_cap 1.0) at weight -1.0,
 submitted as roboto_walk_v5_gate3; a third FAIL stops the rung for
-design review.
+design review. 2026-08-07, gate 3 FAIL (job-15, eval job-17 after
+a wrong-RUN_NAME resubmit): still standing in eval despite a rising
+training-time apex; activity-scaled penalties tax the fragile
+first-steps margin however small the charge. Style rung STOPPED;
+design-review options (warm-start v4_ext + capped symmetry /
+symmetry-as-income / run-5 reserve) recorded above, decision is
+Marcin's.
