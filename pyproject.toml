@@ -2,6 +2,8 @@
 name = "humanoid-lab"
 version = "0.1.0"
 description = "Locomotion training for open-source humanoids: MJX + Brax PPO"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # jax 0.9.2 is the proven pin for this driver family; cuda extra only on linux
