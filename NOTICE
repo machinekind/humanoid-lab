@@ -1,0 +1,28 @@
+humanoid-lab
+Copyright 2026 the humanoid-lab authors
+
+This repository's own code is licensed under the Apache License, Version
+2.0 (see LICENSE). The vendored robot models and the ported third-party
+code listed below carry their own terms.
+
+Training core. The joystick task, reward library, domain randomization
+and training wrappers descend from w01-tek
+(https://github.com/machinekind/w01-tek, Apache-2.0), which in turn ports
+them from Google DeepMind's MuJoCo Playground
+(https://github.com/google-deepmind/mujoco_playground, Apache-2.0). The
+PPO hyper-parameters and network sizes start from Playground's tuned Go1
+configuration.
+
+Licensing exception: the robot models under robots/*/source/ are copied
+verbatim from their upstream repositories and are NOT distributed under
+this repository's Apache-2.0 license.
+
+  robots/roboto_origin/source/  from Roboparty/roboto_origin, GPL-3.0;
+                                license text at robots/roboto_origin/LICENSE.
+  robots/asimov_v1/source/      from asimovinc/asimov-1, CERN-OHL-S 2.0
+                                (hardware) and GPL-2.0 (software); license
+                                texts at robots/asimov_v1/HARDWARE-LICENSE.txt
+                                and robots/asimov_v1/SOFTWARE-LICENSE.txt.
+
+The PROVENANCE.md file in each robot directory is the authoritative
+statement of what was vendored, from which commit, and under which terms.

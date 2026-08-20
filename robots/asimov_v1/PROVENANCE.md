@@ -9,7 +9,8 @@ copied verbatim, byte-for-byte, at the pinned commit.
 
 License (per upstream): CERN-OHL-S 2.0 for hardware, GPL-2.0 for software.
 See upstream's `HARDWARE-LICENSE.txt` and `SOFTWARE-LICENSE.txt` at the
-pinned commit; not re-vendored here since only `sim-model/` was copied.
+pinned commit, copied verbatim next to this file as `HARDWARE-LICENSE.txt`
+and `SOFTWARE-LICENSE.txt`.
 
 Vendoring date: 2026-07-14.
 
