@@ -4,7 +4,7 @@
 
 humanoid-lab trains locomotion policies for open-source humanoid robots in MuJoCo MJX with Brax PPO, and exports them for deployment on the robot.
 
-Two robots are supported. [Roboto Origin](https://github.com/Roboparty/roboto_origin) is the primary target. We plan to have the physical robot and run these policies on it. [Asimov v1](https://github.com/asimovinc/asimov-1) is the second model. Each robot lives under `robots/<name>/` as a verbatim upstream model plus a `robot.yaml` that injects actuators, keyframes and contact geometry at build time.
+The pipeline is robot-agnostic. A robot lives under `robots/<name>/` as a verbatim upstream model plus a `robot.yaml` that injects actuators, keyframes and contact geometry at build time, and `docs/adding-a-robot.md` explains how to add one. Two robots are included so far, as proof of concept. [Roboto Origin](https://github.com/Roboparty/roboto_origin) is the primary target. We plan to have the physical robot and run these policies on it. [Asimov v1](https://github.com/asimovinc/asimov-1) is the second model.
 
 ## What it does
 
