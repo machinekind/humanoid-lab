@@ -75,3 +75,36 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
     robot_dir = paths.ROBOTS_DIR / "asimov_v1"
     with pytest.raises(ValueError):
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
+
+
+def test_roboto_walk_v5_arms_the_cut_style_package_on_top_of_the_v4_recipe():
+    cfg = _compose(["experiment=roboto_walk_v5"])
+
+    assert cfg.robot.name == "roboto_origin"
+    assert cfg.actuators.name == "deploy_pd"
+    assert cfg.domain_rand is True
+    for field in ("joint_gains", "com_offset", "dof", "foot_friction", "base_mass_add"):
+        assert cfg.dr[field].enable is True, field
+    # No-op decouple: upstream does not randomize effort limits.
+    assert cfg.dr.motor_strength.enable is True
+    assert cfg.dr.motor_strength.range == [1.0, 1.0]
+
+    # rpo_agent_cfg.py values, unchanged from v4.
+    assert cfg.ppo.discounting == 0.994
+    assert cfg.ppo.gae_lambda == 0.9
+    assert cfg.ppo.entropy_cost == 0.005
+    assert cfg.ppo.learning_rate == 1.0e-4
+    assert cfg.ppo.num_timesteps == 1.2e9
+
+    # The cut style package (gate-1 FAIL applied the pre-committed cut):
+    # gait_symmetry armed, energy tripled over the roboto_origin overlay's
+    # ported -1e-4 (the experiment overlay composes after the robot
+    # overlay, so this file must win). knee_stance and the clock change
+    # are gone: no overrides at all, so the env keeps its Python defaults
+    # (knee_stance 0.0 = off, freq 1.0-2.0, threshold 0.4).
+    scales = cfg.task.env.reward.scales
+    assert scales.gait_symmetry == -1.0
+    assert scales.energy == -3.0e-4
+    assert "knee_stance" not in scales
+    assert "gait" not in cfg.task.env
+    assert "biped_air_time_threshold" not in cfg.task.env.reward

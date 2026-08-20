@@ -69,7 +69,7 @@ fi
 # calls an empty array's [@] an unbound variable, and both defaults leave
 # this array empty.
 hydra_args=()
-[ -n "$EXPERIMENT" ] && hydra_args+=("+experiment=$EXPERIMENT")
+[ -n "$EXPERIMENT" ] && hydra_args+=("experiment=$EXPERIMENT")
 [ -n "$RUN_NAME" ] && hydra_args+=("run_name=$RUN_NAME")
 
 # ++ = add-or-override. The root `ppo:` block is an empty dict in config.yaml

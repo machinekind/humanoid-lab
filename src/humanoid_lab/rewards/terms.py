@@ -192,3 +192,117 @@ def torque_limit(actuator_force, torque_cap, frac: float):
     """Actuator-saturation hinge: 0 well inside the cap, positive above
     `frac` of it. A soft margin on top of the actuator's hard forcerange."""
     return jp.sum(jp.maximum(jp.abs(actuator_force) - frac * torque_cap, 0.0))
+
+
+# -- terms ported from robolab (tasks/direct/base/mdp/rewards.py, at the
+# commit docs/plans/roboto-first-run.md pins). Same shapes, so the
+# upstream weights transfer 1:1.
+
+
+def pose_l1(qpos_actuated, default_pose, weights):
+    """Weighted L1 deviation from the default pose (upstream
+    joint_deviation_l1, its four groups as one weight vector)."""
+    return jp.sum(weights * jp.abs(qpos_actuated - default_pose))
+
+
+def joint_pos_limits(qpos_actuated, soft_lo, soft_hi):
+    """L1 excursion outside the soft joint limits."""
+    return jp.sum(
+        jp.maximum(soft_lo - qpos_actuated, 0.0) + jp.maximum(qpos_actuated - soft_hi, 0.0)
+    )
+
+
+def joint_vel(qvel_actuated):
+    """Sum of squared actuated-joint velocities (upstream joint_vel_l2)."""
+    return jp.sum(jp.square(qvel_actuated))
+
+
+def joint_acc(qacc_actuated):
+    """Sum of squared actuated-joint accelerations (upstream joint_acc_l2)."""
+    return jp.sum(jp.square(qacc_actuated))
+
+
+def upward(gravity_z):
+    """Uprightness reward (upstream upward): -gravity_body_z, ~1 upright."""
+    return -gravity_z
+
+
+def distance_band(separation, band_min: float, band_max: float):
+    """Keep a separation inside [band_min, band_max] (upstream
+    body_distance_y): 1.0 in the band, exp(-100 * excursion) outside.
+    The 0.5 m clamp and the 100/m decay are upstream constants."""
+    d_min = jp.clip(separation - band_min, -0.5, 0.0)
+    d_max = jp.clip(separation - band_max, 0.0, 0.5)
+    return (jp.exp(-jp.abs(d_min) * 100.0) + jp.exp(-jp.abs(d_max) * 100.0)) / 2.0
+
+
+def feet_contact_without_cmd(contact, gravity_z):
+    """All feet planted, scaled by uprightness (upstream
+    feet_contact_without_cmd). The zero-command mask is the caller's."""
+    upright = jp.clip(-gravity_z, 0.0, 0.7) / 0.7
+    return jp.all(contact) * upright
+
+
+def feet_air_time_biped(air_time, contact_time, in_contact, threshold: float):
+    """Per-step single-stance reward (upstream feet_air_time_positive_biped):
+    while exactly one foot is in contact, pay the smaller of the feet's
+    current mode times (air time for the swing foot, contact time for the
+    stance foot), clamped at `threshold`. Double support and flight pay zero.
+
+    Unlike feet_air_time above, which pays once per completed swing at
+    landing, this pays from the first instant a foot lifts, so a policy that
+    has never made a step still sees a gradient toward making one. The
+    zero-command mask is the caller's."""
+    in_mode_time = jp.where(in_contact, contact_time, air_time)
+    single_stance = jp.sum(in_contact.astype(jp.int32)) == 1
+    return jp.minimum(jp.min(jp.where(single_stance, in_mode_time, 0.0)), threshold)
+
+
+def knee_stance(knee_qpos, contact, tol: float):
+    """Penalize knee flexion beyond `tol` while that leg's foot is in
+    contact: sum(contact * max(|q_knee| - tol, 0)^2).
+
+    None of the existing terms prices the stance leg's shape, so a
+    permanently crouched stance is reward-neutral and the optimizer keeps
+    it. Charging flexion only DURING contact leaves the swing leg free to
+    bend as much as the step needs; the tolerance leaves the shock-absorbing
+    flexion at touchdown unpriced and charges only the standing crouch.
+
+    `knee_qpos` must be ordered to match `contact` (foot_sites order); the
+    caller owns that alignment."""
+    excess = jp.maximum(jp.abs(knee_qpos) - tol, 0.0)
+    return jp.sum(jp.square(excess) * contact)
+
+
+def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float, cap: float = 1.0):
+    """Relative left-right asymmetry of the completed swing and stance
+    durations: for each pair, ((d0 - d1) / max(mean(d), floor))^2, summed
+    over the two pairs and clipped at `cap`.
+
+    The velocity/gait terms price each step on its own, so a gait that
+    limps -- one leg taking systematically longer swings than the other --
+    pays the same as an even one. This term reads the caller's per-foot
+    EMAs of completed swing and stance durations and charges their relative
+    difference, so a 20% limp costs the same at any cadence.
+
+    Each pair arms only once BOTH feet have a completed duration on record:
+    the first step of an episode is one-legged by definition, and charging
+    that transient would penalize starting to walk at all. The floor bounds
+    the denominator away from zero for the freshly-armed case.
+
+    The cap bounds the worst case, and it is what makes the term safe to
+    arm at all: the run-5 gates measured that an UNCAPPED charge kills the
+    gait before it forms. A first clumsy gait has near-maximal relative
+    asymmetry (each pair saturates near (2d/d)^2 = 4, two pairs ~8), so at
+    weight -2.0 the uncapped term taxed the fragile first-steps window at
+    ~0.32/step while standing -- which never arms the term -- collected
+    ~0.45/step of tracking for free. The optimizer took standing, twice
+    (gates job-11, job-13). Capped, the exploration-phase fee is bounded
+    at scale*cap per step while a settled limp (rel_sq well under the cap)
+    still pays in proportion to its asymmetry."""
+
+    def rel_sq(d):
+        armed = (d[0] > 0.0) & (d[1] > 0.0)
+        return jp.square((d[0] - d[1]) / jp.maximum(0.5 * (d[0] + d[1]), floor)) * armed
+
+    return jp.minimum(rel_sq(air_dur_ema) + rel_sq(stance_dur_ema), cap)
