@@ -91,6 +91,9 @@ def build_ppo_params(overrides, smoke: bool):
     p = locomotion_params.brax_ppo_config("Go1JoystickFlatTerrain")
     p.network_factory.policy_obs_key = "state"
     p.network_factory.value_obs_key = "privileged_state"
+    # Not in the playground config; set to brax's default so ppo.gae_lambda
+    # overrides land on a visible key.
+    p.gae_lambda = 0.95
     if smoke:
         p.num_timesteps = 100_000
         p.num_envs = 64

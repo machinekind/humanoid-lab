@@ -201,7 +201,10 @@ starts with no presets and must write its own.
 A preset also picks the actuator model. Implemented models are `pd` and
 `ideal_torque`. `dc_motor_speed_saturation` and `delayed` are registered but
 raise `NotImplementedError`. A `pd` preset also sets `soft_limit_factor` and
-`action_scale_factor`. See `src/humanoid_lab/robot/presets.py` for the full
+`action_scale_factor`, or a flat `action_scale_rad` (radians per unit
+action, every joint the same) that replaces the factor formula. Non-pd
+models ignore both scale fields. roboto_origin's `deploy_pd` pins
+upstream's 0.25 rad. See `src/humanoid_lab/robot/presets.py` for the full
 field contract.
 
 `load_actuator_preset` (`src/humanoid_lab/robot/presets.py`) deep-merges
@@ -301,6 +304,20 @@ failing, which is when feet are being slammed into the floor.
 `reward.stand_still_vel_weight` (default `0.2`) sets stand_still's
 velocity-damping share against a position share of 1; only the ratio
 matters, since `scales.stand_still` prices the sum.
+
+**Ported robolab terms** (`rewards/terms.py`; same shapes as upstream, so
+the upstream weights transfer): `scales.pose_l1` with
+`reward.pose_l1_weights` (a joint_group -> weight map, `null` = 1.0 for
+every joint), `scales.joint_pos_limits`, `scales.joint_vel`,
+`scales.joint_acc`, `scales.upward`, `scales.feet_distance` /
+`scales.knee_distance` with `feet_distance_range` / `knee_distance_range`
+(m, base frame), and `scales.feet_contact_without_cmd`. All default to
+`0.0` (off). `configs/robot/roboto_origin.yaml` pins the upstream weights.
+
+`task.env.push` has three optional knobs on top of the planar kick:
+`interval_steps_range` (random gap to the next push, steps), `vel_z`
+(vertical kick, m/s), and `ang_vel_rp` / `ang_vel_yaw` (angular kicks,
+rad/s). Off, the legacy fixed schedule is bit-identical.
 
 ## Settled pose anchor (`task.env.real_pose_ref`)
 
@@ -502,6 +519,7 @@ randomization on top, gated by its own `enable`.
 | `dr.dof` | `damping`, `armature`, `frictionloss` (multiplicative) | `[0.9, 1.1]` each |
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
+| `dr.base_mass_add` | `kg` (additive, +-kg on the base body) | `1.0` |
 
 **Friction draws and MuJoCo's combine rule.** Two equal-priority geoms
 contact at the element-wise **max** of their frictions. So while
@@ -520,7 +538,7 @@ host before trusting a slip-randomized training run to warp.
 distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
 above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
 own — `1 joint_gains, 2 com_offset, 3 dof, 4 foot_friction, 5
-motor_strength`, fixed. The `0x100` offset is the same load-bearing constant
+motor_strength, 6 base_mass_add`, fixed. The `0x100` offset is the same load-bearing constant
 as the pure command draws use, for the same reason: `fold_in(key, i)` is
 bit-identical to `split(key, n)[i]` for every `i < n`, so a raw table index
 keys off one of the five base keys. Before the offset landed, `com_offset`

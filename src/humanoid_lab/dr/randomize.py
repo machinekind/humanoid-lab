@@ -14,8 +14,8 @@ draws from a folded-in sub-key so it leaves r1..r5 unchanged. With every
 extra field disabled, the output matches that original 5-field code.
 
 Fold-in index taxonomy (jax.random.fold_in(rng, _DRAW + i)): 1 joint_gains,
-2 com_offset, 3 dof, 4 foot_friction, 5 motor_strength. 0 is reserved and 6
-up are free for future fields. motor_strength decouples forcerange from
+2 com_offset, 3 dof, 4 foot_friction, 5 motor_strength, 6 base_mass_add.
+0 is reserved and 7 up are free for future fields. motor_strength decouples forcerange from
 joint_gains' gain_scale: disabled, forcerange keeps riding gain_scale
 bitwise (a weak-motor world also reads as soft); enabled, it draws its own
 per-actuator sample, so weak and soft are no longer the same draw.
@@ -69,6 +69,9 @@ _DEFAULT_DR = {
     # Weak-skewed: the failure mode this guards is motors too weak to pull
     # the hips back under the body, not a symmetric strength spread.
     "motor_strength": {"enable": False, "range": [0.5, 1.1]},
+    # Additive +-kg draw on the base body, on top of base_mass's scale: a
+    # payload weighs the same on a light robot and a heavy one.
+    "base_mass_add": {"enable": False, "kg": 1.0},
 }
 
 
@@ -109,6 +112,7 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
     dof_cfg = _field_cfg(dr_cfg, "dof")
     foot_cfg = _field_cfg(dr_cfg, "foot_friction")
     motor_cfg = _field_cfg(dr_cfg, "motor_strength")
+    mass_add_cfg = _field_cfg(dr_cfg, "base_mass_add")
 
     floor_id = _find_floor_geom_id(mj_model, floor_geom_name)
     root_id = _find_base_body_id(mj_model)
@@ -150,6 +154,12 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             link_scale = jax.random.uniform(r3, (model.nbody,), minval=lm_lo, maxval=lm_hi)
             body_mass = model.body_mass * link_scale
             body_mass = body_mass.at[root_id].set(model.body_mass[root_id] * base_scale)
+            if mass_add_cfg["enable"]:
+                ra = jax.random.fold_in(rng, _DRAW + 6)
+                kg = mass_add_cfg["kg"]
+                body_mass = body_mass.at[root_id].add(
+                    jax.random.uniform(ra, minval=-kg, maxval=kg)
+                )
 
             if joint_cfg["enable"]:
                 rg, rk = jax.random.split(jax.random.fold_in(rng, _DRAW + 1), 2)

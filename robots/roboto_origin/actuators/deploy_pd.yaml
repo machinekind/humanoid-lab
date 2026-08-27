@@ -9,11 +9,10 @@
 # soft_limit_factor: 0.9, matching upstream's soft_joint_pos_limit_factor
 #   0.90.
 #
-# action_scale_factor: 0.3, this repo's default (docs/adding-a-robot.md).
-#   Upstream does not use a factor*effort/kp formula at all: it applies a
-#   flat 0.25 rad action scale to every joint. That upstream scheme has no
-#   field in this repo's ActuatorPreset schema, so it is not reproduced --
-#   noted here for anyone diffing against the upstream config.
+# action_scale_rad: 0.25, upstream's scheme verbatim: a flat 0.25 rad
+#   action scale on every joint (RobotCfg.action_scale). It replaces the
+#   factor*effort/kp formula, so the upstream action-rate weights price
+#   the same quantity here.
 #
 # armature: 0.01 for every group. This is upstream's flat placeholder
 #   value, not a measured reflected inertia -- upstream publishes no
@@ -30,7 +29,7 @@
 
 model: pd
 soft_limit_factor: 0.9
-action_scale_factor: 0.3
+action_scale_rad: 0.25
 
 groups:
   thigh_yaw:

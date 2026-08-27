@@ -120,7 +120,11 @@ TRAINING_ONLY_KEYS = frozenset(
         # control-loop counterpart.
         "push.enable",
         "push.interval_steps",
+        "push.interval_steps_range",
         "push.vel",
+        "push.vel_z",
+        "push.ang_vel_rp",
+        "push.ang_vel_yaw",
         # Command sampling curriculum: how often a new command is drawn and
         # which corners of the trained box get extra practice. Every draw
         # stays inside command_low/command_high (check_config_covered

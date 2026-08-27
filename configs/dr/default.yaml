@@ -22,3 +22,6 @@ foot_friction: { enable: false, range: [0.8, 1.2] }
 # weak-skewed because the real failure is motors too weak to pull the hips
 # back under the body, not a symmetric strength spread.
 motor_strength: { enable: false, range: [0.5, 1.1] }
+# Additive +-kg draw on the base body, on top of base_mass's scale: a
+# payload weighs the same on a light robot and a heavy one.
+base_mass_add: { enable: false, kg: 1.0 }
