@@ -33,8 +33,11 @@ _ALLOWED_MODEL_PATCH_OPTION_KEYS = ("solver", "iterations", "timestep")
 _ALLOWED_SOLVERS = ("pgs", "cg", "newton")
 _ALLOWED_MESH_COLLISIONS_VALUES = ("visual",)
 _ALLOWED_MODEL_PATCH_SITE_KEYS = ("body", "pos", "quat")
-_ALLOWED_MODEL_PATCH_GEOM_KEYS = ("body", "type", "size", "pos", "fromto", "quat")
+_ALLOWED_MODEL_PATCH_GEOM_KEYS = ("body", "type", "size", "pos", "fromto", "quat", "split")
 _ALLOWED_GEOM_TYPES = ("box", "capsule", "sphere")
+# Cells per axis of a split box. Capped at 10 so each index of a cell name
+# ({name}_{i}{j}{k}) is one digit and no two cells of a box share a name.
+_MAX_SPLIT_PER_AXIS = 10
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,10 @@ class ModelPatchGeom:
     model_patches.geoms entry. `type` is one of box/capsule/sphere; `size`
     follows mujoco's per-type geom size semantics. `pos` and `fromto` are
     both optional but mutually exclusive, matching MJCF geom semantics.
+
+    `split` (box only) is an (nx, ny, nz) grid: the box is injected as the
+    filled cells of a 3D chessboard over its extent instead of as one geom
+    (robot/build.py's split_box_cells). None injects the box whole.
     """
 
     body: str
@@ -81,6 +88,7 @@ class ModelPatchGeom:
     pos: tuple[float, float, float] | None = None
     fromto: tuple[float, float, float, float, float, float] | None = None
     quat: tuple[float, float, float, float] = _IDENTITY_QUAT
+    split: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -347,9 +355,52 @@ def _parse_model_patch_geom(name: str, raw: dict[str, Any], yaml_path: Path) -> 
     if len(quat) != 4:
         raise ValueError(f"{yaml_path}: model_patches.geoms['{name}'] quat must have 4 elements")
 
+    split = None
+    if "split" in raw:
+        split = _parse_geom_split(name, raw["split"], geom_type, size, fromto, yaml_path)
+
     return ModelPatchGeom(
-        body=raw["body"], type=geom_type, size=size, pos=pos, fromto=fromto, quat=quat
+        body=raw["body"], type=geom_type, size=size, pos=pos, fromto=fromto, quat=quat, split=split
     )
+
+
+def _parse_geom_split(
+    name: str,
+    raw: Any,
+    geom_type: str,
+    size: tuple[float, ...],
+    fromto: tuple[float, ...] | None,
+    yaml_path: Path,
+) -> tuple[int, int, int]:
+    where = f"{yaml_path}: model_patches.geoms['{name}']"
+    if geom_type != "box":
+        raise ValueError(f"{where} split applies to type box only, got type '{geom_type}'")
+    if fromto is not None:
+        # The cells are laid out in the box's own pos/quat frame, which
+        # fromto replaces.
+        raise ValueError(f"{where} split cannot be combined with fromto; give pos (and quat)")
+    if len(size) != 3:
+        raise ValueError(f"{where} split needs a 3-element box size, got {len(size)}")
+    # bool is an int subclass; `split: [true, 2, 2]` is a typo, not a grid.
+    if (
+        not isinstance(raw, list)
+        or len(raw) != 3
+        or not all(isinstance(n, int) and not isinstance(n, bool) for n in raw)
+    ):
+        raise ValueError(f"{where} split must be three integers [nx, ny, nz], got {raw!r}")
+    if not all(1 <= n <= _MAX_SPLIT_PER_AXIS for n in raw):
+        raise ValueError(
+            f"{where} split entries must each be between 1 and {_MAX_SPLIT_PER_AXIS}, got {raw}"
+        )
+    # With the other two counts at 1, a cell's parity is its index along the
+    # cut axis, so only the even layers survive.
+    if sum(n > 1 for n in raw) == 1:
+        raise ValueError(
+            f"{where} split {raw} cuts along one axis only; the chessboard then drops whole "
+            "layers of the box (an even count loses a face, an odd count leaves gaps across "
+            "the full cross-section). Split at least two axes, or leave split out"
+        )
+    return (raw[0], raw[1], raw[2])
 
 
 def _validate_joint_groups(

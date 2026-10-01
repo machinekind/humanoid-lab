@@ -83,3 +83,23 @@ sensors:
   quat: <imu_quat_sensor_name>
   linvel: <imu_linvel_sensor_name>
   acc: <imu_acc_sensor_name>
+
+# Optional: build-time patches for a source XML that isn't MJX-ready as
+# vendored. Uncomment only the parts the source XML needs; the full
+# contract is docs/adding-a-robot.md's model_patches section. A geoms entry
+# takes body, type (box, capsule or sphere), size, at most one of pos and
+# fromto, and an optional quat. split (box only, [nx, ny, nz]) injects the
+# box as 3D chessboard cells instead of one geom, for a box whose faces are
+# large against a heightfield cell. A split cuts at least two axes.
+# model_patches:
+#   options: {solver: newton}
+#   mesh_collisions: visual
+#   sites:
+#     <left_foot_site>: {body: <left_foot_body>, pos: [<x>, <y>, <z>]}
+#   geoms:
+#     <torso_collision_geom>:
+#       body: <torso_body>
+#       type: box
+#       size: [<hx>, <hy>, <hz>]
+#       pos: [<x>, <y>, <z>]
+#       split: [<nx>, <ny>, <nz>]

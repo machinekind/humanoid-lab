@@ -42,7 +42,7 @@ import yaml
 
 from humanoid_lab import paths
 from humanoid_lab.envs.joystick import Joystick, default_config
-from humanoid_lab.robot.build import build_spec, compile_spec
+from humanoid_lab.robot.build import build_spec, compile_spec, split_box_cells
 from humanoid_lab.robot.presets import action_scale, load_actuator_preset, resolve
 from humanoid_lab.robot.spec import RobotSpec, load_robot_spec, validate_against_model
 
@@ -506,11 +506,22 @@ def test_model_patches_land_in_the_compiled_model(_cache, case):
     for name, site in patches.sites.items():
         assert model.body(model.site_bodyid[model.site(name).id]).name == site.body, name
 
-    for name in patches.geoms:
-        geom = model.geom(name)  # KeyError here means the geom never got injected
-        assert _collidable(model, geom.id), (
-            f"{case.id}: injected collision primitive '{name}' is not collidable"
-        )
+    geom_names = {model.geom(i).name for i in range(model.ngeom)}
+    for name, patch in patches.geoms.items():
+        if patch.split is None:
+            injected = [name]
+        else:
+            # A split box lands as its chessboard cells and never as itself.
+            injected = [cell for cell, _, _ in split_box_cells(name, patch)]
+            assert name not in geom_names, (
+                f"{case.id}: split box '{name}' was injected whole as well as in cells"
+            )
+        for geom_name in injected:
+            geom = model.geom(geom_name)  # KeyError here means the geom never got injected
+            assert _collidable(model, geom.id), (
+                f"{case.id}: injected collision primitive '{geom_name}' is not collidable"
+            )
+            assert model.body(model.geom_bodyid[geom.id]).name == patch.body, geom_name
 
     if patches.mesh_collisions == "visual":
         mesh_ids = [
