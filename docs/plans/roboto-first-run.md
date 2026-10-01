@@ -537,3 +537,48 @@ symmetry-as-income / run-5 reserve) recorded above, decision is
 Marcin's. Gates report:
 [artifact 5393f71c](https://claude.ai/code/artifact/5393f71c-9a26-43b0-8600-90823b8bad72);
 gate videos in ~/Documents/robot/roboto_walk_v5_gate{,2,3}/.
+
+## Nine-box night, 2026-09-30: warm-start depth decides
+
+Nine 1xH100 boxes for about 3.2 h of training each, all at the run-4 sizing
+(4096 envs, batch 128, one GPU), deploy_pd, from the roboto-walk-v5 code.
+Presets `configs/experiment/yolo_*.yaml` and `novel_*.yaml`; the chain
+payload `jobs/train_chain.sh` runs a from-scratch phase A then a warm-started
+phase B. Results (battery on each run's last checkpoint, all 0 falls in 7
+scenarios):
+
+| run | recipe | steps | walk vx err | antiphase | swings | stand vib | spin L/R deg |
+|---|---|---|---|---|---|---|---|
+| yolo_chain_income | yolo_v4 @472M + gait_symmetry_income 0.5 + energy -3e-4 | 2.6e8 | 0.139 | 0.882 | 17 | 0.29 | 345/-348 |
+| yolo_oneshot | yolo_v4 @472M + gait_symmetry -1 (cap 1) + shaping_tracking_gate + energy -3e-4 | 2.5e8 | 0.144 | 0.833 | 22 | 0.42 | 361/-367 |
+| yolo_v4 | run-4 recipe from scratch | 7.9e8 | 0.213 | 0.683 | 12 | 0.35 | 370/-352 |
+| yolo_clock, yolo_symincome, novel_pure_cmd, novel_sighted, novel_adaptive_kl | one delta each, from scratch | 7.9-8.4e8 | ~0.50 | 0.50 | 0 | 0.55-0.59 | ~0 |
+| yolo_chain_sym | chain_sym_a @452M + gait_symmetry -1 (cap 1) | 4.2e8 | 0.502 | 0.50 | 0 | 0.60 | ~0 |
+
+Findings:
+
+- The run-4 recipe escapes the leaning basin in one try out of three. Three
+  identical-seed runs differing only in `num_timesteps` (so in their random
+  stream) read feet_apex per episode 0.07, 0.13 and 2.07 at 412-452M; the
+  third escaped at 412M, yolo_v4 at 314-367M. Run 4's walk was a draw.
+- Warm-start depth decides whether style terms survive. Restored from a
+  policy at feet_apex ~2/episode (first steps), gait_symmetry -1 capped,
+  the oneshot package and the income term all lost the steps within 70M.
+  Restored from yolo_v4 at feet_apex ~11/episode, the income package and
+  the oneshot package both kept the gait and reduced the limp (antiphase
+  0.68 -> 0.88 and 0.83) and the stand vibration (0.35 -> 0.29) in 2.5e8
+  steps. Swing apex was still 2-3 cm against the 8 cm target at these
+  budgets.
+- No single from-scratch delta escaped by 8e8 steps: slower gait clock
+  (0.9-1.4 Hz, threshold 0.5), symmetry income, pure command draws
+  (fast 0.15 / slow 0.10 / wz 0.10), joint_vel obs noise 0.2, or brax's
+  ADAPTIVE_KL schedule (desired_kl 0.01). novel_pure_cmd came closest
+  (feet_apex 0.77, reward 23, rising at the cut).
+- The gait trackers (air/contact time, swing apex, duration EMAs) leaked
+  across respawns under `BraxAutoResetWrapper(full_reset=False)`;
+  `GaitReseedWrapper` restarts them, applied when a symmetry scale is on.
+
+Open: a stop that writes run.json. Raising inside the progress callback from
+a SIGTERM handler aborts in XLA (rc 134); a stop file the callback polls is
+the fix. Next rung: a longer warm-start from a deep walker with the income
+package, aimed at the apex target.
