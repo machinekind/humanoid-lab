@@ -299,9 +299,9 @@ def default_config() -> config_dict.ConfigDict:
             # per step against honest walking's ~0.25. Gated, a stride pays
             # in proportion to how well the command is being served and
             # standing pays nothing for lifting legs. Gated set:
-            # feet_air_time, feet_air_time_biped and feet_apex. Not
-            # feet_phase, and not the feet_landing penalty -- see
-            # _compute_rewards.
+            # feet_air_time, feet_air_time_biped, feet_apex and
+            # gait_symmetry_income. Not feet_phase, and not the feet_landing
+            # penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
             # feet_air_time_biped clamp, s (upstream feet_air_time_positive_
@@ -350,14 +350,15 @@ def default_config() -> config_dict.ConfigDict:
             # at 0.3, so 0.15 asks the stance leg to carry the body
             # straighter than the crouch it resets into.
             knee_stance_tol=0.15,
-            # gait_symmetry: per-event EMA weight folding each completed
-            # swing/stance duration into its foot's running average, the
-            # denominator floor (s) of the relative-difference kernel, and
-            # the cap on the summed relative asymmetry. The cap bounds the
-            # per-step charge at scale*cap: the run-5 gates measured that
-            # an uncapped charge taxes the near-maximal asymmetry of the
-            # first clumsy steps hard enough that the optimizer takes
-            # standing instead (see terms.gait_symmetry).
+            # gait_symmetry and gait_symmetry_income (shared): per-event
+            # EMA weight folding each completed swing/stance duration into
+            # its foot's running average, the denominator floor (s) of the
+            # relative-difference kernel, and the cap on the summed relative
+            # asymmetry. The income pays 0 at or over the cap, and needs
+            # cap > 0. For the penalty, the cap bounds the per-step charge
+            # at scale*cap: an uncapped charge taxes the near-maximal
+            # asymmetry of the first clumsy steps hard enough that the
+            # optimizer takes standing instead (see terms.gait_symmetry).
             gait_symmetry_alpha=0.25,
             gait_symmetry_floor=0.1,
             gait_symmetry_cap=1.0,
@@ -423,9 +424,13 @@ def default_config() -> config_dict.ConfigDict:
                 # knee_stance charges stance-leg knee flexion beyond
                 # knee_stance_tol; gait_symmetry charges the relative
                 # left-right difference of the completed swing/stance
-                # duration EMAs (the limp signature).
+                # duration EMAs (the limp signature); gait_symmetry_income
+                # pays for the absence of that difference on single-stance
+                # steps (see terms.gait_symmetry_income). The two share one
+                # set of EMAs, kept whenever either scale is nonzero.
                 knee_stance=0.0,
                 gait_symmetry=0.0,
+                gait_symmetry_income=0.0,
             ),
         ),
     )
@@ -434,7 +439,33 @@ def default_config() -> config_dict.ConfigDict:
 # Scales keys whose whole machinery is config-gated on a nonzero scale (see
 # the scales comment above): reset() seeds their reward/* metrics only when
 # armed, matching _compute_rewards, which computes them only when armed.
-_STYLE_TERMS = ("knee_stance", "gait_symmetry")
+_STYLE_TERMS = ("knee_stance", "gait_symmetry", "gait_symmetry_income")
+
+
+def _reward_metric_names(scales) -> list[str]:
+    """The reward/* metric keys reset() seeds for these reward scales: every
+    scales key, less the style terms whose scale is 0. _compute_rewards
+    emits exactly this set, which the scan-carry parity in reset() needs."""
+    return [f"reward/{k}" for k in scales if k not in _STYLE_TERMS or scales[k]]
+
+
+def gait_dur_ema_on(scales) -> bool:
+    """Whether the per-foot swing/stance duration EMAs exist: either
+    symmetry scale is nonzero. reset() seeds them and step() updates them
+    only then, and envs/wrappers.py restarts them on respawn only then."""
+    return bool(scales.get("gait_symmetry", 0.0) or scales.get("gait_symmetry_income", 0.0))
+
+
+def check_gait_symmetry_cap(reward) -> None:
+    """Raise unless reward.gait_symmetry_cap > 0 whenever the income is on.
+    gait_symmetry_income divides by the cap, so cap 0 would be NaN on every
+    armed single-stance step. The penalty reads cap 0 as 'charge nothing'
+    and needs no check."""
+    cap = reward.get("gait_symmetry_cap", 1.0)
+    if reward.scales.get("gait_symmetry_income", 0.0) and not cap > 0.0:
+        raise ValueError(
+            f"reward.scales.gait_symmetry_income needs reward.gait_symmetry_cap > 0, got {cap}"
+        )
 
 
 # (probability key, range key, command box axis) for each pure draw that
@@ -531,6 +562,10 @@ class Joystick(HumanoidEnv):
         # off term never enters the trace, the info dict or the metric set.
         self._knee_stance_on = bool(scales.knee_stance)
         self._gait_symmetry_on = bool(scales.gait_symmetry)
+        self._gait_symmetry_income_on = bool(scales.get("gait_symmetry_income", 0.0))
+        # The swing/stance duration EMAs both symmetry terms read.
+        self._gait_dur_ema_on = gait_dur_ema_on(scales)
+        check_gait_symmetry_cap(self._config.reward)
         if self._knee_stance_on:
             self._knee_qidx = self._foot_ordered_group_qidx("knee")
 
@@ -756,10 +791,14 @@ class Joystick(HumanoidEnv):
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
         }
-        if self._gait_symmetry_on:
+        if self._gait_dur_ema_on:
             # Per-foot EMAs of completed swing/stance durations, for
-            # gait_symmetry. Config-gated like push_countdown: while the
-            # term is off the info pytree is unchanged.
+            # gait_symmetry and gait_symmetry_income. Config-gated like
+            # push_countdown: while both terms are off the info pytree is
+            # unchanged. In training they, and the per-foot mode timers
+            # that feed them, restart on every in-place respawn through
+            # envs/wrappers.py's GaitReseedWrapper; this reset() covers only
+            # an env's first episode there.
             info["air_dur_ema"] = jp.zeros(self._n_feet)
             info["stance_dur_ema"] = jp.zeros(self._n_feet)
         if self._config.push.enable and self._config.push.get("interval_steps_range", None):
@@ -774,11 +813,7 @@ class Joystick(HumanoidEnv):
         # metrics pytree structure across steps. Off style terms are absent
         # on BOTH sides: _compute_rewards skips them, so seeding them here
         # would break that parity (and the goldens' metric-name set).
-        metrics = {
-            f"reward/{k}": jp.zeros(())
-            for k in self._config.reward.scales
-            if k not in _STYLE_TERMS or self._config.reward.scales[k]
-        }
+        metrics = {k: jp.zeros(()) for k in _reward_metric_names(self._config.reward.scales)}
         if self._config.no_progress.enable:
             # Optimistic seed: a fresh episode starts at progress ratio 1, so
             # the hazard can only come from measured shortfall, never from the
@@ -876,7 +911,7 @@ class Joystick(HumanoidEnv):
 
         rewards, fall = self._compute_rewards(data, info, action, first_contact, contact)
 
-        if self._gait_symmetry_on:
+        if self._gait_dur_ema_on:
             # Fold each completed mode duration into its foot's EMA on the
             # event step: a landing closes a swing, a liftoff closes a
             # stance. Runs after the reward call (which reads the previous
@@ -1058,9 +1093,10 @@ class Joystick(HumanoidEnv):
         # Gait-shaping gate (see shaping_tracking_gate in default_config):
         # the positive gait terms follow the linear tracking kernel, after
         # the product gate when that is on. Gated set: feet_air_time,
-        # feet_air_time_biped and feet_apex. feet_phase stays ungated on
-        # purpose -- it is the clock-following gradient, and it has to
-        # survive at zero tracking because stepping is how tracking starts.
+        # feet_air_time_biped, feet_apex and gait_symmetry_income (below).
+        # feet_phase stays ungated on purpose -- it is the clock-following
+        # gradient, and it has to survive at zero tracking because stepping
+        # is how tracking starts.
         shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
 
         # sin^2 of the tilt from vertical, less the tolerance cone (see
@@ -1154,12 +1190,16 @@ class Joystick(HumanoidEnv):
             * shape_gate,
         }
         # Style terms, config-gated (see __init__): absent at scale 0, so
-        # the goldens' metric set and float-add order are untouched. Both
-        # are penalties, so neither joins the shape_gate set (the
-        # feet_landing rationale above). knee_stance is masked by `moving`:
-        # at a zero command stand_still and pose_l1 anchor the knees on the
-        # home keyframe's 0.3 rad, and an unmasked cone would fight that
-        # anchor into exactly the standing dither it must not add.
+        # the goldens' metric set and float-add order are untouched.
+        # knee_stance and gait_symmetry are penalties, so neither joins the
+        # shape_gate set (the feet_landing rationale above);
+        # gait_symmetry_income is a positive gait term and does, since a
+        # symmetric single stance while the command goes unserved is
+        # stand-and-lift income like feet_air_time_biped's. knee_stance is
+        # masked by `moving`: at a zero command stand_still and pose_l1
+        # anchor the knees on the home keyframe's 0.3 rad, and an unmasked
+        # cone would fight that anchor into exactly the standing dither it
+        # must not add.
         if self._knee_stance_on:
             rewards["knee_stance"] = (
                 terms.knee_stance(
@@ -1176,5 +1216,17 @@ class Joystick(HumanoidEnv):
                     cfg.get("gait_symmetry_cap", 1.0),
                 )
                 * moving
+            )
+        if self._gait_symmetry_income_on:
+            rewards["gait_symmetry_income"] = (
+                terms.gait_symmetry_income(
+                    info["air_dur_ema"],
+                    info["stance_dur_ema"],
+                    contact,
+                    cfg.gait_symmetry_floor,
+                    cfg.get("gait_symmetry_cap", 1.0),
+                )
+                * moving
+                * shape_gate
             )
         return rewards, fall
