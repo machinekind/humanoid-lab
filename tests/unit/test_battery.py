@@ -559,6 +559,23 @@ def test_every_other_key_of_the_run_s_env_block_survives():
     assert overrides["reward"] == {"scales": {"pose": -1.0}}
 
 
+def test_a_run_trained_with_mirroring_measures_the_real_world():
+    """A mirrored env hands the policy a mirrored world; every signal the
+    battery records reads the real one. Only `enable` changes."""
+    overrides = _measurement_env_overrides(
+        _run({"symmetry": {"enable": True, "mirror_prob": 0.5}})
+    )
+
+    assert overrides["symmetry"]["enable"] is False
+    assert overrides["symmetry"]["mirror_prob"] == 0.5
+
+
+def test_mirroring_is_off_even_when_the_run_never_mentioned_it():
+    overrides = _measurement_env_overrides(_run({}))
+
+    assert overrides["symmetry"]["enable"] is False
+
+
 # -- the CLI -----------------------------------------------------------------
 #
 # main() with run_battery stubbed out: the argparse wiring and the write

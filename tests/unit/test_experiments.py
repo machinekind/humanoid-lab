@@ -199,3 +199,50 @@ def test_yolo_apex_min_reaches_the_env_config():
     _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
     assert env_cfg.reward.scales.feet_apex_min == 10.0
     assert env_cfg.reward.scales.feet_apex == 0.0
+
+
+MIRROR_BLOCK = {"enable": True, "mirror_prob": 0.5}
+
+
+def test_yolo_mirror_is_yolo_income_long_plus_the_mirror_augmentation():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_mirror")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_long")
+
+    assert ours["task"]["env"].pop("symmetry") == MIRROR_BLOCK
+    assert "symmetry" not in base["task"]["env"]
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales == base_scales
+    assert ours_scales["gait_symmetry_income"] == 0.5
+    assert ours_scales["energy"] == -3.0e-4
+    assert ours_scales["feet_apex"] == 10.0
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.0e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+def test_yolo_v4_mirror_is_yolo_v4_plus_the_mirror_augmentation():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_v4_mirror")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_v4")
+
+    assert ours["task"]["env"].pop("symmetry") == MIRROR_BLOCK
+    assert "symmetry" not in base["task"]["env"]
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales == base_scales
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.5e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+@pytest.mark.parametrize("experiment", ["yolo_mirror", "yolo_v4_mirror"])
+def test_the_mirror_presets_reach_the_env_config(experiment):
+    cfg = _compose([f"experiment={experiment}"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.symmetry.enable is False
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.symmetry.enable is True
+    assert env_cfg.symmetry.mirror_prob == 0.5

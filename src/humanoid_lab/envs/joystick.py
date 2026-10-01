@@ -27,7 +27,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
-from humanoid_lab.envs import progress
+from humanoid_lab.envs import progress, symmetry
 from humanoid_lab.envs.base import HumanoidEnv
 from humanoid_lab.rewards import terms
 
@@ -229,6 +229,18 @@ def default_config() -> config_dict.ConfigDict:
             risk_below=0.5,  # hazard starts below this fraction of demand
             p_max=0.02,      # per-step hazard at zero progress
         ),
+        # Left/right mirror augmentation. With mirror_prob, an env presents
+        # the policy a world mirrored about the body xz-plane: observations
+        # are mirrored on the way out and the action is mirrored back on the
+        # way in, so physics, rewards and termination stay in the real
+        # frame. One policy then has to walk both chiralities. The flag is
+        # drawn at reset; under the trainer's auto-reset wrapper `info`
+        # survives respawns, so it holds per env for the whole run. Off adds
+        # no info key and splits no RNG key. Training-only: the battery,
+        # eval and export envs force it off (eval/battery.py), and the
+        # deployed policy always sees real observations. The maps are in
+        # envs/symmetry.py, which holds joint signs for roboto_origin only.
+        symmetry=config_dict.create(enable=False, mirror_prob=0.5),
         # Fallback fall thresholds; robot overlays pin their own (a
         # workable min_height is ~60% of the robot's standing height).
         # max_tilt_gz is the gravity_body z component: near -1 upright,
@@ -590,6 +602,57 @@ class Joystick(HumanoidEnv):
             jp.zeros(self.action_size), self._default_pose, self._action_scale
         )
 
+        if self._config.symmetry.enable:
+            self._init_mirror_maps()
+
+    def _init_mirror_maps(self):
+        """Assemble the symmetry augmentation's (perm, sign) maps from the
+        resolved obs lists and the robot's joint and foot names, and check
+        each against the real vector size it will index."""
+        rs = self._robot_spec
+        joints = list(rs.actuated_joints)
+        feet = list(rs.foot_sites)
+        act_perm, act_sign = symmetry.joint_mirror(joints, rs.name)
+        state_perm, state_sign = symmetry.obs_mirror(self.actor_obs_names, joints, feet, rs.name)
+        priv_perm, priv_sign = symmetry.obs_mirror(self._config.obs.privileged, joints, feet, rs.name)
+        # Shapes only: the catalog evaluated abstractly on a fresh jax-impl
+        # data, so nothing is allocated on the training backend.
+        obs = jax.eval_shape(
+            self._build_obs, mjx.make_data(self._mj_model, impl="jax"), self._catalog_probe_info()
+        )
+        for label, perm, size in (
+            ("action", act_perm, self.action_size),
+            ("obs.state", state_perm, obs["state"].shape[0]),
+            ("obs.privileged", priv_perm, obs["privileged_state"].shape[0]),
+        ):
+            if len(perm) != size:
+                raise ValueError(
+                    f"symmetry: the {label} mirror map has {len(perm)} entries but the "
+                    f"env's {label} vector has {size}"
+                )
+        self._act_perm = jp.array(act_perm)
+        self._act_sign = jp.array(act_sign)
+        self._state_perm = jp.array(state_perm)
+        self._state_sign = jp.array(state_sign)
+        self._priv_perm = jp.array(priv_perm)
+        self._priv_sign = jp.array(priv_sign)
+
+    def _mirror_obs(self, obs, info):
+        """The observation as the env's world presents it: mirrored when
+        info["mirror"] is set. Identity, and absent from the trace, when
+        symmetry is off."""
+        if not self._config.symmetry.enable:
+            return obs
+        m = info["mirror"]
+        return {
+            "state": jp.where(m, self._state_sign * obs["state"][self._state_perm], obs["state"]),
+            "privileged_state": jp.where(
+                m,
+                self._priv_sign * obs["privileged_state"][self._priv_perm],
+                obs["privileged_state"],
+            ),
+        }
+
     def _resolve_group_weights(self, group_map):
         """Per-joint weights from a joint_group -> weight map."""
         if group_map is None:
@@ -823,6 +886,12 @@ class Joystick(HumanoidEnv):
             lo, hi = (int(v) for v in self._config.push.interval_steps_range)
             info["rng"], r_cd = jax.random.split(info["rng"])
             info["push_countdown"] = jax.random.randint(r_cd, (), lo, hi + 1)
+        if self._config.symmetry.enable:
+            # The mirror flag (see symmetry in default_config). Config-gated
+            # like push_countdown: off, no key is split and the info pytree
+            # is unchanged.
+            info["rng"], r_mirror = jax.random.split(info["rng"])
+            info["mirror"] = jax.random.bernoulli(r_mirror, self._config.symmetry.mirror_prob)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
@@ -839,7 +908,7 @@ class Joystick(HumanoidEnv):
             info["progress_ema"] = self._cmd_speed(command)
             metrics["no_progress_cut"] = jp.zeros(())
             metrics["progress_ratio_per_step"] = jp.zeros(())
-        obs = self._build_obs(data, info)
+        obs = self._mirror_obs(self._build_obs(data, info), info)
         return mjx_env.State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -854,6 +923,16 @@ class Joystick(HumanoidEnv):
             rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
             r_term = None
         info["rng"] = rng
+
+        # Symmetry augmentation: a mirrored env's policy acted on mirrored
+        # observations, so its action is in the mirrored frame. Map it back
+        # before anything reads it (motor targets, the action rewards,
+        # last_action): everything below stays in the real frame. The stored
+        # real-frame last_action reaches the policy through _mirror_obs,
+        # which maps it back to the action the policy emitted, since the
+        # mirror is an involution.
+        if self._config.symmetry.enable:
+            action = jp.where(info["mirror"], self._act_sign * action[self._act_perm], action)
 
         motor_targets = jp.clip(
             self._actuator_model.ctrl_from_action(action, self._default_pose, self._action_scale),
@@ -1028,7 +1107,7 @@ class Joystick(HumanoidEnv):
             metrics["no_progress_cut"] = no_progress_cut.astype(jp.float32)
             metrics["progress_ratio_per_step"] = jp.clip(progress_ratio, 0.0, 2.0)
 
-        obs = self._build_obs(data, info, r_noise)
+        obs = self._mirror_obs(self._build_obs(data, info, r_noise), info)
         return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
     # -- observations -------------------------------------------------------

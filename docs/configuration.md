@@ -449,6 +449,28 @@ carrying the counter over would re-arm the cut on the respawn's first step,
 so the counter is zeroed too. Any other wrapper that restarts an episode in
 place owns the same reseed.
 
+## Mirror augmentation (`task.env.symmetry`)
+
+Off by default. When on, each env draws a flag at reset with probability
+`mirror_prob`, and a flagged env presents the policy a world mirrored about
+the body xz-plane: both observation vectors are mirrored on the way out and
+the action is mirrored back on the way in. Physics, rewards and termination
+stay in the real frame, so one policy has to walk both chiralities. Under
+the trainer's `BraxAutoResetWrapper(full_reset=False)` the flag lives in
+`info`, which survives every respawn, so it holds per env for the whole run.
+
+The maps are in `src/humanoid_lab/envs/symmetry.py`: left/right twins swap,
+and each joint's sign comes from its MJCF axis (the module docstring holds
+the derivation table). Signs exist for `roboto_origin` only; any other robot
+refuses at construction. The battery, eval video and export envs force
+`enable` off (`eval/battery.py`), and the key is training-only in the deploy
+contract.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enable` | `false` | Off changes nothing: no info key, no RNG key split, no trace change, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
+| `mirror_prob` | `0.5` | Fraction of envs that present the mirrored world. |
+
 ## Pure command draws (`task.env.command`)
 
 The command sampler draws `(vx, vy, wz)` from one uniform box. That box

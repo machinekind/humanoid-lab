@@ -419,7 +419,7 @@ def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
 
 
 def _measurement_env_overrides(run: dict) -> dict:
-    """The run's own task.env overrides, plus three measurement-only
+    """The run's own task.env overrides, plus four measurement-only
     changes: pushes disabled (they contaminate vibration/slip/stand
     metrics -- robustness is trained, not measured here), the
     command auto-resample effectively disabled (envs/joystick.py's
@@ -441,12 +441,17 @@ def _measurement_env_overrides(run: dict) -> dict:
     keeps a seed taken from the env's own random reset command. A battery
     that ever wants to MEASURE the cut has to reseed info["progress_ema"]
     and zero info["steps_since_cmd"] itself whenever cmd_at changes the
-    command."""
+    command.
+
+    The symmetry augmentation is off too: a mirrored env would hand the
+    policy a mirrored world, and every signal the battery records reads the
+    real one. Off, the env presents the real world to every scenario."""
     hydra = run.get("hydra_config") or {}
     overrides = dict((hydra.get("task") or {}).get("env") or {})
     overrides["push"] = {**(overrides.get("push") or {}), "enable": False}
     overrides["command"] = {**(overrides.get("command") or {}), "resample_steps": 10_000_000}
     overrides["no_progress"] = {**(overrides.get("no_progress") or {}), "enable": False}
+    overrides["symmetry"] = {**(overrides.get("symmetry") or {}), "enable": False}
     return overrides
 
 
