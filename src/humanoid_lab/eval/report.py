@@ -41,7 +41,8 @@ _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
 # battery.json keys that are not scenarios. `contacts` is the warp budget
 # block (see sim_budget.budget_report); it gets its own section below.
-_META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
+# `env_overrides` is present only in a battery re-scored with `--set`.
+_META_KEYS = ("run", "checkpoint", "timestamp", "contacts", "env_overrides")
 
 # The per-direction spin rows (eval/battery.py's battery_scenarios), listed
 # in the order the section renders them.
@@ -97,6 +98,8 @@ def render_markdown(battery: dict) -> str:
         f"- checkpoint: {battery.get('checkpoint', '?')}",
         f"- generated: {battery.get('timestamp', '?')}",
     ]
+    if "env_overrides" in battery:
+        lines.append(f"- env_overrides: {battery['env_overrides']}")
     lines += [
         "",
         "## Battery",
