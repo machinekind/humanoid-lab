@@ -141,7 +141,7 @@ def test_yolo_income_long_is_yolo_chain_income_b_with_feet_apex_doubled():
 SMOOTHNESS_SCALES = {
     "action_rate": -0.05,
     "action_accel": -0.05,
-    "torque_rate": -3.0e-7,
+    "torque_rate": -3.0e-4,
     "joint_acc": -7.5e-7,
 }
 

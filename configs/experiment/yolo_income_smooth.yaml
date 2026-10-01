@@ -1,13 +1,13 @@
 # @package _global_
 # yolo_income_long plus the smoothness package, warm-started from a walker
 # that already carries the income: action_rate and action_accel -0.05 (the
-# roboto_origin overlay ports -0.02), torque_rate -3.0e-7 (overlay 0),
+# roboto_origin overlay ports -0.02), torque_rate -3.0e-4 (overlay 0),
 # joint_acc -7.5e-7 (overlay -2.5e-7), and stand_still_vel_weight 0.5
 # (default 0.2), the one stand-specific damping lever. Tests whether
 # heavier smoothness penalties lower standing vibration without giving up
 # the gait. At the behaviour of a walking policy these terms pay, per
 # episode: action_rate -1.78 (-0.71 at -0.02), action_accel -4.52 (-1.81),
-# joint_acc -1.44 (-0.48), torque_rate -0.002.
+# joint_acc -1.44 (-0.48), torque_rate -1.97.
 # restore=<checkpoint dir> comes from the command line (jobs/train_chain.sh).
 defaults:
   - override /robot: roboto_origin
@@ -38,7 +38,7 @@ task:
         feet_apex: 10.0
         action_rate: -0.05
         action_accel: -0.05
-        torque_rate: -3.0e-7
+        torque_rate: -3.0e-4
         joint_acc: -7.5e-7
 
 # RSL-RL BaseAgentCfg values (rpo_agent_cfg.py). Fixed LR: brax has no
