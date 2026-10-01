@@ -1,10 +1,32 @@
-# Terrain: where to start when a flat keeper exists
+# The terrain path: what to port from w01-tek
 
-Terrain training is deferred until a flat-ground keeper policy exists. The
-full working system lives in the `training/` project of machinekind/w01-tek.
-This is the map of what to port and what to know before reading it. Paths
-are relative to `training/wojtek_rl/`, and line numbers match w01-tek
-`e44c1a9`.
+humanoid-lab will have two training paths, flat ground and terrain. Only the
+flat path exists today. The paths will be interchangeable. Either one will
+train a policy on its own. Both will share common parts, such as the robot
+models, the PPO trainer, and the eval tools. Whether they also share the
+joystick env is open. The terrain path adds the parts this map lists. Some
+of them change the shared code.
+
+w01-tek's two paths share one env. A switch on its joystick task,
+`task.env.terrain.enable`, turns terrain on. The switch is off by default.
+w01-tek's terrain keeper trained from scratch, with no flat checkpoint. Its
+actor observes gyro and gravity. The flat keepers' actors leave them out.
+So neither keeper's checkpoint restores under the other's preset. The
+terrain keeper also uses a larger knee action scale, knee clamp, and torque
+cap than the kp40 flat keeper, `locomotion_stiff_v1`.
+
+humanoid-lab's flat actor already observes gyro and gravity, so a terrain
+actor with no height scan can use the same layout. A policy trained on one
+path runs on the other only if both paths resolve the same actuator preset,
+with the same `actuators.overrides`. The preset sets the action scale. The
+critic of w01-tek's terrain keeper observes a height scan. If the terrain
+path's critic does too, a training checkpoint does not resume across the
+paths.
+
+The terrain system lives in the `training/` project of machinekind/w01-tek.
+This map lists what to port and what to know before reading the w01-tek
+code. Paths are relative to `training/wojtek_rl/`, and line numbers match
+w01-tek `e44c1a9`.
 
 - The procedural tiled arena on one shared heightfield with a lookup grid,
   in `terrain.py`.
@@ -39,6 +61,15 @@ are relative to `training/wojtek_rl/`, and line numbers match w01-tek
 - `check-terrain --backend warp`, the gate for that cap. MJWarp prints the
   overflow warning from device code straight to file descriptor 1.
   `capture_os_stdout` in `check_terrain.py:69-101` captures it there.
+- The flat measurement scene, the `flat` argument of
+  `load_checkpoint_policy` in `battery.py:271-324`. It defaults to true. A
+  true value builds the measurement env from the run's stored env config
+  with terrain turned off. The battery, the
+  courses, and the report use that default. So they score a terrain policy
+  on the same flat scene as a flat one. `terrain_scan.py` passes
+  `flat=False` to measure on an arena. humanoid-lab's
+  `load_checkpoint_policy` in `src/humanoid_lab/eval/battery.py` has no such
+  argument. It rebuilds the env from the run's own config.
 - The pin of `ppo.num_resets_per_eval` to 0 on terrain runs, in
   `train.py:123-136`, commit `64da36a`. A periodic reset redraws every
   env's level, so the curriculum never climbs. humanoid-lab's
@@ -77,10 +108,11 @@ and the v4.4 variants have presets of their own in w01-tek. The
 distillation trainer is `distill.py`. Its preset,
 `conf/experiment/terrain_distill.yaml`, is the revised recipe written after
 the first distillation failed. Its env block is the v4.6 recipe's,
-unchanged. `terrain_scan_v5` is the preset that puts the height scan in the
-actor. It is older than the keeper. It adds the scan to the v4.1 recipe and
-did not beat v4.1. No preset puts the scan in the actor on the keeper's
-recipe.
+unchanged. Its `flat` teacher is a v4.6 terrain run. The preset routes
+stand and spin commands to it. `terrain_scan_v5` is the preset that puts
+the height scan in the actor. It is older than the keeper. It adds the scan
+to the v4.1 recipe and did not beat v4.1. No preset puts the scan in the
+actor on the keeper's recipe.
 
 The keeper's recipe adds these items to port:
 
@@ -124,5 +156,6 @@ stair tile peaks at its centre, so its cells measure climbing backward. An
 inverted pyramid stair tile is a pit, so its cells measure climbing forward.
 Seed variance is large. A second v4.2 run at another seed scored 34% below
 the keeper on the legacy cells, the original cells on the `eval` arena.
-Judge a recipe on the median of three seeds. Score the keeper again in the
-same eval jobs, because one checkpoint's scores drift between jobs.
+Judge a recipe on the median of three seeds. Score a recipe and the policy
+it is compared against in the same eval jobs, because one checkpoint's
+scores drift between jobs.
