@@ -13,40 +13,54 @@ all.
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from humanoid_lab import check_contacts, paths
 from humanoid_lab.robot.spec import load_robot_spec
 
-# Short by CLI standards: every measured peak lands inside the first 80
-# control steps, and three seeds is enough to cover the fallen sweep's three
-# attitudes. The budgets recorded in the robot.yamls use the CLI's own
-# longer defaults.
+# Short by CLI standards. 100 control steps x 4 seeds reproduce the CLI's
+# overall peak for every robot and preset, which is all the budget guard
+# reads. Roboto Origin needs both: deploy_pd's 32 contacts land standing at
+# step 91, and sizing_ideal's 38 land fallen at seed 3, the fallen sweep's
+# second face-down draw. Some per-regime peaks land later (step 103, or seed
+# 4, under the CLI defaults), so the per-regime numbers here can run below
+# the CLI's; the tests only check that each regime measured something. The
+# budgets recorded in the robot.yamls use the CLI's own longer defaults.
 TEST_STEPS = 100
-TEST_SEEDS = 3
+TEST_SEEDS = 4
 
 # Every robot directory, like test_robot_conformance: adding a robot means
-# adding a directory, not editing this list. Each is measured under its
-# first preset -- the recorded peak tables barely move across presets.
+# adding a directory, not editing this list. Each robot is measured under
+# every preset it has. The preset that sets the budget differs per robot
+# (Roboto Origin peaks at 38 contacts under sizing_ideal and 32 under
+# deploy_pd), so the guard takes the maximum over presets.
 ROBOTS = sorted(p.parent.name for p in paths.ROBOTS_DIR.glob("*/robot.yaml"))
 
 
+def _presets(robot: str) -> list[str]:
+    return sorted(p.stem for p in (paths.ROBOTS_DIR / robot / "actuators").glob("*.yaml"))
+
+
 def _first_preset(robot: str) -> str:
-    return sorted(p.stem for p in (paths.ROBOTS_DIR / robot / "actuators").glob("*.yaml"))[0]
+    return _presets(robot)[0]
 
 
-@pytest.fixture(scope="module")
-def measured():
-    return {
-        robot: check_contacts.measure_robot(
-            paths.ROBOTS_DIR / robot, _first_preset(robot), steps=TEST_STEPS, seeds=TEST_SEEDS
-        )
-        for robot in ROBOTS
-    }
+CASES = [(robot, preset) for robot in ROBOTS for preset in _presets(robot)]
 
 
-@pytest.mark.parametrize("robot", ROBOTS)
-def test_every_regime_reports_a_peak(measured, robot):
+@functools.cache
+def _measured(robot: str, preset: str) -> dict:
+    """One measurement per (robot, preset), taken on first use, so a partial
+    run measures only the cases it selects."""
+    return check_contacts.measure_robot(
+        paths.ROBOTS_DIR / robot, preset, steps=TEST_STEPS, seeds=TEST_SEEDS
+    )
+
+
+@pytest.mark.parametrize(("robot", "preset"), CASES)
+def test_every_regime_reports_a_peak(robot, preset):
     """Three regimes, all of them measuring something.
 
     No ordering is asserted between them, and that is a finding rather than a
@@ -56,8 +70,7 @@ def test_every_regime_reports_a_peak(measured, robot):
     carry the highest contact count of the three. The fallen regime is
     measured because early training is mostly fallen robots, not because it is
     guaranteed to be the worst."""
-    result = measured[robot]
-    regimes = result["regimes"]
+    regimes = _measured(robot, preset)["regimes"]
     assert set(regimes) == set(check_contacts.REGIMES)
     for name, r in regimes.items():
         assert r["nacon_max"] > 0, f"{name} measured no contacts at all"
@@ -70,15 +83,16 @@ def test_every_regime_reports_a_peak(measured, robot):
 
 
 @pytest.mark.parametrize("robot", ROBOTS)
-def test_the_recorded_budgets_hold_the_measured_peaks_with_headroom(measured, robot):
+def test_the_recorded_budgets_hold_the_measured_peaks_with_headroom(robot):
     """robot.yaml's sim_budget must still cover the measured peaks at the
     headroom rule. Adding foot geometry, raising condim, or injecting
     collision primitives moves the peaks; this test is what makes that a
     build failure instead of a silent contact drop on the next GPU run."""
     budget = load_robot_spec(paths.ROBOTS_DIR / robot).sim_budget
     assert budget, f"{robot}: robot.yaml records no sim_budget block to guard"
-    peak_contacts = measured[robot]["peak"]["nacon_max"]
-    peak_rows = measured[robot]["peak"]["nefc_max"]
+    peaks = [_measured(robot, preset)["peak"] for preset in _presets(robot)]
+    peak_contacts = max(peak["nacon_max"] for peak in peaks)
+    peak_rows = max(peak["nefc_max"] for peak in peaks)
 
     assert peak_contacts * check_contacts.HEADROOM <= budget["naconmax_per_env"], (
         f"{robot}: {peak_contacts} peak contacts at {check_contacts.HEADROOM}x headroom "
@@ -91,21 +105,23 @@ def test_the_recorded_budgets_hold_the_measured_peaks_with_headroom(measured, ro
     )
 
 
-def test_the_peak_block_is_the_max_over_the_regimes(measured):
+@pytest.mark.parametrize(("robot", "preset"), CASES)
+def test_the_peak_block_is_the_max_over_the_regimes(robot, preset):
     """One number per budget, taken over every regime -- sizing off a single
     regime is the mistake the fallen probe exists to prevent."""
-    for result in measured.values():
-        regimes = result["regimes"]
-        assert result["peak"]["nacon_max"] == max(r["nacon_max"] for r in regimes.values())
-        assert result["peak"]["nefc_max"] == max(r["nefc_max"] for r in regimes.values())
+    result = _measured(robot, preset)
+    regimes = result["regimes"]
+    assert result["peak"]["nacon_max"] == max(r["nacon_max"] for r in regimes.values())
+    assert result["peak"]["nefc_max"] == max(r["nefc_max"] for r in regimes.values())
 
 
-def test_the_result_records_what_produced_it(measured):
+def test_the_result_records_what_produced_it():
     """The measurement lands in a config comment, so it has to carry its own
     provenance: which robot, which preset, which backend, how many steps."""
-    result = measured["asimov_v1"]
+    preset = _first_preset("asimov_v1")
+    result = _measured("asimov_v1", preset)
     assert result["robot"] == "asimov_v1"
-    assert result["preset"] == _first_preset("asimov_v1")
+    assert result["preset"] == preset
     assert result["backend"] == "jax"
     assert result["steps"] == TEST_STEPS
     assert result["seeds"] == TEST_SEEDS

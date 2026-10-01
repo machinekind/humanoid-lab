@@ -238,16 +238,29 @@ model_patches:
     # floor in any keyframe (the shin capsule, the lowest, clears it by
     # ~0.034 m at home) -- gated by test_robot_conformance.py's
     # test_only_the_feet_touch_the_floor_at_the_reset_keyframe.
+    #
+    # The two boxes collide as 3D chessboard cells (`split`), on flat ground
+    # and on terrain alike. MJWarp collects at most 50 prism hits per
+    # geom-heightfield pair (mjMAXCONPAIR). It skips every prism past that
+    # untested, with a warning each, then writes at most 4 contacts from the
+    # hits it kept. A face at most 10 cm across overlaps at most 4 x 4 cells
+    # of a 4 cm heightfield, 32 prisms. The full boxes' faces, 16 x 19 cm up
+    # to 25 x 26 cm, overlap up to 60 to 128 prisms. Cells: base 9.3 x 9.0 x
+    # 7.9 cm (6 of a 2x3x2 grid), torso 9.6 x 8.3 x 8.6 cm (9 of a 2x3x3
+    # grid). Both bodies carry an explicit <inertial>, so the split moves no
+    # mass.
     base_collision:
       body: base_link
       type: box
       size: [0.0931, 0.1352, 0.0792]
       pos: [-0.0395, 0.0, -0.0105]
+      split: [2, 3, 2]
     torso_collision:
       body: torso_link
       type: box
       size: [0.0956, 0.1250, 0.1289]
       pos: [-0.0131, 0.0, 0.1128]
+      split: [2, 3, 3]
     # thigh_pitch_link: shaft along -z, hip pivot at z 0, knee child at
     # z -0.25; mesh z [-0.3146, +0.0421], mid-shaft radius 0.068 around
     # centerline (x 0, y -+0.0181).
@@ -302,11 +315,14 @@ model_patches:
       fromto: [0.031, 0.0, 0.0, 0.105, 0.0, 0.0]
 
 # Warp contact/constraint budgets for this robot's collision geometry.
-# Measured worst case across standing/walking/fallen regimes
-# (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 13 contacts
-# / 124 rows, in the fallen regime. Times the 7x headroom rule, rounded up
-# to multiples of 8 and 32. The row peak is derived on the jax backend;
-# re-measure on a warp host, where both are live counters.
+# Measured worst case across standing/walking/fallen regimes and both
+# presets (./run.sh check-contacts, 200 steps x 5 seeds per regime) was 38
+# contacts / 274 rows, sizing_ideal in the fallen regime; deploy_pd peaked
+# at 32 / 238. A box lying on the floor touches it at up to 4 corners, and
+# each face of a split box carries several cells. Unsplit, the two boxes
+# peaked at 13 / 124. Times the 7x headroom rule,
+# rounded up to multiples of 8 and 32. The row peak is derived on the jax
+# backend; re-measure on a warp host, where both are live counters.
 sim_budget:
-  naconmax_per_env: 96
-  njmax: 896
+  naconmax_per_env: 272
+  njmax: 1920

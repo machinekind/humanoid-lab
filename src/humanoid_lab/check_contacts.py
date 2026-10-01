@@ -74,8 +74,8 @@ HEADROOM = 7.0
 NACON_STEP = 8
 NJMAX_STEP = 32
 
-DEFAULT_STEPS = 200  # 4 s of control at ctrl_dt=0.02; every measured peak
-DEFAULT_SEEDS = 5    # landed inside the first 80 steps
+DEFAULT_STEPS = 200  # 4 s of control at ctrl_dt=0.02; the latest measured
+DEFAULT_SEEDS = 5    # per-regime peak landed at step 103
 WALK_HZ = 1.5
 
 # (axis, degrees) for the fallen regime, cycled one per seed: face down, on
