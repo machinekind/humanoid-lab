@@ -9,7 +9,9 @@ dependencies = [
     # jax 0.9.2 is the proven pin for this driver family; cuda extra only on linux
     "jax[cuda12]==0.9.2; sys_platform == 'linux'",
     "jax==0.9.2; sys_platform == 'darwin'",
-    "mujoco>=3.2.0",
+    # Keep equal to the mujoco-mjx pin. mujoco 3.14.0 with mujoco-mjx 3.10.0
+    # fails MJX integration tests.
+    "mujoco==3.10.0",
     # mujoco-mjx 3.11.0 needs warp-lang 1.14.0, newer than the pin below.
     "mujoco-mjx==3.10.0",
     # mujoco-mjx 3.10.0 vendors MJWarp and requires exactly this warp-lang.
