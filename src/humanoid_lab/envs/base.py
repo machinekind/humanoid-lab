@@ -88,6 +88,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
         self._preset = load_actuator_preset(robot_dir, preset_name, actuator_overrides)
 
         spec = build_spec(robot_dir, preset_name, actuator_overrides)
+        self._customize_spec(spec)
         self._mj_model = compile_spec(spec)
         self._mj_model.opt.timestep = self.sim_dt
         self._customize_model(self._mj_model)
@@ -276,10 +277,10 @@ class HumanoidEnv(mjx_env.MjxEnv):
         from a snapshot of a fall, and the (ctrl, qpos) pair is what callers
         and tests actually read.
 
-        Plain MuJoCo on the CPU model, run once at construction, never
-        traced. About 0.2 s.
+        Plain MuJoCo on a copy of `_settle_model()`, run once at
+        construction, never traced. About 0.2 s.
         """
-        m = copy.deepcopy(self._mj_model)
+        m = copy.deepcopy(self._settle_model())
         # The actuator TYPES are overwritten here as well as the prm arrays,
         # because a torque preset's params are not a servo's.
         # The `ideal_torque` actuator model injects biastype NONE actuators
@@ -372,6 +373,13 @@ class HumanoidEnv(mjx_env.MjxEnv):
                 f"'{self._reset_keyframe}' keyframe is not a standing equilibrium, and a "
                 "snapshot of a fall cannot anchor the pose rewards"
             )
+
+    def _customize_spec(self, spec: mujoco.MjSpec) -> None:
+        """Task-specific scene edits on the assembled spec, before it compiles."""
+
+    def _settle_model(self) -> mujoco.MjModel:
+        """The model the real_pose_ref settle runs on (deep-copied there)."""
+        return self._mj_model
 
     def _customize_model(self, m: mujoco.MjModel) -> None:
         """Task-specific tweaks applied before the model is put on device."""
