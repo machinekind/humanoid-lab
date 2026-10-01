@@ -111,9 +111,10 @@ def test_roboto_walk_v5_arms_the_cut_style_package_on_top_of_the_v4_recipe():
 
 
 def _reward_and_ppo_split(experiment):
-    """The composed config as a plain dict, with reward.scales and ppo popped."""
+    """The composed config as a plain dict, with task.env.reward (and its
+    scales) and ppo popped out of it."""
     cfg = OmegaConf.to_container(_compose([f"experiment={experiment}"]), resolve=True)
-    reward = cfg["task"]["env"]["reward"]
+    reward = cfg["task"]["env"].pop("reward")
     scales = reward.pop("scales")
     return cfg, reward, scales, cfg.pop("ppo")
 
