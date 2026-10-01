@@ -108,3 +108,69 @@ def test_roboto_walk_v5_arms_the_cut_style_package_on_top_of_the_v4_recipe():
     assert "knee_stance" not in scales
     assert "gait" not in cfg.task.env
     assert "biped_air_time_threshold" not in cfg.task.env.reward
+
+
+def _reward_and_ppo_split(experiment):
+    """The composed config as a plain dict, with reward.scales and ppo popped."""
+    cfg = OmegaConf.to_container(_compose([f"experiment={experiment}"]), resolve=True)
+    reward = cfg["task"]["env"]["reward"]
+    scales = reward.pop("scales")
+    return cfg, reward, scales, cfg.pop("ppo")
+
+
+def test_yolo_income_long_is_yolo_chain_income_b_with_feet_apex_doubled():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_income_long")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_chain_income_b")
+
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales.pop("feet_apex") == 10.0
+    assert base_scales.pop("feet_apex") == 5.0
+    assert ours_scales == base_scales
+    assert ours_scales["gait_symmetry_income"] == 0.5
+    assert ours_scales["energy"] == -3.0e-4
+    # The term clips at the target; the overlay's 0.08 stays.
+    assert ours_reward["apex_target"] == 0.08
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.5e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+    assert ours_ppo["num_evals"] == 24
+
+
+SMOOTHNESS_SCALES = {
+    "action_rate": -0.05,
+    "action_accel": -0.05,
+    "torque_rate": -3.0e-7,
+    "joint_acc": -7.5e-7,
+}
+
+
+def test_yolo_income_smooth_is_yolo_income_long_plus_the_smoothness_package():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_income_smooth")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_long")
+
+    assert ours == base
+    assert ours_reward.pop("stand_still_vel_weight") == 0.5
+    assert "stand_still_vel_weight" not in base_reward
+    assert ours_reward == base_reward
+    for key, value in SMOOTHNESS_SCALES.items():
+        assert ours_scales.pop(key) == pytest.approx(value), key
+        assert base_scales.pop(key, 0.0) != pytest.approx(value), key
+    assert ours_scales == base_scales
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.0e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+def test_yolo_income_smooth_reaches_the_env_config():
+    cfg = _compose(["experiment=yolo_income_smooth"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.reward.stand_still_vel_weight == 0.2
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.reward.stand_still_vel_weight == 0.5
+    for key, value in SMOOTHNESS_SCALES.items():
+        assert env_cfg.reward.scales[key] == pytest.approx(value), key
+    assert env_cfg.reward.scales.feet_apex == 10.0
