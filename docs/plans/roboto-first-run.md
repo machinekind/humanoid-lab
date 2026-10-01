@@ -549,11 +549,11 @@ scenarios):
 
 | run | recipe | steps | walk vx err | antiphase | swings | stand vib | spin L/R deg |
 |---|---|---|---|---|---|---|---|
-| yolo_chain_income | yolo_v4 @472M + gait_symmetry_income 0.5 + energy -3e-4 | 2.6e8 | 0.139 | 0.882 | 17 | 0.29 | 345/-348 |
-| yolo_oneshot | yolo_v4 @472M + gait_symmetry -1 (cap 1) + shaping_tracking_gate + energy -3e-4 | 2.5e8 | 0.144 | 0.833 | 22 | 0.42 | 361/-367 |
-| yolo_v4 | run-4 recipe from scratch | 7.9e8 | 0.213 | 0.683 | 12 | 0.35 | 370/-352 |
-| yolo_clock, yolo_symincome, novel_pure_cmd, novel_sighted, novel_adaptive_kl | one delta each, from scratch | 7.9-8.4e8 | ~0.50 | 0.50 | 0 | 0.55-0.59 | ~0 |
-| yolo_chain_sym | chain_sym_a @452M + gait_symmetry -1 (cap 1) | 4.2e8 | 0.502 | 0.50 | 0 | 0.60 | ~0 |
+| yolo_chain_income | yolo_v4 @472M + gait_symmetry_income 0.5 + energy -3e-4 | 2.6e8 | 0.139 | 0.882 | 17 | 0.72 | 345/-348 |
+| yolo_oneshot | yolo_v4 @472M + gait_symmetry -1 (cap 1) + shaping_tracking_gate + energy -3e-4 | 2.5e8 | 0.144 | 0.833 | 22 | 0.70 | 361/-367 |
+| yolo_v4 | run-4 recipe from scratch | 7.9e8 | 0.213 | 0.683 | 12 | 0.72 | 370/-352 |
+| yolo_clock, yolo_symincome, novel_pure_cmd, novel_sighted, novel_adaptive_kl | one delta each, from scratch | 7.9-8.4e8 | ~0.50 | 0.50 | 0 | 0.69-0.79 | ~0 |
+| yolo_chain_sym | chain_sym_a @452M + gait_symmetry -1 (cap 1) | 4.2e8 | 0.502 | 0.50 | 0 | 0.69 | ~0 |
 
 Findings:
 
@@ -566,9 +566,9 @@ Findings:
   the oneshot package and the income term all lost the steps within 70M.
   Restored from yolo_v4 at feet_apex ~11/episode, the income package and
   the oneshot package both kept the gait and reduced the limp (antiphase
-  0.68 -> 0.88 and 0.83) and the stand vibration (0.35 -> 0.29) in 2.5e8
-  steps. Swing apex was still 2-3 cm against the 8 cm target at these
-  budgets.
+  0.68 -> 0.88 and 0.83) in 2.5e8 steps. Stand vibration stayed at about
+  0.7 for all three walkers (run 4b: 0.65), above the 0.5 gate, and swing
+  apex was still 2-3 cm against the 8 cm target at these budgets.
 - No single from-scratch delta escaped by 8e8 steps: slower gait clock
   (0.9-1.4 Hz, threshold 0.5), symmetry income, pure command draws
   (fast 0.15 / slow 0.10 / wz 0.10), joint_vel obs noise 0.2, or brax's
