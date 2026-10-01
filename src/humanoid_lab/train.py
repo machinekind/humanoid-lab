@@ -308,9 +308,17 @@ def main(cfg: DictConfig) -> None:
         # avg_episode_length exposes die-and-reset reward hacking that the
         # reward number alone hides.
         ep_len = metrics.get("eval/avg_episode_length", float("nan"))
+        # brax attaches the last epoch's training metrics to every eval call
+        # after the first; the LR moves under ppo.learning_rate_schedule
+        # ADAPTIVE_KL, and kl_mean is what drives it.
+        opt = "".join(
+            f"  {label} {float(metrics[key]):.3g}"
+            for label, key in (("lr", "training/learning_rate"), ("kl", "training/kl_mean"))
+            if key in metrics
+        )
         print(
             f"steps {num_steps:>12,}  reward {reward:8.2f}  "
-            f"ep_len {ep_len:6.0f}  {sps:,.0f} steps/s"
+            f"ep_len {ep_len:6.0f}  {sps:,.0f} steps/s{opt}"
         )
         if wb is not None:
             wb.log({**metrics, "perf/steps_per_sec": sps}, step=num_steps)
@@ -333,9 +341,10 @@ def main(cfg: DictConfig) -> None:
         **training_params,
         network_factory=network_factory,
         seed=cfg.seed,
-        # mujoco_playground's own wrapping, except with no_progress on, where
-        # it gains the respawn reseed layer (see envs/wrappers.py). Off, this
-        # IS wrapper.wrap_for_brax_training.
+        # mujoco_playground's own wrapping, plus a respawn reseed layer when
+        # no_progress is on or a gait-symmetry scale is nonzero (see
+        # envs/wrappers.py). With neither, this IS
+        # wrapper.wrap_for_brax_training.
         wrap_env_fn=make_wrap_env_fn(env._config),
         save_checkpoint_path=str(ckpt_dir),
         restore_checkpoint_path=restore,
