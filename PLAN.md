@@ -71,7 +71,7 @@ humanoid-lab/
 ```
 
 Deliberately out of scope: ROS or deployment workspaces. Export artifacts plus obs-layout metadata
-are the interface to each robot's own runtime. w01-tek stays in w01-tek.
+are the interface to each robot's own runtime. The quadruped stays in machinekind/w01-tek.
 
 ## Research findings (verified 2026-07-14)
 
@@ -203,7 +203,7 @@ Each step has a gate. Do not start the next step before the gate passes.
 1. `git init`, scaffold the tree above, pyproject, package name (ask Marcin; default `hlab`).
    Gate: `pip install -e .` and an empty test pass.
 2. Port the PPO/train/checkpoint core and run.sh verb pattern from w01-tek `training/`
-   (repo: ~/git/machinekind/w01-tek). Strip w01-tek-specific env code. Gate: `run.sh train --cfg job
+   (repo: machinekind/w01-tek). Strip w01-tek-specific env code. Gate: `run.sh train --cfg job
    --resolve` works on a placeholder config.
 3. Implement RobotSpec loader + actuator injection + the position-PD and ideal-torque actuator
    models. Gate: unit test injects actuators into a toy MJCF and compiles.
