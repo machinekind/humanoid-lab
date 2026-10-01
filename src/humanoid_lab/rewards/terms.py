@@ -149,6 +149,31 @@ def feet_apex(swing_apex, first_contact, apex_target: float):
     return jp.sum(jp.clip(swing_apex / apex_target, 0.0, 1.0) * first_contact)
 
 
+def feet_apex_min(swing_apex, last_apex, first_contact, apex_target: float):
+    """Pay each completed swing for the LOWER of its own peak clearance and
+    the other foot's last completed peak, as a fraction of `apex_target`,
+    once, on the step the foot lands. Two feet only.
+
+    feet_apex pays each foot its own peak, so a gait that lifts one leg and
+    shuffles the other collects half of the term with the lifting leg. Here
+    a landing pays clip(min(swing_apex[i], last_apex[other]) / apex_target,
+    0, 1): the lifting leg's landings earn only as much as the other leg's
+    most recent swing reached, and a gait earns the full payout only when
+    both legs reach the target. Clipped at the target, like feet_apex.
+
+    `swing_apex` is the caller's running maximum over the current swing, as
+    for feet_apex. `last_apex` holds each foot's peak over its last
+    completed swing, 0 before that foot's first landing; the caller updates
+    it after this read, so on a simultaneous landing each foot is paired
+    with the other's previous swing. `first_contact` selects the feet whose
+    swing ended this step.
+    """
+    if swing_apex.shape[-1] != 2:
+        raise ValueError(f"feet_apex_min needs two feet, got {swing_apex.shape[-1]}")
+    paired = jp.minimum(swing_apex, last_apex[..., ::-1])
+    return jp.sum(jp.clip(paired / apex_target, 0.0, 1.0) * first_contact)
+
+
 def feet_landing(foot_vz, foot_clearance, glide_height: float):
     """Penalize downward foot speed, weighted by closeness to the floor:
     sum(min(foot_vz, 0)^2 * clip(1 - clearance/glide_height, 0, 1)).
@@ -301,8 +326,48 @@ def gait_symmetry(air_dur_ema, stance_dur_ema, floor: float, cap: float = 1.0):
     at scale*cap per step while a settled limp (rel_sq well under the cap)
     still pays in proportion to its asymmetry."""
 
-    def rel_sq(d):
-        armed = (d[0] > 0.0) & (d[1] > 0.0)
-        return jp.square((d[0] - d[1]) / jp.maximum(0.5 * (d[0] + d[1]), floor)) * armed
+    return jp.minimum(
+        _pair_rel_sq(air_dur_ema, floor)[0] + _pair_rel_sq(stance_dur_ema, floor)[0], cap
+    )
 
-    return jp.minimum(rel_sq(air_dur_ema) + rel_sq(stance_dur_ema), cap)
+
+def gait_symmetry_income(air_dur_ema, stance_dur_ema, in_contact, floor: float, cap: float = 1.0):
+    """Positive twin of gait_symmetry: pay (1 - min(rel_sq_sum, cap) / cap)
+    on every single-stance step once at least one duration pair is armed.
+
+    rel_sq_sum is gait_symmetry's summed relative asymmetry over the same
+    EMAs, with the same per-pair arming: an unarmed pair contributes 0 and
+    does not count toward arming. An even gait earns 1 per single-stance
+    step, a gait at or over the cap earns 0, and the pay falls linearly in
+    rel_sq_sum between them.
+
+    The penalty form charges asymmetry, so standing, which never arms it,
+    is its cheapest state. The income form pays for symmetry, so standing
+    earns nothing from it and a clumsy first gait costs nothing relative to
+    standing. Double support and flight pay 0, so a policy that has armed
+    the EMAs and then settles into standing on both feet stops collecting.
+
+    One-legged standing is not excluded here: the EMAs update only on
+    liftoff and landing, so a foot held in stance keeps the last recorded
+    durations and keeps earning. The caller's command mask and the tracking
+    terms are what price that state. Arming is per episode only if the
+    caller restarts the EMAs on every respawn (in training,
+    envs/wrappers.py's GaitReseedWrapper does); EMAs carried across a
+    respawn would pay from the new episode's first single stance.
+
+    `in_contact` is per-foot contact in the same foot order as the EMAs.
+    `cap` must be positive: it is the divisor."""
+    air_sq, air_armed = _pair_rel_sq(air_dur_ema, floor)
+    stance_sq, stance_armed = _pair_rel_sq(stance_dur_ema, floor)
+    rel_sq_sum = air_sq + stance_sq
+    single_stance = jp.sum(in_contact.astype(jp.int32)) == 1
+    armed_any = air_armed | stance_armed
+    return (1.0 - jp.minimum(rel_sq_sum, cap) / cap) * single_stance * armed_any
+
+
+def _pair_rel_sq(d, floor: float):
+    """((d0 - d1) / max(mean(d), floor))^2 for one left-right duration pair,
+    and whether the pair is armed (both durations recorded). An unarmed pair
+    returns 0."""
+    armed = (d[0] > 0.0) & (d[1] > 0.0)
+    return jp.square((d[0] - d[1]) / jp.maximum(0.5 * (d[0] + d[1]), floor)) * armed, armed

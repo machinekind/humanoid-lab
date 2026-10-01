@@ -537,3 +537,160 @@ symmetry-as-income / run-5 reserve) recorded above, decision is
 Marcin's. Gates report:
 [artifact 5393f71c](https://claude.ai/code/artifact/5393f71c-9a26-43b0-8600-90823b8bad72);
 gate videos in ~/Documents/robot/roboto_walk_v5_gate{,2,3}/.
+
+## Nine-box night, 2026-09-30: warm-start depth decides
+
+Nine 1xH100 boxes for about 3.2 h of training each, all at the run-4 sizing
+(4096 envs, batch 128, one GPU), deploy_pd, from the roboto-walk-v5 code.
+Presets `configs/experiment/yolo_*.yaml` and `novel_*.yaml`; the chain
+payload `jobs/train_chain.sh` runs a from-scratch phase A then a warm-started
+phase B. Results (battery on each run's last checkpoint, all 0 falls in 7
+scenarios):
+
+| run | recipe | steps | walk vx err | antiphase | swings | stand vib | spin L/R deg |
+|---|---|---|---|---|---|---|---|
+| yolo_chain_income | yolo_v4 @472M + gait_symmetry_income 0.5 + energy -3e-4 | 2.6e8 | 0.139 | 0.882 | 17 | 0.72 | 345/-348 |
+| yolo_oneshot | yolo_v4 @472M + gait_symmetry -1 (cap 1) + shaping_tracking_gate + energy -3e-4 | 2.5e8 | 0.144 | 0.833 | 22 | 0.70 | 361/-367 |
+| yolo_v4 | run-4 recipe from scratch | 7.9e8 | 0.213 | 0.683 | 12 | 0.72 | 370/-352 |
+| yolo_clock, yolo_symincome, novel_pure_cmd, novel_sighted, novel_adaptive_kl | one delta each, from scratch | 7.9-8.4e8 | ~0.50 | 0.50 | 0 | 0.69-0.79 | ~0 |
+| yolo_chain_sym | chain_sym_a @452M + gait_symmetry -1 (cap 1) | 4.2e8 | 0.502 | 0.50 | 0 | 0.69 | ~0 |
+
+Findings:
+
+- The run-4 recipe escapes the leaning basin in one try out of three. Three
+  identical-seed runs differing only in `num_timesteps` (so in their random
+  stream) read feet_apex per episode 0.07, 0.13 and 2.07 at 412-452M; the
+  third escaped at 412M, yolo_v4 at 314-367M. Run 4's walk was a draw.
+- Warm-start depth decides whether style terms survive. Restored from a
+  policy at feet_apex ~2/episode (first steps), gait_symmetry -1 capped,
+  the oneshot package and the income term all lost the steps within 70M.
+  Restored from yolo_v4 at feet_apex ~11/episode, the income package and
+  the oneshot package both kept the gait and reduced the limp (antiphase
+  0.68 -> 0.88 and 0.83) in 2.5e8 steps. Stand vibration stayed at about
+  0.7 for all three walkers (run 4b: 0.65), above the 0.5 gate, and swing
+  apex was still 2-3 cm against the 8 cm target at these budgets.
+- No single from-scratch delta escaped by 8e8 steps: slower gait clock
+  (0.9-1.4 Hz, threshold 0.5), symmetry income, pure command draws
+  (fast 0.15 / slow 0.10 / wz 0.10), joint_vel obs noise 0.2, or brax's
+  ADAPTIVE_KL schedule (desired_kl 0.01). novel_pure_cmd came closest
+  (feet_apex 0.77, reward 23, rising at the cut).
+- The gait trackers (air/contact time, swing apex, duration EMAs) leaked
+  across respawns under `BraxAutoResetWrapper(full_reset=False)`;
+  `GaitReseedWrapper` restarts them, applied when a symmetry scale is on.
+
+Open: a stop that writes run.json. Raising inside the progress callback from
+a SIGTERM handler aborts in XLA (rc 134); a stop file the callback polls is
+the fix. Next rung: a longer warm-start from a deep walker with the income
+package, aimed at the apex target.
+
+## Campaign 2, 2026-10-01: the limp is the recipe's attractor
+
+Fifteen runs at the run-4 sizing (4096 envs, batch 128, one GPU, deploy_pd,
+`ppo.num_evals` 24). Each trained to its own `ppo.num_timesteps` except
+M2-M4 (stopped at 0.93-0.98e9) and M5 (cut before its first checkpoint).
+Fourteen batteries, all 0 falls in 7 scenarios. Columns: vx err, antiphase,
+swing apex median: walk_ramp; vib and W (mean mechanical power): stand.
+Reference is yolo_chain_income.
+
+### Planned runs
+
+| id | run | start | steps | vx err | antiphase | apex cm | vib | W |
+|---|---|---|---|---|---|---|---|---|
+| ref | yolo_chain_income | yolo_v4 @472M | 2.6e8 | 0.139 | 0.882 | 2.9 | 0.72 | 6.3 |
+| R1 | yolo_income_long: income 0.5, energy -3e-4, feet_apex 10 | yolo_v4 @786M | 1.5e9 | 0.209 | 0.733 | 8.8 | 0.61 | 5.8 |
+| R2 | yolo_v4, seed 1 | scratch | 1.5e9 | 0.167 | 0.733 | 6.7 | 0.77 | 3.7 |
+| R3 | yolo_v4, seed 2 | scratch | 1.5e9 | 0.183 | 0.723 | 6.1 | 0.76 | 3.5 |
+| R4 | yolo_v4, seed 3 | scratch | 1.5e9 | 0.157 | 0.606 | 4.8 | 0.67 | 4.9 |
+| R5 | yolo_income_smooth: R1 + action_rate, action_accel -0.05, torque_rate -3e-4, joint_acc -7.5e-7, stand_still_vel_weight 0.5 | yolo_chain_income @262M | 1.0e9 | 0.247 | 0.738 | 4.4 | 0.71 | 2.1 |
+
+Every v4-recipe policy at 1.5e9 walks: three new seeds and seed 0's
+continuation (R1) reach apex 4.8-8.8 cm at antiphase 0.61-0.73. The budget
+buys foot height; the one-leg-leading gait is the recipe's attractor, not a
+seed draw. Smoothing (R5) cut standing power 6.3 -> 2.1 W but left the
+vibration index at 0.71, and cost tracking (0.139 -> 0.247) and gait
+(0.88 -> 0.74).
+
+Zero-noise diagnostic: yolo_chain_income re-scored with obs_noise
+joint_vel, joint_pos and gyro at 0 reads stand vibration 0.761 (0.718 with
+the training noise). The buzz is intrinsic to the policy, not a response to
+observation noise.
+
+### Follow-ups, one lever each
+
+| id | run | start | change | steps | vx err | antiphase | apex cm | vib | W |
+|---|---|---|---|---|---|---|---|---|---|
+| F1 | yolo_income_sym | R1 @1507M | income 2.0, feet_apex 10 | 1.0e9 | 0.164 | 0.773 | 9.0 | 0.76 | 3.9 |
+| F2 | yolo_income_tall | chain_income @262M | feet_apex 10 (R5 without smoothing) | 1.0e9 | 0.282 | 0.659 | 8.1 | 0.63 | 3.7 |
+| F3 | yolo_noclock | scratch | no phase obs, feet_phase 0 | 1.5e9 | 0.182 | 0.696 | 2.2 | 0.61 | 3.6 |
+| F4 | yolo_apex_min | R1 @1507M | feet_apex 0, feet_apex_min 10, income 2.0 | 1.0e9 | 0.222 | 0.784 | 7.2 | 0.65 | 3.5 |
+| F5 | yolo_apex_min_even | chain_income @262M | as F4 | 1.0e9 | 0.206 | 0.741 | 2.1 | 0.63 | 4.2 |
+
+`feet_apex_min` pays each landing clip(min(own peak, other foot's last
+peak) / apex_target, 0, 1), so a one-leg gait earns nothing from its
+lifting leg. F2 shows the lift weight alone turns the even walker into a
+limper: the tall-apex incentive induces the limp, not the smoothing. The 4x
+income (F1) and the lower-foot term (F4) top out at antiphase 0.77-0.78; F5
+lost both height and evenness.
+
+### Per foot
+
+Rollout at vx 0.5 m/s for 6 s, left | right, cm (swing in s):
+
+| policy | swing | apex | step | lateral offset |
+|---|---|---|---|---|
+| yolo_chain_income | 0.307 \| 0.307 | 3.0 \| 3.5 | 33.5 \| 33.5 | 11.1 \| 9.1 |
+| R1 yolo_income_long | 0.293 \| 0.309 | 7.9 \| 9.4 | 24.4 \| 25.9 | 15.3 \| 18.6 |
+| F1 yolo_income_sym | 0.287 \| 0.345 | 9.1 \| 10.0 | 28.8 \| 29.7 | 13.6 \| 19.7 |
+| F2 yolo_income_tall | | | 27.3 \| 24.1 | 10.9 \| 10.2 |
+| F4 yolo_apex_min | | 8.4 \| 6.9 | | 18 \| 19 |
+| F3 yolo_noclock | ~0.13 | | 15.6 \| 14.8 | 8.6 \| 9.0 |
+| M1 yolo_mirror_even | 0.28 \| 0.32 | 6.6 \| 9.7 | | 12.2 \| 15.6 |
+| M3 yolo_mirror_tall | | 8.0 \| 9.1 | 29.6 \| 28.6 | 15.1 \| 15.3 |
+
+Each tall walker breaks symmetry in a different variable: lateral placement
+(R1, F1: the right foot lands 3-6 cm wider), step length (F2), apex (F4,
+M1). Swing durations stay close, so antiphase and the duration-based
+symmetry income read near-even while the limp is visible. The MJCF audit
+(joint ranges, masses, CoMs, actuators, foot geoms in rpo.xml) found the
+model mirror-symmetric; the asymmetry is learned.
+
+No clock (F3): walks with 0 falls but escapes standing only at ~1.3e9
+(every clocked seed: 0.31-0.52e9), as a fast symmetric shuffle: 2.2 cm
+apex, 0.13 s swings, 15 cm steps. The clock sets the 1-2 Hz tempo and the
+lift.
+
+### Mirror augmentation
+
+`task.env.symmetry` (`enable`, `mirror_prob`), maps in `envs/symmetry.py`:
+at reset an env draws a mirror flag; a flagged env mirrors its observations
+about the body xz-plane and mirrors the action back before the physics, so
+reward and termination stay in the real frame. Joint signs come from the
+rpo.xml axes (no body frame is rotated). Battery, video and export force it
+off. 527 unit tests and 10 symmetry integration tests pass.
+
+| id | run | start | steps | vx err | antiphase | apex cm | vib | W | per foot |
+|---|---|---|---|---|---|---|---|---|---|
+| M1 | yolo_mirror_even (yolo_mirror) | chain_income @262M | 1.0e9 | 0.205 | 0.751 | 6.9 | 0.68 | 5.1 | partial: apex 6.6 \| 9.7 |
+| M2 | yolo_v4_mirror | scratch | 0.98e9 | 0.168 | 0.741 | 2.8 | 0.64 | 4.5 | asymmetric |
+| M3 | yolo_mirror_tall (yolo_mirror) | F1 @1017M | 0.97e9 | 0.160 | 0.725 | 8.4 | 0.83 | 3.8 | even |
+| M4 | yolo_noclock_mirror (feet_apex 10) | F3 @1507M | 0.93e9 | 0.173 | 0.457 | 4.5 | 0.67 | 3.8 | one foot airborne 72% of the time |
+| M5 | yolo_v4_mirror, seed 1 | scratch | cut | - | - | - | - | - | - |
+
+Env-side mirroring is chirality randomization, not an equivariance
+constraint: in a mirrored env an asymmetric policy produces the mirror image
+of its own gait, earns the same reward and sees consistent observations, so
+nothing pulls it toward equal legs. M3 is the most even tall walker measured
+(apex 8.0 | 9.1, lateral 15.1 | 15.3, step 29.6 | 28.6) at vx err 0.160,
+with the day's highest stand vibration (0.83); it started from F1, so the
+mirror's share is not isolated. M1 is partly evened against its unmirrored
+twin F2, M2 stays asymmetric, and M4 broke the clock-free gait.
+
+### Next
+
+1. A mirror symmetry loss inside PPO: ||mu(M o) - M mu(o)||^2 on the batch
+   in brax's PPO loss, or each sample duplicated as (M o, M a) with the same
+   advantage.
+2. Warm starts from yolo_mirror_tall and yolo_noclock.
+3. A lateral-placement and step-length symmetry measurement in the battery:
+   antiphase and the duration income miss the visible limp.
+4. Foot height on the clock-free line without breaking its gait.

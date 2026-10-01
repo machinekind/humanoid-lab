@@ -1,6 +1,12 @@
 """Fixed evaluation battery for a biped locomotion policy: one number-table
 per run so iterations are comparable. Run: ./run.sh battery --run runs/<name>
 
+--set BLOCK.KEY=VALUE (repeatable, requires --out) re-scores the checkpoint
+under a changed task.env block, e.g. --set obs_noise.joint_vel=1.75 measures
+a policy under a different observation noise than it trained with. Each item
+is merged one level deep over the measurement env (merged_env_overrides) and
+recorded in the written json under `env_overrides`.
+
 Shape: load_checkpoint_policy -> rollout -> scenario_result -> run_battery.
 The env is rebuilt through this repo's env contract (registry.make_env with
 robot_dir/preset_name/task.env read back from run.json's hydra_config,
@@ -34,12 +40,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 import jax
 import jax.numpy as jp
 import numpy as np
+import yaml
 from ml_collections import config_dict
 
 from humanoid_lab import sim_budget
@@ -411,7 +419,7 @@ def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
 
 
 def _measurement_env_overrides(run: dict) -> dict:
-    """The run's own task.env overrides, plus three measurement-only
+    """The run's own task.env overrides, plus four measurement-only
     changes: pushes disabled (they contaminate vibration/slip/stand
     metrics -- robustness is trained, not measured here), the
     command auto-resample effectively disabled (envs/joystick.py's
@@ -433,12 +441,17 @@ def _measurement_env_overrides(run: dict) -> dict:
     keeps a seed taken from the env's own random reset command. A battery
     that ever wants to MEASURE the cut has to reseed info["progress_ema"]
     and zero info["steps_since_cmd"] itself whenever cmd_at changes the
-    command."""
+    command.
+
+    The symmetry augmentation is off too: a mirrored env would hand the
+    policy a mirrored world, and every signal the battery records reads the
+    real one. Off, the env presents the real world to every scenario."""
     hydra = run.get("hydra_config") or {}
     overrides = dict((hydra.get("task") or {}).get("env") or {})
     overrides["push"] = {**(overrides.get("push") or {}), "enable": False}
     overrides["command"] = {**(overrides.get("command") or {}), "resample_steps": 10_000_000}
     overrides["no_progress"] = {**(overrides.get("no_progress") or {}), "enable": False}
+    overrides["symmetry"] = {**(overrides.get("symmetry") or {}), "enable": False}
     return overrides
 
 
@@ -453,7 +466,8 @@ def merged_env_overrides(run: dict, extra: dict | None = None) -> dict:
     replacement would not.
 
     This is the seam `eval/video.py` uses to re-enable pushes for a render
-    (see its `--push`). The battery itself never passes `extra`.
+    (see its `--push`), and the one the battery's own `--set` uses (see
+    parse_env_set). Without `--set` the battery passes no `extra`.
     """
     overrides = _measurement_env_overrides(run)
     for key, block in (extra or {}).items():
@@ -475,8 +489,8 @@ def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = Non
     can't drift from what train.py actually used.
 
     `extra_env_overrides` is merged one level deep over those measurement
-    overrides (see merged_env_overrides). The battery never passes it;
-    eval/video.py's `--push` does.
+    overrides (see merged_env_overrides). The battery passes it only under
+    `--set`; eval/video.py's `--push` passes it too.
 
     Returns (run, env, ckpt_path, inf) where inf = jax.jit(policy).
     """
@@ -574,13 +588,18 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     return {k: np.array(v) for k, v in rec.items()}, fell_at, budget
 
 
-def run_battery(run_dir: Path) -> dict:
+def run_battery(run_dir: Path, extra_env_overrides: dict | None = None) -> dict:
     """Run the fixed scenario battery against `run_dir`'s checkpoint.
+
+    `extra_env_overrides` (`{block: {key: value}}`, from `--set`) is
+    forwarded to load_checkpoint_policy and recorded under `env_overrides`,
+    so a re-scored table says what it was measured under. Without it the
+    result has no `env_overrides` key at all.
 
     Returns the same dict main() writes (minus the `timestamp` main() adds
     at write time).
     """
-    run, env, ckpt, inf = load_checkpoint_policy(run_dir)
+    run, env, ckpt, inf = load_checkpoint_policy(run_dir, extra_env_overrides)
     reset, step = jax.jit(env.reset), jax.jit(env.step)
 
     torque_cap = np.asarray(env.mj_model.actuator_forcerange[:, 1])
@@ -589,6 +608,8 @@ def run_battery(run_dir: Path) -> dict:
         "run": run["run_name"],
         "checkpoint": ckpt.name,
     }
+    if extra_env_overrides:
+        results["env_overrides"] = extra_env_overrides
     nacon_seen, nefc_seen = [], []
     for name, (cmd_at, n_steps) in battery_scenarios(env.dt, env._config.command).items():
         rec, fell_at, (nacon, nefc) = rollout(env, reset, step, inf, cmd_at, n_steps)
@@ -606,6 +627,42 @@ def run_battery(run_dir: Path) -> dict:
     return results
 
 
+# YAML 1.1 (PyYAML) reads an exponent without a decimal point, `1e-4`, as a
+# string. A --set value spelled that way is still a number.
+_EXPONENT_FLOAT = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)[eE][+-]?\d+")
+
+
+def parse_env_set(items: list[str]) -> dict:
+    """Parse `--set BLOCK.KEY=VALUE` items into `{block: {key: value}}`.
+
+    BLOCK is a top-level task.env block (`obs_noise`, `push`, ...) and KEY
+    one field inside it: exactly two segments, because merged_env_overrides
+    merges one level deep and a deeper path would replace a whole sub-block.
+    VALUE goes through `yaml.safe_load`, so `1.75` is a float, `true` a bool
+    and `[0.5, 1.0]` a list; `1e-4` is also read as a float. Later items win
+    on the same BLOCK.KEY. A malformed item (no `=`, not two path segments,
+    an empty VALUE) raises ValueError.
+    """
+    result: dict = {}
+    for item in items:
+        path, sep, value_str = item.partition("=")
+        if not sep:
+            raise ValueError(f"--set item {item!r} is not BLOCK.KEY=VALUE")
+        segments = path.split(".")
+        if len(segments) != 2 or not all(seg.strip() for seg in segments):
+            raise ValueError(
+                f"--set path {path!r} is not BLOCK.KEY: exactly one block and one key"
+            )
+        block, key = (seg.strip() for seg in segments)
+        if not value_str.strip():
+            raise ValueError(f"--set item {item!r} has an empty VALUE")
+        value = yaml.safe_load(value_str)
+        if isinstance(value, str) and _EXPONENT_FLOAT.fullmatch(value.strip()):
+            value = float(value)
+        result.setdefault(block, {})[key] = value
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", required=True, type=Path)
@@ -613,9 +670,37 @@ def main():
         "--out", default=None, type=Path,
         help="write here instead of <run>/battery.json",
     )
+    ap.add_argument(
+        "--set",
+        dest="set_",
+        action="append",
+        default=None,
+        metavar="BLOCK.KEY=VALUE",
+        help="re-score under a changed task.env value, e.g. obs_noise.joint_vel=1.75; "
+        "repeatable, requires --out, recorded under env_overrides",
+    )
     args = ap.parse_args()
 
-    results = run_battery(args.run)
+    extra = None
+    if args.set_:
+        own = args.run / "battery.json"
+        # samefile catches a differently cased --out on a case-insensitive
+        # filesystem (the Mac default), where resolve() compares unequal.
+        if (
+            args.out is None
+            or args.out.resolve() == own.resolve()
+            or (args.out.exists() and own.exists() and args.out.samefile(own))
+        ):
+            ap.error(
+                "--set requires an --out other than <run>/battery.json: that file is the "
+                "run's own measurement and must not be overwritten by a re-scored variant"
+            )
+        try:
+            extra = parse_env_set(args.set_)
+        except ValueError as exc:
+            ap.error(str(exc))
+
+    results = run_battery(args.run, extra_env_overrides=extra)
     out = args.out or (args.run / "battery.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     stamped = dict(results, timestamp=datetime.now().isoformat(timespec="seconds"))

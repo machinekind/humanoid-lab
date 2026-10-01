@@ -6,6 +6,12 @@ small arrays without building a model or an env.
 import jax.numpy as jp
 import pytest
 
+from humanoid_lab.envs.joystick import (
+    _STYLE_TERMS,
+    _reward_metric_names,
+    check_gait_symmetry_cap,
+    default_config,
+)
 from humanoid_lab.rewards import terms
 
 
@@ -256,6 +262,70 @@ def test_feet_apex_pays_once_per_swing_at_touchdown():
     assert one_lands == pytest.approx(1.0)
 
 
+# -- feet_apex_min ----------------------------------------------------------
+
+
+def test_feet_apex_min_pays_nothing_without_a_landing():
+    out = terms.feet_apex_min(
+        jp.array([0.05, 0.05]), jp.array([0.05, 0.05]), jp.array([False, False]), 0.05
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_apex_min_pays_nothing_before_the_other_foot_has_swung():
+    """last_apex is 0 until a foot's first landing, so the first swing of an
+    episode pays nothing however high it went."""
+    out = terms.feet_apex_min(
+        jp.array([0.08, 0.0]), jp.array([0.0, 0.0]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_apex_min_pays_one_per_landing_when_both_feet_reach_the_target():
+    swing = jp.array([0.05, 0.05])
+    last = jp.array([0.05, 0.05])
+    one = terms.feet_apex_min(swing, last, jp.array([True, False]), 0.05)
+    both = terms.feet_apex_min(swing, last, jp.array([True, True]), 0.05)
+    assert one == pytest.approx(1.0)
+    assert both == pytest.approx(2.0)
+
+
+def test_feet_apex_min_caps_the_landing_at_the_other_foots_last_swing():
+    """A landing above the target pays only what the other foot's last swing
+    reached: a one-leg gait earns nothing extra from its lifting leg."""
+    out = terms.feet_apex_min(
+        jp.array([0.20, 0.0]), jp.array([0.05, 0.025]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(0.5)
+
+
+def test_feet_apex_min_reads_the_other_foot_not_its_own():
+    """Foot 0 lands; its own last_apex (0) is ignored, foot 1's is used."""
+    out = terms.feet_apex_min(
+        jp.array([0.05, 0.0]), jp.array([0.0, 0.05]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(1.0)
+
+
+def test_feet_apex_min_rejects_a_foot_count_other_than_two():
+    with pytest.raises(ValueError, match="two feet"):
+        terms.feet_apex_min(jp.zeros(4), jp.zeros(4), jp.ones(4, dtype=bool), 0.05)
+
+
+def test_feet_apex_min_at_scale_zero_leaves_the_metric_names_unchanged():
+    """feet_apex_min is a style term: at scale 0 it adds no reward/* metric
+    key, so the recorded goldens' metric-name set is untouched."""
+    scales = default_config().reward.scales
+    assert scales.feet_apex_min == 0.0
+    assert "feet_apex_min" in _STYLE_TERMS
+    names = _reward_metric_names(scales)
+    assert "reward/feet_apex_min" not in names
+
+    scales.feet_apex_min = 10.0
+    armed = _reward_metric_names(scales)
+    assert set(armed) - set(names) == {"reward/feet_apex_min"}
+
+
 def test_feet_landing_is_zero_for_a_foot_moving_up():
     """Only downward speed is priced: a foot pushing off the floor is a
     swing starting, not an impact."""
@@ -346,6 +416,10 @@ def test_torque_limit_positive_above_cap():
             (jp.array([[0.1, 0.0], [0.0, 0.0]]), jp.array([True, False])),
         ),
         (terms.feet_apex, (jp.array([0.04, 0.0]), jp.array([True, False]), 0.05)),
+        (
+            terms.feet_apex_min,
+            (jp.array([0.04, 0.0]), jp.array([0.0, 0.03]), jp.array([True, False]), 0.05),
+        ),
         (
             terms.feet_landing,
             (jp.array([-0.4, 0.1]), jp.array([0.01, 0.05]), 0.03),
@@ -527,3 +601,105 @@ def test_gait_symmetry_caps_the_first_steps_transient():
         jp.array([0.385, 0.315]), jp.array([0.4, 0.4]), floor=0.1, cap=1.0
     )
     assert limp == pytest.approx((0.07 / 0.35) ** 2, rel=1e-5)
+
+
+# -- gait_symmetry_income ----------------------------------------------------
+
+_SINGLE = jp.array([True, False])
+_DOUBLE = jp.array([True, True])
+
+
+def test_gait_symmetry_income_pays_nothing_while_unarmed():
+    """No pair has both durations on record, so there is no symmetry to pay
+    for yet, even in single stance."""
+    fresh = terms.gait_symmetry_income(
+        jp.zeros(2), jp.zeros(2), _SINGLE, floor=0.1
+    )
+    first_step = terms.gait_symmetry_income(
+        jp.array([0.09, 0.0]), jp.array([0.3, 0.0]), _SINGLE, floor=0.1
+    )
+    assert fresh == pytest.approx(0.0)
+    assert first_step == pytest.approx(0.0)
+
+
+def test_gait_symmetry_income_pays_one_for_an_even_single_stance():
+    out = terms.gait_symmetry_income(
+        jp.array([0.35, 0.35]), jp.array([0.4, 0.4]), _SINGLE, floor=0.1
+    )
+    assert out == pytest.approx(1.0)
+
+
+def test_gait_symmetry_income_arms_on_either_pair():
+    # Swings recorded on both feet, stances not yet: the swing pair alone
+    # arms and prices the step.
+    out = terms.gait_symmetry_income(
+        jp.array([0.385, 0.315]), jp.array([0.4, 0.0]), _SINGLE, floor=0.1
+    )
+    assert out == pytest.approx(1.0 - (0.07 / 0.35) ** 2, rel=1e-5)
+
+
+def test_gait_symmetry_income_falls_linearly_to_zero_at_the_cap():
+    limp = terms.gait_symmetry_income(
+        jp.array([0.385, 0.315]), jp.array([0.4, 0.4]), _SINGLE, floor=0.1, cap=0.5
+    )
+    assert limp == pytest.approx(1.0 - (0.07 / 0.35) ** 2 / 0.5, rel=1e-5)
+    # rel_sq_sum = 1.0 exactly: (0.5 / 0.5)^2 on the swing pair.
+    at_cap = terms.gait_symmetry_income(
+        jp.array([0.75, 0.25]), jp.array([0.4, 0.4]), _SINGLE, floor=0.1, cap=1.0
+    )
+    stumble = terms.gait_symmetry_income(
+        jp.array([0.4, 0.001]), jp.array([0.5, 0.001]), _SINGLE, floor=0.1, cap=1.0
+    )
+    assert at_cap == pytest.approx(0.0, abs=1e-6)
+    assert stumble == pytest.approx(0.0)
+
+
+def test_gait_symmetry_income_pays_only_in_single_stance():
+    """Double support and flight pay 0, so standing on both feet earns
+    nothing even after the EMAs have armed."""
+    even_air, even_stance = jp.array([0.35, 0.35]), jp.array([0.4, 0.4])
+    double = terms.gait_symmetry_income(even_air, even_stance, _DOUBLE, floor=0.1)
+    flight = terms.gait_symmetry_income(
+        even_air, even_stance, jp.array([False, False]), floor=0.1
+    )
+    other_foot = terms.gait_symmetry_income(
+        even_air, even_stance, jp.array([False, True]), floor=0.1
+    )
+    assert double == pytest.approx(0.0)
+    assert flight == pytest.approx(0.0)
+    assert other_foot == pytest.approx(1.0)
+
+
+def test_gait_symmetry_income_is_the_complement_of_the_penalty():
+    air, stance = jp.array([0.40, 0.33]), jp.array([0.45, 0.41])
+    penalty = terms.gait_symmetry(air, stance, floor=0.1, cap=1.0)
+    income = terms.gait_symmetry_income(air, stance, _SINGLE, floor=0.1, cap=1.0)
+    assert float(income) == pytest.approx(1.0 - float(penalty), rel=1e-6)
+
+
+def test_gait_symmetry_income_at_scale_zero_leaves_the_metric_names_unchanged():
+    """Style terms at scale 0 add no reward/* metric key, so the recorded
+    goldens' metric-name set is untouched by the new scale key."""
+    scales = default_config().reward.scales
+    assert scales.gait_symmetry_income == 0.0
+    names = _reward_metric_names(scales)
+    assert names == [f"reward/{k}" for k in scales if k not in _STYLE_TERMS]
+    assert "reward/gait_symmetry_income" not in names
+
+    scales.gait_symmetry_income = 0.5
+    armed = _reward_metric_names(scales)
+    assert set(armed) - set(names) == {"reward/gait_symmetry_income"}
+    assert "reward/gait_symmetry" not in armed
+
+
+def test_gait_symmetry_income_rejects_a_nonpositive_cap():
+    """The income divides by the cap; the penalty tolerates cap 0."""
+    reward = default_config().reward
+    reward.gait_symmetry_cap = 0.0
+    reward.scales.gait_symmetry = -1.0
+    check_gait_symmetry_cap(reward)
+    reward.scales.gait_symmetry_income = 0.5
+    with pytest.raises(ValueError, match="gait_symmetry_cap"):
+        check_gait_symmetry_cap(reward)
+    reward.gait_symmetry_cap = 1.0
+    check_gait_symmetry_cap(reward)

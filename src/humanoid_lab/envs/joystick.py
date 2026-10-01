@@ -27,7 +27,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
-from humanoid_lab.envs import progress
+from humanoid_lab.envs import progress, symmetry
 from humanoid_lab.envs.base import HumanoidEnv
 from humanoid_lab.rewards import terms
 
@@ -229,6 +229,18 @@ def default_config() -> config_dict.ConfigDict:
             risk_below=0.5,  # hazard starts below this fraction of demand
             p_max=0.02,      # per-step hazard at zero progress
         ),
+        # Left/right mirror augmentation. With mirror_prob, an env presents
+        # the policy a world mirrored about the body xz-plane: observations
+        # are mirrored on the way out and the action is mirrored back on the
+        # way in, so physics, rewards and termination stay in the real
+        # frame. One policy then has to walk both chiralities. The flag is
+        # drawn at reset; under the trainer's auto-reset wrapper `info`
+        # survives respawns, so it holds per env for the whole run. Off adds
+        # no info key and splits no RNG key. Training-only: the battery,
+        # eval and export envs force it off (eval/battery.py), and the
+        # deployed policy always sees real observations. The maps are in
+        # envs/symmetry.py, which holds joint signs for roboto_origin only.
+        symmetry=config_dict.create(enable=False, mirror_prob=0.5),
         # Fallback fall thresholds; robot overlays pin their own (a
         # workable min_height is ~60% of the robot's standing height).
         # max_tilt_gz is the gravity_body z component: near -1 upright,
@@ -299,9 +311,9 @@ def default_config() -> config_dict.ConfigDict:
             # per step against honest walking's ~0.25. Gated, a stride pays
             # in proportion to how well the command is being served and
             # standing pays nothing for lifting legs. Gated set:
-            # feet_air_time, feet_air_time_biped and feet_apex. Not
-            # feet_phase, and not the feet_landing penalty -- see
-            # _compute_rewards.
+            # feet_air_time, feet_air_time_biped, feet_apex, feet_apex_min
+            # and gait_symmetry_income. Not feet_phase, and not the
+            # feet_landing penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
             # feet_air_time_biped clamp, s (upstream feet_air_time_positive_
@@ -350,14 +362,15 @@ def default_config() -> config_dict.ConfigDict:
             # at 0.3, so 0.15 asks the stance leg to carry the body
             # straighter than the crouch it resets into.
             knee_stance_tol=0.15,
-            # gait_symmetry: per-event EMA weight folding each completed
-            # swing/stance duration into its foot's running average, the
-            # denominator floor (s) of the relative-difference kernel, and
-            # the cap on the summed relative asymmetry. The cap bounds the
-            # per-step charge at scale*cap: the run-5 gates measured that
-            # an uncapped charge taxes the near-maximal asymmetry of the
-            # first clumsy steps hard enough that the optimizer takes
-            # standing instead (see terms.gait_symmetry).
+            # gait_symmetry and gait_symmetry_income (shared): per-event
+            # EMA weight folding each completed swing/stance duration into
+            # its foot's running average, the denominator floor (s) of the
+            # relative-difference kernel, and the cap on the summed relative
+            # asymmetry. The income pays 0 at or over the cap, and needs
+            # cap > 0. For the penalty, the cap bounds the per-step charge
+            # at scale*cap: an uncapped charge taxes the near-maximal
+            # asymmetry of the first clumsy steps hard enough that the
+            # optimizer takes standing instead (see terms.gait_symmetry).
             gait_symmetry_alpha=0.25,
             gait_symmetry_floor=0.1,
             gait_symmetry_cap=1.0,
@@ -397,6 +410,11 @@ def default_config() -> config_dict.ConfigDict:
                 torque_limit=0.0,
                 # Per-swing apex shaping (see apex_target above), 0 = off.
                 feet_apex=0.0,
+                # Two-foot variant of feet_apex: each landing pays the lower
+                # of its own peak and the other foot's last completed peak
+                # (see terms.feet_apex_min). 0 = off; a style term (see
+                # _STYLE_TERMS). Needs exactly two feet.
+                feet_apex_min=0.0,
                 # Soft-landing penalty (see glide_height above), 0 = off. A
                 # policy trained with it glides its feet into stance instead
                 # of striking the floor at swing free-fall speed.
@@ -423,18 +441,49 @@ def default_config() -> config_dict.ConfigDict:
                 # knee_stance charges stance-leg knee flexion beyond
                 # knee_stance_tol; gait_symmetry charges the relative
                 # left-right difference of the completed swing/stance
-                # duration EMAs (the limp signature).
+                # duration EMAs (the limp signature); gait_symmetry_income
+                # pays for the absence of that difference on single-stance
+                # steps (see terms.gait_symmetry_income). The two share one
+                # set of EMAs, kept whenever either scale is nonzero.
                 knee_stance=0.0,
                 gait_symmetry=0.0,
+                gait_symmetry_income=0.0,
             ),
         ),
     )
 
 
-# Scales keys whose whole machinery is config-gated on a nonzero scale (see
-# the scales comment above): reset() seeds their reward/* metrics only when
+# Scales keys whose reward is config-gated on a nonzero scale (see the
+# scales comment above): reset() seeds their reward/* metrics only when
 # armed, matching _compute_rewards, which computes them only when armed.
-_STYLE_TERMS = ("knee_stance", "gait_symmetry")
+# feet_apex_min's input, info["last_apex"], is carried at every scale.
+_STYLE_TERMS = ("knee_stance", "gait_symmetry", "gait_symmetry_income", "feet_apex_min")
+
+
+def _reward_metric_names(scales) -> list[str]:
+    """The reward/* metric keys reset() seeds for these reward scales: every
+    scales key, less the style terms whose scale is 0. _compute_rewards
+    emits exactly this set, which the scan-carry parity in reset() needs."""
+    return [f"reward/{k}" for k in scales if k not in _STYLE_TERMS or scales[k]]
+
+
+def gait_dur_ema_on(scales) -> bool:
+    """Whether the per-foot swing/stance duration EMAs exist: either
+    symmetry scale is nonzero. reset() seeds them and step() updates them
+    only then, and envs/wrappers.py restarts them on respawn only then."""
+    return bool(scales.get("gait_symmetry", 0.0) or scales.get("gait_symmetry_income", 0.0))
+
+
+def check_gait_symmetry_cap(reward) -> None:
+    """Raise unless reward.gait_symmetry_cap > 0 whenever the income is on.
+    gait_symmetry_income divides by the cap, so cap 0 would be NaN on every
+    armed single-stance step. The penalty reads cap 0 as 'charge nothing'
+    and needs no check."""
+    cap = reward.get("gait_symmetry_cap", 1.0)
+    if reward.scales.get("gait_symmetry_income", 0.0) and not cap > 0.0:
+        raise ValueError(
+            f"reward.scales.gait_symmetry_income needs reward.gait_symmetry_cap > 0, got {cap}"
+        )
 
 
 # (probability key, range key, command box axis) for each pure draw that
@@ -528,9 +577,18 @@ class Joystick(HumanoidEnv):
             )
 
         # Style-term gates (see _STYLE_TERMS): static Python booleans, so an
-        # off term never enters the trace, the info dict or the metric set.
+        # off term never enters the reward sum or the metric set.
         self._knee_stance_on = bool(scales.knee_stance)
         self._gait_symmetry_on = bool(scales.gait_symmetry)
+        self._gait_symmetry_income_on = bool(scales.get("gait_symmetry_income", 0.0))
+        self._feet_apex_min_on = bool(scales.get("feet_apex_min", 0.0))
+        if self._feet_apex_min_on and self._n_feet != 2:
+            raise ValueError(
+                f"reward.scales.feet_apex_min needs exactly two feet; this robot has {self._n_feet}"
+            )
+        # The swing/stance duration EMAs both symmetry terms read.
+        self._gait_dur_ema_on = gait_dur_ema_on(scales)
+        check_gait_symmetry_cap(self._config.reward)
         if self._knee_stance_on:
             self._knee_qidx = self._foot_ordered_group_qidx("knee")
 
@@ -543,6 +601,57 @@ class Joystick(HumanoidEnv):
         self._neutral_ctrl = self._actuator_model.ctrl_from_action(
             jp.zeros(self.action_size), self._default_pose, self._action_scale
         )
+
+        if self._config.symmetry.enable:
+            self._init_mirror_maps()
+
+    def _init_mirror_maps(self):
+        """Assemble the symmetry augmentation's (perm, sign) maps from the
+        resolved obs lists and the robot's joint and foot names, and check
+        each against the real vector size it will index."""
+        rs = self._robot_spec
+        joints = list(rs.actuated_joints)
+        feet = list(rs.foot_sites)
+        act_perm, act_sign = symmetry.joint_mirror(joints, rs.name)
+        state_perm, state_sign = symmetry.obs_mirror(self.actor_obs_names, joints, feet, rs.name)
+        priv_perm, priv_sign = symmetry.obs_mirror(self._config.obs.privileged, joints, feet, rs.name)
+        # Shapes only: the catalog evaluated abstractly on a fresh jax-impl
+        # data, so nothing is allocated on the training backend.
+        obs = jax.eval_shape(
+            self._build_obs, mjx.make_data(self._mj_model, impl="jax"), self._catalog_probe_info()
+        )
+        for label, perm, size in (
+            ("action", act_perm, self.action_size),
+            ("obs.state", state_perm, obs["state"].shape[0]),
+            ("obs.privileged", priv_perm, obs["privileged_state"].shape[0]),
+        ):
+            if len(perm) != size:
+                raise ValueError(
+                    f"symmetry: the {label} mirror map has {len(perm)} entries but the "
+                    f"env's {label} vector has {size}"
+                )
+        self._act_perm = jp.array(act_perm)
+        self._act_sign = jp.array(act_sign)
+        self._state_perm = jp.array(state_perm)
+        self._state_sign = jp.array(state_sign)
+        self._priv_perm = jp.array(priv_perm)
+        self._priv_sign = jp.array(priv_sign)
+
+    def _mirror_obs(self, obs, info):
+        """The observation as the env's world presents it: mirrored when
+        info["mirror"] is set. Identity, and absent from the trace, when
+        symmetry is off."""
+        if not self._config.symmetry.enable:
+            return obs
+        m = info["mirror"]
+        return {
+            "state": jp.where(m, self._state_sign * obs["state"][self._state_perm], obs["state"]),
+            "privileged_state": jp.where(
+                m,
+                self._priv_sign * obs["privileged_state"][self._priv_perm],
+                obs["privileged_state"],
+            ),
+        }
 
     def _resolve_group_weights(self, group_map):
         """Per-joint weights from a joint_group -> weight map."""
@@ -751,15 +860,24 @@ class Joystick(HumanoidEnv):
             # unconditionally, like feet_air_time: the info pytree must not
             # change shape with the reward scales.
             "swing_apex": jp.zeros(self._n_feet),
+            # Each foot's peak over its last completed swing, for
+            # feet_apex_min. Seeded unconditionally like swing_apex, so
+            # envs/wrappers.py's GaitReseedWrapper can restart it whatever
+            # the scales.
+            "last_apex": jp.zeros(self._n_feet),
             "last_contact": jp.zeros(self._n_feet, dtype=bool),
             "phase": jp.array(0.0),
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
         }
-        if self._gait_symmetry_on:
+        if self._gait_dur_ema_on:
             # Per-foot EMAs of completed swing/stance durations, for
-            # gait_symmetry. Config-gated like push_countdown: while the
-            # term is off the info pytree is unchanged.
+            # gait_symmetry and gait_symmetry_income. Config-gated like
+            # push_countdown: while both terms are off the info pytree is
+            # unchanged. In training they, and the per-foot mode timers
+            # that feed them, restart on every in-place respawn through
+            # envs/wrappers.py's GaitReseedWrapper; this reset() covers only
+            # an env's first episode there.
             info["air_dur_ema"] = jp.zeros(self._n_feet)
             info["stance_dur_ema"] = jp.zeros(self._n_feet)
         if self._config.push.enable and self._config.push.get("interval_steps_range", None):
@@ -768,17 +886,19 @@ class Joystick(HumanoidEnv):
             lo, hi = (int(v) for v in self._config.push.interval_steps_range)
             info["rng"], r_cd = jax.random.split(info["rng"])
             info["push_countdown"] = jax.random.randint(r_cd, (), lo, hi + 1)
+        if self._config.symmetry.enable:
+            # The mirror flag (see symmetry in default_config). Config-gated
+            # like push_countdown: off, no key is split and the info pytree
+            # is unchanged.
+            info["rng"], r_mirror = jax.random.split(info["rng"])
+            info["mirror"] = jax.random.bernoulli(r_mirror, self._config.symmetry.mirror_prob)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
         # metrics pytree structure across steps. Off style terms are absent
         # on BOTH sides: _compute_rewards skips them, so seeding them here
         # would break that parity (and the goldens' metric-name set).
-        metrics = {
-            f"reward/{k}": jp.zeros(())
-            for k in self._config.reward.scales
-            if k not in _STYLE_TERMS or self._config.reward.scales[k]
-        }
+        metrics = {k: jp.zeros(()) for k in _reward_metric_names(self._config.reward.scales)}
         if self._config.no_progress.enable:
             # Optimistic seed: a fresh episode starts at progress ratio 1, so
             # the hazard can only come from measured shortfall, never from the
@@ -788,7 +908,7 @@ class Joystick(HumanoidEnv):
             info["progress_ema"] = self._cmd_speed(command)
             metrics["no_progress_cut"] = jp.zeros(())
             metrics["progress_ratio_per_step"] = jp.zeros(())
-        obs = self._build_obs(data, info)
+        obs = self._mirror_obs(self._build_obs(data, info), info)
         return mjx_env.State(data, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -803,6 +923,16 @@ class Joystick(HumanoidEnv):
             rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
             r_term = None
         info["rng"] = rng
+
+        # Symmetry augmentation: a mirrored env's policy acted on mirrored
+        # observations, so its action is in the mirrored frame. Map it back
+        # before anything reads it (motor targets, the action rewards,
+        # last_action): everything below stays in the real frame. The stored
+        # real-frame last_action reaches the policy through _mirror_obs,
+        # which maps it back to the action the policy emitted, since the
+        # mirror is an involution.
+        if self._config.symmetry.enable:
+            action = jp.where(info["mirror"], self._act_sign * action[self._act_perm], action)
 
         motor_targets = jp.clip(
             self._actuator_model.ctrl_from_action(action, self._default_pose, self._action_scale),
@@ -865,9 +995,11 @@ class Joystick(HumanoidEnv):
         # the way up it takes the running maximum of each airborne foot's
         # clearance; on the step a foot lands, contact_filt is already true,
         # so this update skips and the term reads the peak the completed
-        # swing actually reached. The zeroing after the reward arms the next
-        # swing. Both halves run whatever the scale is: the tracker is info
-        # state, not a reward, and its shape must not depend on the config.
+        # swing actually reached. After the reward, a landing foot's peak is
+        # recorded in last_apex (feet_apex_min reads the other foot's), and
+        # only then does the zeroing arm the next swing. All of it runs
+        # whatever the scales are: the trackers are info state, not
+        # rewards, and their shape must not depend on the config.
         info["swing_apex"] = jp.where(
             ~contact_filt,
             jp.maximum(info["swing_apex"], self._foot_clearance(data)),
@@ -876,7 +1008,7 @@ class Joystick(HumanoidEnv):
 
         rewards, fall = self._compute_rewards(data, info, action, first_contact, contact)
 
-        if self._gait_symmetry_on:
+        if self._gait_dur_ema_on:
             # Fold each completed mode duration into its foot's EMA on the
             # event step: a landing closes a swing, a liftoff closes a
             # stance. Runs after the reward call (which reads the previous
@@ -895,6 +1027,7 @@ class Joystick(HumanoidEnv):
                 info["stance_dur_ema"],
             )
 
+        info["last_apex"] = jp.where(first_contact, info["swing_apex"], info["last_apex"])
         info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
         info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
         info["feet_contact_time"] = jp.where(contact_filt, info["feet_contact_time"] + self.dt, 0.0)
@@ -974,7 +1107,7 @@ class Joystick(HumanoidEnv):
             metrics["no_progress_cut"] = no_progress_cut.astype(jp.float32)
             metrics["progress_ratio_per_step"] = jp.clip(progress_ratio, 0.0, 2.0)
 
-        obs = self._build_obs(data, info, r_noise)
+        obs = self._mirror_obs(self._build_obs(data, info, r_noise), info)
         return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
     # -- observations -------------------------------------------------------
@@ -1058,9 +1191,11 @@ class Joystick(HumanoidEnv):
         # Gait-shaping gate (see shaping_tracking_gate in default_config):
         # the positive gait terms follow the linear tracking kernel, after
         # the product gate when that is on. Gated set: feet_air_time,
-        # feet_air_time_biped and feet_apex. feet_phase stays ungated on
-        # purpose -- it is the clock-following gradient, and it has to
-        # survive at zero tracking because stepping is how tracking starts.
+        # feet_air_time_biped, feet_apex, and gait_symmetry_income and
+        # feet_apex_min (below).
+        # feet_phase stays ungated on purpose -- it is the clock-following
+        # gradient, and it has to survive at zero tracking because stepping
+        # is how tracking starts.
         shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
 
         # sin^2 of the tilt from vertical, less the tolerance cone (see
@@ -1154,12 +1289,16 @@ class Joystick(HumanoidEnv):
             * shape_gate,
         }
         # Style terms, config-gated (see __init__): absent at scale 0, so
-        # the goldens' metric set and float-add order are untouched. Both
-        # are penalties, so neither joins the shape_gate set (the
-        # feet_landing rationale above). knee_stance is masked by `moving`:
-        # at a zero command stand_still and pose_l1 anchor the knees on the
-        # home keyframe's 0.3 rad, and an unmasked cone would fight that
-        # anchor into exactly the standing dither it must not add.
+        # the goldens' metric set and float-add order are untouched.
+        # knee_stance and gait_symmetry are penalties, so neither joins the
+        # shape_gate set (the feet_landing rationale above);
+        # gait_symmetry_income is a positive gait term and does, since a
+        # symmetric single stance while the command goes unserved is
+        # stand-and-lift income like feet_air_time_biped's. knee_stance is
+        # masked by `moving`: at a zero command stand_still and pose_l1
+        # anchor the knees on the home keyframe's 0.3 rad, and an unmasked
+        # cone would fight that anchor into exactly the standing dither it
+        # must not add.
         if self._knee_stance_on:
             rewards["knee_stance"] = (
                 terms.knee_stance(
@@ -1176,5 +1315,26 @@ class Joystick(HumanoidEnv):
                     cfg.get("gait_symmetry_cap", 1.0),
                 )
                 * moving
+            )
+        if self._gait_symmetry_income_on:
+            rewards["gait_symmetry_income"] = (
+                terms.gait_symmetry_income(
+                    info["air_dur_ema"],
+                    info["stance_dur_ema"],
+                    contact,
+                    cfg.gait_symmetry_floor,
+                    cfg.get("gait_symmetry_cap", 1.0),
+                )
+                * moving
+                * shape_gate
+            )
+        if self._feet_apex_min_on:
+            # In the shape_gate set for feet_apex's reason.
+            rewards["feet_apex_min"] = (
+                terms.feet_apex_min(
+                    info["swing_apex"], info["last_apex"], first_contact, cfg.apex_target
+                )
+                * moving
+                * shape_gate
             )
         return rewards, fall
