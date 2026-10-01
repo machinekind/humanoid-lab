@@ -17,8 +17,10 @@ case "${1:-}" in
   # friction inside each foot-floor contact equals that env's draw (contact
   # priority makes the foot's value win; see dr/randomize.py). NOT forced
   # onto CPU: the point is the box's own backend, and warp on a GPU host is
-  # the answer a training run uses. Passthrough args: --robot NAME --preset
-  # NAME [--backend auto|warp|jax] [--num-envs N] [--range LO HI].
+  # the answer a training run uses. --task terrain runs the same check on
+  # the CPU terrain arena. Passthrough args: --robot NAME --preset NAME
+  # [--task joystick|terrain] [--backend auto|warp|jax] [--num-envs N]
+  # [--range LO HI].
   check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`

@@ -19,6 +19,9 @@ FORBIDDEN = {
     "registry env": r"make" + r"_env\(",
     "spec build": r"build" + r"_spec\(",
     "spec compile": r"compile" + r"_spec",
+    # Only an empty-argument call matches, so re.compile(pattern) stays legal.
+    "spec compile (method)": r"\.compile" + r"\(\)",
+    "terrain scene": r"attach" + r"_terrain\(",
     "model upload": r"mjx\.put" + r"_model",
     "scene parse": r"MjModel\.from" + r"_xml|from" + r"_xml_(path|string)",
     "spec parse": r"MjSpec\.from" + r"_",

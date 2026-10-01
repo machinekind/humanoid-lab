@@ -8,6 +8,10 @@ the plane type (error if none/multiple, overridable by name), the base body
 is whichever body holds the model's one free joint, and the foot geoms come
 from the RobotSpec instead of a robot-specific name list.
 
+On a terrain model (terrain/scene.py) the floor is every ground geom: the
+heightfield, the arena boxes and the aprons. The floor friction draw is one
+value per world, written to all of them.
+
 The five original fields (floor friction, base and link mass, one gain/kd
 scale) draw from `r1..r5 = jax.random.split(rng, 5)`. Every other field
 draws from a folded-in sub-key so it leaves r1..r5 unchanged. With every
@@ -38,6 +42,8 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import mujoco
+
+from humanoid_lab.terrain import scene
 
 # Base of the optional fields' fold_in domain, disjoint from any split of the
 # same key (see the module docstring). Same constant, same reason, as
@@ -110,7 +116,13 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
     foot_cfg = _field_cfg(dr_cfg, "foot_friction")
     motor_cfg = _field_cfg(dr_cfg, "motor_strength")
 
-    floor_id = _find_floor_geom_id(mj_model, floor_geom_name)
+    if floor_geom_name is None and scene.is_terrain_model(mj_model):
+        # An id array: `.at[floor_id, 0].set(friction)` below then writes the
+        # world's one draw to every ground geom. They copy the plane's
+        # priority 0, so a foot_friction priority of 1 still wins.
+        floor_id = jnp.asarray(scene.ground_geom_ids(mj_model))
+    else:
+        floor_id = _find_floor_geom_id(mj_model, floor_geom_name)
     root_id = _find_base_body_id(mj_model)
     foot_ids = jnp.array([mj_model.geom(name).id for name in robot_spec.foot_geoms])
 
