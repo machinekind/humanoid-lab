@@ -299,9 +299,9 @@ def default_config() -> config_dict.ConfigDict:
             # per step against honest walking's ~0.25. Gated, a stride pays
             # in proportion to how well the command is being served and
             # standing pays nothing for lifting legs. Gated set:
-            # feet_air_time, feet_air_time_biped, feet_apex and
-            # gait_symmetry_income. Not feet_phase, and not the feet_landing
-            # penalty -- see _compute_rewards.
+            # feet_air_time, feet_air_time_biped, feet_apex, feet_apex_min
+            # and gait_symmetry_income. Not feet_phase, and not the
+            # feet_landing penalty -- see _compute_rewards.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
             # feet_air_time_biped clamp, s (upstream feet_air_time_positive_
@@ -398,6 +398,11 @@ def default_config() -> config_dict.ConfigDict:
                 torque_limit=0.0,
                 # Per-swing apex shaping (see apex_target above), 0 = off.
                 feet_apex=0.0,
+                # Two-foot variant of feet_apex: each landing pays the lower
+                # of its own peak and the other foot's last completed peak
+                # (see terms.feet_apex_min). 0 = off; a style term (see
+                # _STYLE_TERMS). Needs exactly two feet.
+                feet_apex_min=0.0,
                 # Soft-landing penalty (see glide_height above), 0 = off. A
                 # policy trained with it glides its feet into stance instead
                 # of striking the floor at swing free-fall speed.
@@ -436,10 +441,11 @@ def default_config() -> config_dict.ConfigDict:
     )
 
 
-# Scales keys whose whole machinery is config-gated on a nonzero scale (see
-# the scales comment above): reset() seeds their reward/* metrics only when
+# Scales keys whose reward is config-gated on a nonzero scale (see the
+# scales comment above): reset() seeds their reward/* metrics only when
 # armed, matching _compute_rewards, which computes them only when armed.
-_STYLE_TERMS = ("knee_stance", "gait_symmetry", "gait_symmetry_income")
+# feet_apex_min's input, info["last_apex"], is carried at every scale.
+_STYLE_TERMS = ("knee_stance", "gait_symmetry", "gait_symmetry_income", "feet_apex_min")
 
 
 def _reward_metric_names(scales) -> list[str]:
@@ -559,10 +565,15 @@ class Joystick(HumanoidEnv):
             )
 
         # Style-term gates (see _STYLE_TERMS): static Python booleans, so an
-        # off term never enters the trace, the info dict or the metric set.
+        # off term never enters the reward sum or the metric set.
         self._knee_stance_on = bool(scales.knee_stance)
         self._gait_symmetry_on = bool(scales.gait_symmetry)
         self._gait_symmetry_income_on = bool(scales.get("gait_symmetry_income", 0.0))
+        self._feet_apex_min_on = bool(scales.get("feet_apex_min", 0.0))
+        if self._feet_apex_min_on and self._n_feet != 2:
+            raise ValueError(
+                f"reward.scales.feet_apex_min needs exactly two feet; this robot has {self._n_feet}"
+            )
         # The swing/stance duration EMAs both symmetry terms read.
         self._gait_dur_ema_on = gait_dur_ema_on(scales)
         check_gait_symmetry_cap(self._config.reward)
@@ -786,6 +797,11 @@ class Joystick(HumanoidEnv):
             # unconditionally, like feet_air_time: the info pytree must not
             # change shape with the reward scales.
             "swing_apex": jp.zeros(self._n_feet),
+            # Each foot's peak over its last completed swing, for
+            # feet_apex_min. Seeded unconditionally like swing_apex, so
+            # envs/wrappers.py's GaitReseedWrapper can restart it whatever
+            # the scales.
+            "last_apex": jp.zeros(self._n_feet),
             "last_contact": jp.zeros(self._n_feet, dtype=bool),
             "phase": jp.array(0.0),
             "step_count": jp.array(0),
@@ -900,9 +916,11 @@ class Joystick(HumanoidEnv):
         # the way up it takes the running maximum of each airborne foot's
         # clearance; on the step a foot lands, contact_filt is already true,
         # so this update skips and the term reads the peak the completed
-        # swing actually reached. The zeroing after the reward arms the next
-        # swing. Both halves run whatever the scale is: the tracker is info
-        # state, not a reward, and its shape must not depend on the config.
+        # swing actually reached. After the reward, a landing foot's peak is
+        # recorded in last_apex (feet_apex_min reads the other foot's), and
+        # only then does the zeroing arm the next swing. All of it runs
+        # whatever the scales are: the trackers are info state, not
+        # rewards, and their shape must not depend on the config.
         info["swing_apex"] = jp.where(
             ~contact_filt,
             jp.maximum(info["swing_apex"], self._foot_clearance(data)),
@@ -930,6 +948,7 @@ class Joystick(HumanoidEnv):
                 info["stance_dur_ema"],
             )
 
+        info["last_apex"] = jp.where(first_contact, info["swing_apex"], info["last_apex"])
         info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
         info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
         info["feet_contact_time"] = jp.where(contact_filt, info["feet_contact_time"] + self.dt, 0.0)
@@ -1093,7 +1112,8 @@ class Joystick(HumanoidEnv):
         # Gait-shaping gate (see shaping_tracking_gate in default_config):
         # the positive gait terms follow the linear tracking kernel, after
         # the product gate when that is on. Gated set: feet_air_time,
-        # feet_air_time_biped, feet_apex and gait_symmetry_income (below).
+        # feet_air_time_biped, feet_apex, and gait_symmetry_income and
+        # feet_apex_min (below).
         # feet_phase stays ungated on purpose -- it is the clock-following
         # gradient, and it has to survive at zero tracking because stepping
         # is how tracking starts.
@@ -1225,6 +1245,15 @@ class Joystick(HumanoidEnv):
                     contact,
                     cfg.gait_symmetry_floor,
                     cfg.get("gait_symmetry_cap", 1.0),
+                )
+                * moving
+                * shape_gate
+            )
+        if self._feet_apex_min_on:
+            # In the shape_gate set for feet_apex's reason.
+            rewards["feet_apex_min"] = (
+                terms.feet_apex_min(
+                    info["swing_apex"], info["last_apex"], first_contact, cfg.apex_target
                 )
                 * moving
                 * shape_gate

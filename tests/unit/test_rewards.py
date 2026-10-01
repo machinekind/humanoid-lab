@@ -262,6 +262,70 @@ def test_feet_apex_pays_once_per_swing_at_touchdown():
     assert one_lands == pytest.approx(1.0)
 
 
+# -- feet_apex_min ----------------------------------------------------------
+
+
+def test_feet_apex_min_pays_nothing_without_a_landing():
+    out = terms.feet_apex_min(
+        jp.array([0.05, 0.05]), jp.array([0.05, 0.05]), jp.array([False, False]), 0.05
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_apex_min_pays_nothing_before_the_other_foot_has_swung():
+    """last_apex is 0 until a foot's first landing, so the first swing of an
+    episode pays nothing however high it went."""
+    out = terms.feet_apex_min(
+        jp.array([0.08, 0.0]), jp.array([0.0, 0.0]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(0.0)
+
+
+def test_feet_apex_min_pays_one_per_landing_when_both_feet_reach_the_target():
+    swing = jp.array([0.05, 0.05])
+    last = jp.array([0.05, 0.05])
+    one = terms.feet_apex_min(swing, last, jp.array([True, False]), 0.05)
+    both = terms.feet_apex_min(swing, last, jp.array([True, True]), 0.05)
+    assert one == pytest.approx(1.0)
+    assert both == pytest.approx(2.0)
+
+
+def test_feet_apex_min_caps_the_landing_at_the_other_foots_last_swing():
+    """A landing above the target pays only what the other foot's last swing
+    reached: a one-leg gait earns nothing extra from its lifting leg."""
+    out = terms.feet_apex_min(
+        jp.array([0.20, 0.0]), jp.array([0.05, 0.025]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(0.5)
+
+
+def test_feet_apex_min_reads_the_other_foot_not_its_own():
+    """Foot 0 lands; its own last_apex (0) is ignored, foot 1's is used."""
+    out = terms.feet_apex_min(
+        jp.array([0.05, 0.0]), jp.array([0.0, 0.05]), jp.array([True, False]), 0.05
+    )
+    assert out == pytest.approx(1.0)
+
+
+def test_feet_apex_min_rejects_a_foot_count_other_than_two():
+    with pytest.raises(ValueError, match="two feet"):
+        terms.feet_apex_min(jp.zeros(4), jp.zeros(4), jp.ones(4, dtype=bool), 0.05)
+
+
+def test_feet_apex_min_at_scale_zero_leaves_the_metric_names_unchanged():
+    """feet_apex_min is a style term: at scale 0 it adds no reward/* metric
+    key, so the recorded goldens' metric-name set is untouched."""
+    scales = default_config().reward.scales
+    assert scales.feet_apex_min == 0.0
+    assert "feet_apex_min" in _STYLE_TERMS
+    names = _reward_metric_names(scales)
+    assert "reward/feet_apex_min" not in names
+
+    scales.feet_apex_min = 10.0
+    armed = _reward_metric_names(scales)
+    assert set(armed) - set(names) == {"reward/feet_apex_min"}
+
+
 def test_feet_landing_is_zero_for_a_foot_moving_up():
     """Only downward speed is priced: a foot pushing off the floor is a
     swing starting, not an impact."""
@@ -352,6 +416,10 @@ def test_torque_limit_positive_above_cap():
             (jp.array([[0.1, 0.0], [0.0, 0.0]]), jp.array([True, False])),
         ),
         (terms.feet_apex, (jp.array([0.04, 0.0]), jp.array([True, False]), 0.05)),
+        (
+            terms.feet_apex_min,
+            (jp.array([0.04, 0.0]), jp.array([0.0, 0.03]), jp.array([True, False]), 0.05),
+        ),
         (
             terms.feet_landing,
             (jp.array([-0.4, 0.1]), jp.array([0.01, 0.05]), 0.03),

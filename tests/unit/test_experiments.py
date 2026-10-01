@@ -175,3 +175,27 @@ def test_yolo_income_smooth_reaches_the_env_config():
     for key, value in SMOOTHNESS_SCALES.items():
         assert env_cfg.reward.scales[key] == pytest.approx(value), key
     assert env_cfg.reward.scales.feet_apex == 10.0
+
+
+def test_yolo_apex_min_is_yolo_income_sym_with_feet_apex_swapped_for_feet_apex_min():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_apex_min")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_sym")
+
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_ppo == base_ppo
+    assert ours_scales.pop("feet_apex") == 0.0
+    assert base_scales.pop("feet_apex") == 10.0
+    assert ours_scales.pop("feet_apex_min") == 10.0
+    assert base_scales.pop("feet_apex_min", 0.0) == 0.0
+    assert ours_scales == base_scales
+
+
+def test_yolo_apex_min_reaches_the_env_config():
+    cfg = _compose(["experiment=yolo_apex_min"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.reward.scales.feet_apex_min == 0.0
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.reward.scales.feet_apex_min == 10.0
+    assert env_cfg.reward.scales.feet_apex == 0.0

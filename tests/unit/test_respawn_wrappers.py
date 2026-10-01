@@ -31,6 +31,7 @@ def _gait_info():
         "feet_air_time": jp.array([[0.3, 0.0], [0.3, 0.0]]),
         "feet_contact_time": jp.array([[0.0, 0.4], [0.0, 0.4]]),
         "swing_apex": jp.array([[0.08, 0.0], [0.08, 0.0]]),
+        "last_apex": jp.array([[0.06, 0.07], [0.06, 0.07]]),
         "last_contact": jp.array([[False, True], [False, True]]),
         "air_dur_ema": jp.array([[0.35, 0.3], [0.35, 0.3]]),
         "stance_dur_ema": jp.array([[0.4, 0.45], [0.4, 0.45]]),

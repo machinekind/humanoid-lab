@@ -149,6 +149,31 @@ def feet_apex(swing_apex, first_contact, apex_target: float):
     return jp.sum(jp.clip(swing_apex / apex_target, 0.0, 1.0) * first_contact)
 
 
+def feet_apex_min(swing_apex, last_apex, first_contact, apex_target: float):
+    """Pay each completed swing for the LOWER of its own peak clearance and
+    the other foot's last completed peak, as a fraction of `apex_target`,
+    once, on the step the foot lands. Two feet only.
+
+    feet_apex pays each foot its own peak, so a gait that lifts one leg and
+    shuffles the other collects half of the term with the lifting leg. Here
+    a landing pays clip(min(swing_apex[i], last_apex[other]) / apex_target,
+    0, 1): the lifting leg's landings earn only as much as the other leg's
+    most recent swing reached, and a gait earns the full payout only when
+    both legs reach the target. Clipped at the target, like feet_apex.
+
+    `swing_apex` is the caller's running maximum over the current swing, as
+    for feet_apex. `last_apex` holds each foot's peak over its last
+    completed swing, 0 before that foot's first landing; the caller updates
+    it after this read, so on a simultaneous landing each foot is paired
+    with the other's previous swing. `first_contact` selects the feet whose
+    swing ended this step.
+    """
+    if swing_apex.shape[-1] != 2:
+        raise ValueError(f"feet_apex_min needs two feet, got {swing_apex.shape[-1]}")
+    paired = jp.minimum(swing_apex, last_apex[..., ::-1])
+    return jp.sum(jp.clip(paired / apex_target, 0.0, 1.0) * first_contact)
+
+
 def feet_landing(foot_vz, foot_clearance, glide_height: float):
     """Penalize downward foot speed, weighted by closeness to the floor:
     sum(min(foot_vz, 0)^2 * clip(1 - clearance/glide_height, 0, 1)).

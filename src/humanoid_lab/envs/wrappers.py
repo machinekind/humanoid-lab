@@ -64,6 +64,7 @@ GAIT_TRACKER_KEYS = (
     "feet_air_time",
     "feet_contact_time",
     "swing_apex",
+    "last_apex",
     "last_contact",
     "air_dur_ema",
     "stance_dur_ema",
@@ -86,9 +87,9 @@ class GaitReseedWrapper(playground_wrapper.Wrapper):
       first landing closes it as a swing into `air_dur_ema`.
 
     Restarting the EMAs and the mode timers that feed them (feet_air_time,
-    feet_contact_time, last_contact, plus swing_apex, which feeds feet_apex
-    the same way) to reset()'s values makes a respawn a fresh episode for
-    every per-foot gait term.
+    feet_contact_time, last_contact, plus swing_apex and last_apex, which
+    feed feet_apex and feet_apex_min the same way) to reset()'s values
+    makes a respawn a fresh episode for every per-foot gait term.
 
     Like ProgressReseedWrapper this sits outside the vmap, so every info
     leaf carries a leading env axis and `done` broadcasts over the foot
