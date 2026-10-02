@@ -22,6 +22,17 @@ case "${1:-}" in
   # [--task joystick|terrain] [--backend auto|warp|jax] [--num-envs N]
   # [--range LO HI].
   check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
+  # Terrain recipe vs MJWarp's contact, CCD and row buffers: rolls the
+  # training env over the arena's hardest tiles and reads the device
+  # messages off fd 1. NOT forced onto CPU: the gate is warp on a GPU host
+  # (--backend warp --require-warp). jax on a CPU reports unverified, and
+  # --engine mujoco is the C per-pair cap proxy. Passthrough args:
+  # [--engine mjx|mujoco] [--backend auto|warp|jax] [--arena train|eval]
+  # [--num-envs N] [--steps N] [--regimes stand,walk,fallen]
+  # [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N]
+  # [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH]
+  # [hydra overrides...].
+  check-terrain) shift; "$PY" -m humanoid_lab.check_terrain "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
@@ -124,7 +135,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|check-terrain|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

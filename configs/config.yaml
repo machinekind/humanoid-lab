@@ -38,8 +38,9 @@ domain_rand: false
 
 # Measure the warp contact/constraint peaks on a short probe before training
 # and record them in run.json's `contacts` block. Warp drops buffer overflow
-# silently, so before the job spends GPU hours is the only cheap moment to
-# catch an undersized budget. Skipped automatically when smoke=true. Off, the
+# without raising, and MJWarp's message goes to fd 1, outside Python's
+# logging. Before the job spends GPU hours is the only cheap moment to catch
+# an undersized budget. Skipped automatically when smoke=true. Off, the
 # block is still written, with null peaks.
 contact_preflight: true
 

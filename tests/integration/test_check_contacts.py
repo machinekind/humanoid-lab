@@ -6,9 +6,10 @@ tested in tests/unit/test_sim_budget.py.
 
 The second test is a standing guard: it fails when someone adds collision
 geometry to a robot without resizing the configured budgets. That failure
-means the budgets are undersized, not that the test is too strict -- on the
-warp backend the contacts past the budget are dropped with no warning at
-all.
+means the budgets are undersized, not that the test is too strict. On the
+warp backend the contacts past the budget are dropped, and nothing raises.
+MJWarp prints `narrowphase overflow` to file descriptor 1, which a run log
+shows only when fd 1 is captured.
 """
 
 from __future__ import annotations
@@ -87,7 +88,7 @@ def test_the_recorded_budgets_hold_the_measured_peaks_with_headroom(robot):
     """robot.yaml's sim_budget must still cover the measured peaks at the
     headroom rule. Adding foot geometry, raising condim, or injecting
     collision primitives moves the peaks; this test is what makes that a
-    build failure instead of a silent contact drop on the next GPU run."""
+    build failure instead of dropped contacts on the next GPU run."""
     budget = load_robot_spec(paths.ROBOTS_DIR / robot).sim_budget
     assert budget, f"{robot}: robot.yaml records no sim_budget block to guard"
     peaks = [_measured(robot, preset)["peak"] for preset in _presets(robot)]

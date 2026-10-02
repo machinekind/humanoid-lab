@@ -111,7 +111,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # Warp contact budgets: an explicit sim config value wins, else the
         # robot's own measured sim_budget block (robot.yaml). Only warp
         # reads them, and running warp without a budget would drop contacts
-        # silently, so that combination refuses here instead.
+        # without raising, so that combination refuses here instead.
         budget = self._robot_spec.sim_budget
         self._naconmax_per_env = (
             sim.naconmax_per_env if sim.naconmax_per_env is not None

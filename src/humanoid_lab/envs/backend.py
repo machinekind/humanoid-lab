@@ -56,10 +56,12 @@ def data_budget_kwargs(
     num_envs. MJWarp refuses a naccdmax above naconmax. None leaves the
     kwarg out, and MJWarp then sizes the scratch to the naconmax pool.
 
-    If a buffer is too small, warp drops the overflow silently instead of
-    raising an error. The measured numbers behind the defaults are in
-    envs/joystick.py's `sim` block; `./run.sh check-contacts` re-measures
-    them.
+    If a buffer is too small, warp drops the overflow instead of raising an
+    error. MJWarp prints a message from the device to file descriptor 1,
+    which Python's sys.stdout never sees (fd_capture.py captures it). The
+    measured numbers behind the defaults are in envs/joystick.py's `sim`
+    block; `./run.sh check-contacts` re-measures them, and `./run.sh
+    check-terrain` gates a terrain recipe's budgets.
     """
     if backend != "warp":
         return {}

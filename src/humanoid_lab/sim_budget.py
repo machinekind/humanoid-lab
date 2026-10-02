@@ -6,14 +6,20 @@ config says it is.
 `naconmax_per_env` sizes ONE shared contact pool for the whole batch:
 `mjx.make_data(..., naconmax=naconmax_per_env * num_envs)` allocates it up
 front, so the product is a real device-memory line item. A 256-per-env pool
-has run a 4096-env job out of device memory. Contacts past the pool are
-dropped SILENTLY.
+has run a 4096-env job out of device memory. Contacts and broadphase
+candidate pairs past the pool are dropped.
 
 `njmax` sizes the constraint rows of a single world and never multiplies by
-the env count. Rows past it apply no force, with no warning anywhere: no
-counter reports it, no exception is raised, the policy just trains against a
-robot whose feet half-pass through the floor. That is why the peaks below get
-recorded even when nothing is wrong.
+the env count. Rows past it apply no force, and the policy trains against a
+robot whose feet half-pass through the floor.
+
+Neither overflow raises. MJWarp checks both budgets when a step advances
+time. A counter past its buffer then prints a message from the device to
+file descriptor 1: `narrowphase overflow`, `broadphase overflow` or `nefc
+overflow`. Python's sys.stdout never sees that text, so a run log shows it
+only when fd 1 is captured (fd_capture.py). `mjx.forward` alone checks
+neither budget. The counters keep counting past their buffers. Because no
+overflow raises, the peaks below get recorded even when nothing is wrong.
 
 The jax backend sizes its own buffers on the fly and has neither budget, so
 it can never overflow. It also has no live counters: its `_impl.ncon` and
@@ -22,9 +28,10 @@ ncon 499, nefc 2025 = 2 friction + 27 limit + 499*4 contact rows), identical
 whatever the robot is doing. What IS measurable there is the number of
 contacts actually penetrating, `active_contacts` below.
 
-Every peak reported here is PER WORLD, so `overflow` compares against
-`naconmax_per_env` and `rows_overflow` against `njmax`. `pool` is reported
-alongside as the memory number, not as a threshold.
+Every peak `budget_report` takes is PER WORLD, so `overflow` compares
+against `naconmax_per_env` and `rows_overflow` against `njmax`. `pool` is
+reported alongside as the memory number, not as a threshold. `pool_report`
+takes the pool counters themselves, so it compares them against the pool.
 """
 
 from __future__ import annotations
@@ -161,8 +168,8 @@ def budget_report(
         # What make_data allocates for the whole batch. Reported for the
         # device-memory arithmetic, never compared against a per-world peak.
         "pool": None if nacon_budget is None else nacon_budget * int(num_envs),
-        # >= not >: at the budget the buffer is full and the next contact is
-        # already gone, silently.
+        # >= not >: a peak at the budget leaves no slot for one more
+        # contact.
         "overflow": bool(is_warp and nacon is not None and nacon >= nacon_budget),
         "nefc_max": nefc,
         "njmax": njmax_budget,
@@ -181,6 +188,49 @@ def budget_report_for_env(env, nacon_max, nefc_max) -> dict:
         env._backend, nacon_max, nefc_max,
         env._naconmax_per_env, env._njmax, env._config.sim.num_envs,
     )
+
+
+def pool_report(
+    backend: str,
+    nacon_pool_max,
+    ncollision_pool_max,
+    nefc_max,
+    naconmax_per_env: int,
+    njmax: int,
+    num_envs: int,
+) -> dict:
+    """Warp's pool counters against the pool, and the row peak against njmax.
+
+    `nacon_pool_max` and `ncollision_pool_max` are peaks of the batch's
+    shared counters, not of one world, so they compare against the pool,
+    naconmax_per_env x num_envs. Broadphase candidates share that buffer
+    with the contacts, so the pool's demand is the larger of the two.
+    `nefc_max` is the peak over worlds of one world's rows, against njmax.
+
+    `fill_pool` and `fill_rows` are demand over capacity, None where
+    nothing measured the demand. MJWarp drops what lies past a buffer when
+    the count exceeds it, so both overflow flags compare with `>`. Both are
+    False off warp, which has no fixed buffers. Values are plain Python
+    types, for json."""
+    pool = int(naconmax_per_env) * int(num_envs)
+    peaks = [int(v) for v in (nacon_pool_max, ncollision_pool_max) if v is not None]
+    demand = max(peaks) if peaks else None
+    nefc = None if nefc_max is None else int(nefc_max)
+    is_warp = backend == "warp"
+    return {
+        "backend": backend,
+        "num_envs": int(num_envs),
+        "naconmax_per_env": int(naconmax_per_env),
+        "pool": pool,
+        "njmax": int(njmax),
+        "nacon_pool_max": None if nacon_pool_max is None else int(nacon_pool_max),
+        "ncollision_pool_max": None if ncollision_pool_max is None else int(ncollision_pool_max),
+        "nefc_max": nefc,
+        "fill_pool": None if demand is None else demand / pool,
+        "fill_rows": None if nefc is None else nefc / int(njmax),
+        "overflow": bool(is_warp and demand is not None and demand > pool),
+        "rows_overflow": bool(is_warp and nefc is not None and nefc > int(njmax)),
+    }
 
 
 # -- traced telemetry: the counters inside a jitted training step ----------

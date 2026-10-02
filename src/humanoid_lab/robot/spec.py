@@ -144,7 +144,7 @@ class RobotSpec:
     # geometry (`./run.sh check-contacts`). Recognized keys:
     # naconmax_per_env, njmax. A robot without a measurement omits the
     # block; a warp run then refuses at env construction (envs/base.py)
-    # instead of dropping contacts silently.
+    # instead of dropping contacts without raising.
     sim_budget: dict[str, int] = field(default_factory=dict)
     # Optional MJCF camera name eval videos render from. None = a free
     # camera tracking the floating base (eval/video.py); camera names are

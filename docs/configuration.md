@@ -560,12 +560,17 @@ cannot move a jax rollout by a bit.
 | `sim.naccdmax_per_env` | `None` | CCD scratch slots per world for convex pairs. Heightfield pairs and box-box pairs are convex. Warp allocates ONE pool for the batch, sized `naccdmax_per_env * num_envs`. It allocates it on every collision call, outside the XLA pool. `sim_budget.ccd_slot_bytes` gives the bytes per slot. `None` sizes it to the naconmax pool. It has no robot.yaml fallback. It must not exceed `naconmax_per_env`. MJWarp refuses a larger value in `make_data`, and the terrain task refuses it at construction. A pair past the pool is dropped, and MJWarp prints `CCD overflow`. Neither robot's flat model has a convex pair, so a flat run allocates no CCD scratch. |
 | `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
 
-Both overflows are silent. Contacts past `naconmax` are dropped; rows past
-`njmax` apply no force, and nothing warns anywhere — no counter reports it and
-no exception is raised, so a run just trains against a robot whose feet half
-pass through the floor. That is why the budgets are fail-closed: a warp env
-whose robot records no `sim_budget` (and whose sim config sets none) refuses
-to construct.
+Neither overflow raises. Contacts and broadphase candidate pairs past the
+`naconmax` pool are dropped. Rows past `njmax` apply no force, so a run trains
+against a robot whose feet half pass through the floor. MJWarp checks both
+budgets when a step advances time. A counter past its buffer then prints
+`narrowphase overflow`, `broadphase overflow` or `nefc overflow` from the
+device to file descriptor 1. Python's `sys.stdout` never sees that text, so a
+run log shows it only when fd 1 is captured. `fd_capture.py` captures it, and
+`check-terrain` counts it. A bare `mjx.forward` checks neither budget. The
+counters keep counting past their buffers. Because no overflow raises, the
+budgets are fail-closed: a warp env whose robot records no `sim_budget` (and
+whose sim config sets none) refuses to construct.
 
 The budgets are measurements OF a robot's collision geometry, so they live
 with the robot: each `robots/<name>/robot.yaml` records the
@@ -583,6 +588,153 @@ never floats.
 
 `tests/integration/test_check_contacts.py` discovers every robot directory
 and fails if new collision geometry outgrows the recorded budgets.
+
+### Terrain budgets (`check-terrain`)
+
+A robot's `sim_budget` is a flat-floor measurement. A terrain scene adds
+heightfield and box contacts. A terrain run on warp therefore refuses to
+start unless the recipe sets `task.env.sim.naconmax_per_env` and
+`task.env.sim.njmax`. `./run.sh check-terrain` measures those budgets and
+gates a recipe against them. No yaml file declares a `sim` block, so Hydra
+refuses the plain `task.env.sim.njmax=N` override. Set a budget with
+`++task.env.sim.<key>=N`.
+
+The verb composes the recipe with `task=terrain` first, so `experiment=` and
+later overrides still apply. A composed task other than terrain exits 2. The
+env is the training env, built by `registry.env_args_from_config` and
+`make_env`. Push, the no-progress cut, command resampling and spawn grace
+are off. The gate budgets are the recipe's `task.env.sim` values. Where the
+recipe sets none, `--naconmax-per-env` (512), `--njmax` (4096) and
+`--naccdmax-per-env` (default: the naconmax pool) apply. The report's
+`budgets.source` names which. The contact and row counters count past
+their buffers. A CCD, broadphase or narrowphase overflow still drops work
+before a counter sees it. A contact or CCD default below the recipe's
+demand therefore gives a `lower_bound` recommendation and a failed gate.
+Rerun at the recommended budgets until `lower_bound` clears. For Roboto
+Origin at 512 per env and the default 1024 warp worlds, the gate's own CCD
+scratch is 2.9 GB. A robot without box colliders has a 4,996-byte slot,
+which gives 2.6 GB. `--arena eval` swaps in the terrain scan's arena.
+
+The worlds spread over the arena's tiles, hardest first. Each base sits on
+its tile's feature band, between the spawn pad and the tile edge, along one
+of 8 headings. Placement reads the dilated spawn grid, so no collider starts
+inside a box. Flat-row tiles use the pad. Three regimes each roll `--steps`
+control steps (default 200):
+
+- `stand`: zero action. Neither robot stays up under it.
+- `walk`: `check-contacts`' full-amplitude sinusoid.
+- `fallen`: `check-contacts`' three attitudes, dropped 0.25 m. World `i`
+  takes attitude `(i mod n_tiles + i // n_tiles) mod 3`. Each lap of the
+  tiles moves a tile on to its next attitude. A tile sees all three only
+  when `num_envs` is at least 3 × the tile count. The proxy's default of
+  one world per tile gives each tile one attitude.
+
+One warm-up rollout pays the compile. Each regime then runs once, and that
+run is the measurement. At every physics step, `n_substeps` per control
+step, it records warp's pool-wide `nacon` and `ncollision`, the largest
+per-world `nefc`, and whether every `qpos` is finite. On jax it records the
+penetrating contacts per world instead. Each control step keeps its worst
+physics step. Training telemetry and `check-contacts` sample once per
+control step, at its last physics step, so their peaks can read below the
+gate's. Each regime runs under a capture of fd 1 that counts MJWarp's
+messages:
+
+| Message | Gates | Meaning |
+|---|---|---|
+| `height field collision overflow` | yes | A heightfield pair collected 50 prism hits. Its later prisms go untested. |
+| `CCD overflow` | yes | A convex pair past the `naccdmax` pool is dropped. |
+| `narrowphase overflow`, `broadphase overflow` | yes | Contacts or candidate pairs past the naconmax pool are dropped. |
+| `nefc overflow`, `njmax_nnz overflow` | yes | Rows past the budget apply no force. |
+| `EPA horizon` | no | EPA's 24-entry horizon ran out for one pair. No budget enlarges it. |
+
+| Engine | Condition | Status | Exit |
+|---|---|---|---|
+| mjx on warp | a gating message, pool or row fill at `--max-fill` (0.9), or a non-finite `qpos` | `fail` | 1 |
+| mjx on warp | otherwise | `pass` | 0 |
+| mjx on jax | `--require-warp` | `unverified` | 2 |
+| mjx on jax | a non-finite `qpos` | `fail` | 1 |
+| mjx on jax | otherwise | `unverified` | 0 |
+| mujoco | a C reset (bad qpos, qvel or qacc) | `fail` | 1 |
+| mujoco | a collider at the per-pair cap | `proxy_at_risk` | 1 with `--strict`, else 0 |
+| mujoco | otherwise | `proxy_clear` | 0 |
+| any | a refused request: an unknown flag or regime, an empty `--regimes`, `--steps` below 1, a task other than terrain, a missing eval arena, an arena of more than 128 boxes on jax, or `--require-warp` with `--engine mujoco` | `error` | 2 |
+| any | an exception | `error`, with the traceback | 1 |
+
+The recommendations divide pool peaks by the world count. The pool is
+shared, so a per-env budget covers the batch's total demand, not the worst
+world.
+
+- `naconmax_per_env`: the larger pool peak of `nacon` and `ncollision`, per
+  world, times 2.0, rounded up to 8.
+- `naccdmax_per_env`: the `ncollision` pool peak per world, times 2.0,
+  rounded up to 8, and never above `naconmax_per_env`. `ncollision` counts
+  every candidate pair, so it bounds each pair type's CCD slots.
+- `njmax`: the per-world `nefc` peak times 2.0, rounded up to 32.
+- `floor_4x_colliders`: 4 contacts per ground-pairing collider. MJWarp
+  writes at most 4 per heightfield pair. It is reported for comparison.
+- A CCD, broadphase or narrowphase overflow drops work before a counter sees
+  it. The recommendation is then marked `lower_bound`.
+
+The three headrooms and `--max-fill` are untuned. `ccd_scratch` projects the
+CCD scratch a training run of the recipe holds outside the XLA pool. It is
+the recommended `naccdmax_per_env` (else the gate's budget) times the
+training batch times `sim_budget.ccd_slot_bytes`. The training batch is the
+larger of `ppo.num_envs` and `ppo.num_eval_envs`. Roboto Origin's slot is
+5,480 bytes.
+
+| Check | Where |
+|---|---|
+| Composition, env build, spawn table, regimes, fd capture, report schema, exit rules, budget arithmetic | any host, through the tests |
+| jax run on the CPU arena (`experiment=terrain_cpu`) | any host. Status `unverified`. |
+| C per-pair cap proxy, any arena | any host, `--engine mujoco` |
+| The gate: messages, pool and row fill, recommendations, CCD demand, throughput | a CUDA host only, `--backend warp --require-warp`, launched by a human |
+
+jax has no per-pair cap, prints no message and has no live counters. Its
+`hfield_convex` misses the prisms under a yawed or rolled box's low-side
+corners, so box colliders get partial heightfield contact there. The terrain
+env's `max_contact_points` caps the contacts jax keeps. The jax counts are
+therefore lower bounds, and the report says so under `jax_lower_bound`. The
+jax backend refuses an arena of more than 128 ground boxes, so the default
+arena runs on warp or on the C proxy.
+
+The C proxy steps plain MuJoCo over the same spawns, regimes and ctrl, one
+world at a time. The default is one world per tile. It counts each robot
+collider's contacts with the heightfield at every physics step. C stops at
+50 contacts per pair, so 50 is a cap hit. C writes a contact for every prism
+hit, and MJWarp writes at most 4 per pair. A clear proxy is early warning,
+never a pass. On a 4 cm heightfield a resting 9.3 × 9.0 cm box cell gets 17
+to 30 contacts in C, depending on where it sits on the grid. Centred on a
+node it gets 30. The whole 18.6 × 27.0 cm base box reaches 50 at any
+placement. On the default arena, 80 worlds and 200 steps per regime,
+Roboto Origin under `deploy_pd` reaches no cap. Its highest counts are 44,
+on a thigh and a shin capsule while fallen. C resets a diverging world to
+`qpos0` inside `mj_step`. The proxy stops counting that world at the reset
+and lists it under `diverged`.
+
+The report goes to `--out`, by default
+`runs/check_terrain/<robot>_<preset>_<arena>_<fingerprint[:12]>_<engine>.json`.
+`<engine>` is `mujoco`, `mjx-warp` or `mjx-jax`.
+
+| Key | Meaning |
+|---|---|
+| `schema`, `status`, `reasons` | Report version 1 and the verdict. |
+| `engine`, `backend` | `mjx` on the env's backend, or `mujoco` with a null backend. |
+| `provenance` | Git commit and dirty flag, package versions, device. |
+| `robot`, `preset`, `actuator_overrides` | What was built. |
+| `action_window` | Each joint's reachable target range for a position-servo preset, inside the env's clip. Null for any other actuator model. |
+| `arena` | Kind, generator version, fingerprint, params, grid size, cell size, box count. |
+| `model` | `ngeom`, ground geoms, robot colliders, rows per contact, the jax contact cap. |
+| `num_envs`, `steps`, `seed` | The run's size. |
+| `compile_s` | On mjx, the seconds of the warm-up rollout that pays the compile. Null on mujoco. |
+| `budgets` | The gate budgets, the pool and each budget's source. |
+| `regimes` | On mjx: `nacon_pool_max`, `ncollision_pool_max`, `nefc_max`, `active_max`, `peak_step`, `finite`, `messages`, `steady_s`, `env_steps_per_s`. On mujoco: `at_cap`, `max_pair_count`, `finite`, `diverged`, `steady_s`. On mujoco `finite` means no world had a C reset, and `diverged` lists `[world, control step]` for each reset. |
+| `jax_lower_bound` | On jax: whether the robot has box colliders, and the contact cap. |
+| `fill` | Pool and row demand over capacity. |
+| `messages` | MJWarp's messages, summed over the regimes. |
+| `recommend` | Budgets that clear the peaks, their headrooms, `floor_4x_colliders` and `lower_bound`. |
+| `ccd_scratch` | The training run's CCD scratch projection. |
+| `proxy` | The C cap, cap hits and peak pair counts per collider. |
+| `error`, `timestamp` | The refusal or traceback, and when the report was written. |
 
 ### The `contacts` block
 
@@ -835,6 +987,7 @@ Read from `run.sh` as it stands today:
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
 | `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--task joystick\|terrain] [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. `--task terrain` replaces the floor plane with the CPU terrain arena and stands each world on a flat-row pad. A foot contact with any ground geom counts. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
+| `check-terrain` | `python -m humanoid_lab.check_terrain` | `[--engine mjx\|mujoco] [--backend auto\|warp\|jax] [--arena train\|eval] [--num-envs N] [--steps N] [--regimes stand,walk,fallen] [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N] [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH] [hydra overrides...]`. Gates a terrain recipe against MJWarp's contact, CCD and row buffers and recommends its `task.env.sim` budgets. Not forced onto CPU. The gate itself is `--backend warp --require-warp` on a CUDA host. A host without CUDA runs only the jax check (status `unverified`) and the C proxy (`--engine mujoco`). Neither verifies a recipe. `--num-envs` defaults to 1024 on warp, 16 on jax and one world per tile on the proxy. See [Terrain budgets](#terrain-budgets-check-terrain). |
 | `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
 | `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |

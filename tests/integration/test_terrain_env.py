@@ -29,6 +29,7 @@ from humanoid_lab.envs.terrain_joystick import (
     TerrainJoystick,
 )
 from humanoid_lab.envs.terrain_joystick import default_config as terrain_default_config
+from humanoid_lab.eval.terrain_suite import ROBOTO_SUITE
 from humanoid_lab.registry import _apply_overrides, make_env
 from humanoid_lab.terrain import TYPES, Box, scene
 from humanoid_lab.terrain.config import CPU_ARENA
@@ -243,7 +244,14 @@ def test_sample_points_cover_every_ground_collider(env):
         want = 8 if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX else 5
         assert n == want, mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
     assert float(env._spawn_lift.min()) == 0.0
-    assert env._feet_reach == pytest.approx(0.15, abs=0.005)
+    assert env._feet_reach == pytest.approx(0.1498, abs=1e-3)
+
+
+def test_footprint_reach_is_within_the_suite_constant(env):
+    """The scan suite's footprint bounds the reach the env measures, within
+    0.01 m. It sets r_out and keeps every start on the pad."""
+    assert env._feet_reach <= ROBOTO_SUITE.footprint_reach
+    assert ROBOTO_SUITE.footprint_reach - env._feet_reach < 0.01
 
 
 def _edited(edit):
