@@ -1,5 +1,5 @@
-"""Build-order gate for robot.yaml's model_patches section and the
-unconditional source-actuator/actuator-sensor strip in build_spec.
+"""robot.yaml's model_patches section and the unconditional
+source-actuator/actuator-sensor strip in build_spec.
 
 Covers robot #2's motivating case (a vendored MJCF that ships its own
 <actuator> block, actuator sensors, no named foot geoms, and a PGS solver)

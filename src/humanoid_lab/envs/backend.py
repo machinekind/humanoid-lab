@@ -13,9 +13,9 @@ def resolve_backend(backend: str) -> str:
     """Resolve a sim.backend value to "jax" or "warp".
 
     "auto" picks warp when jax runs on a GPU and the vendored MJWarp
-    imports, and jax otherwise. Explicit values pass through. "warp" on a
-    host without CUDA fails later in put_model, and that failure should
-    stay loud.
+    imports, and jax otherwise. Explicit values pass through. An explicit
+    "warp" on a host without CUDA does not fail in put_model. MJWarp runs
+    on the CPU device there.
     """
     if backend in ("jax", "warp"):
         return backend

@@ -1,0 +1,49 @@
+# @package _global_
+# Roboto Origin's first terrain recipe. docs/terrain.md is the guide.
+#
+# Every value here is untuned. Every value not set here is the terrain
+# default (envs/terrain_joystick.py's default_config).
+#
+# Warp budgets. This file sets no task.env.sim budget. A terrain run on warp
+# refuses to build until task.env.sim.naconmax_per_env and task.env.sim.njmax
+# are set. robot.yaml's sim_budget is a flat-floor measurement. A human
+# measures the arena's budgets on a CUDA host:
+#
+#   ./run.sh check-terrain experiment=roboto_terrain_v1 actuators=<preset> \
+#       --backend warp --require-warp
+#
+# The report's `recommend` block gives naconmax_per_env, naccdmax_per_env and
+# njmax. Copy the three under task.env.sim below. Run the same command again.
+# The gate then reads this file's budgets, and it must pass.
+#
+# Actuator preset. This file pins none, so the config default applies
+# (sizing_ideal) unless the command line names one. The preset and its
+# actuators.overrides set the action window. Under deploy_pd the knee target
+# spans 0.125 to 0.54 rad and the ankle pitch target -0.40 to 0.00 rad. A
+# sagittal model of the leg that keeps the foot flat lifts the swing foot
+# at most 2.5 cm inside that window. deploy_pd therefore allows almost no
+# step-up. The default arena's stair risers run from 2 cm at difficulty 0
+# to 15 cm at difficulty 1. The window is an open decision. A policy runs
+# on both the flat and the terrain path only when both use the same preset
+# and the same actuators.overrides.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: terrain
+
+task:
+  env:
+    terrain:
+      # The default arena with the flat row as level 0: 11 levels of 8
+      # terrain types on 4 m tiles, 1900 boxes on 1201 x 901 nodes.
+      arena:
+        flat_row: true
+      spawn:
+        # Pad spawns. A feature spawn can start the robot across a riser,
+        # and the spawn grace that covers its settling needs Roboto's
+        # measured settle time first.
+        mode: pad
+      curriculum:
+        # Demote after three failed episodes without a clean one between.
+        demote_strikes: 3
+        # A fifth of the envs hold one row each, round robin, for good.
+        pinned_frac: 0.2

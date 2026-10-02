@@ -1,5 +1,5 @@
 """Checkpoint rollout collector for the sizing task's per-joint tau/omega
-telemetry (build order step 7, PLAN.md "First experiments" #2).
+telemetry.
 
 Run:
     python -m humanoid_lab.sizing.collect --run runs/<name> \
