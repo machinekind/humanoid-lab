@@ -93,7 +93,9 @@ The last one is the list in `DEPLOYABLE_OBS`. The IMU gives `gyro` and
 `gravity`, the encoders give `joint_pos` and `joint_vel`, the operator gives
 `command`, and the runtime holds `last_action` and `phase` itself. A
 privileged signal on the actor list (`linvel`, `height`, `contacts`,
-`actuator_force`) has no deploy-side source.
+`actuator_force`) has no deploy-side source. The critic's height scan,
+`height_scan_clean`, never reaches the actor list: the env refuses it on
+`obs.state` at construction.
 
 ## The export
 

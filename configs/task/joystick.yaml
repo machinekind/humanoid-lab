@@ -13,7 +13,8 @@ env:
   # IMU + joint encoders + own action/command history + the env's own gait
   # clock), privileged = critic (sim-only extras allowed). Catalog: gyro,
   # gravity, joint_pos, joint_vel, last_action, linvel, height,
-  # actuator_force, contacts, command, phase.
+  # actuator_force, contacts, command, phase, and height_scan_clean (the
+  # critic's height scan, privileged only).
   obs:
     state:
       - gyro

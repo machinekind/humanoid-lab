@@ -20,6 +20,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from humanoid_lab.actuators.models import ACTUATOR_MODELS
+from humanoid_lab.envs import height_scan
 from humanoid_lab.envs.backend import make_data_fn, resolve_backend
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale as preset_action_scale
@@ -83,6 +84,16 @@ class HumanoidEnv(mjx_env.MjxEnv):
 
     def __init__(self, robot_dir, preset_name, config, config_overrides=None, actuator_overrides=None):
         super().__init__(config, config_overrides)
+
+        # The height scan is critic only: the robot has no source for it.
+        if height_scan.NAME in self._config.obs.state:
+            raise ValueError(
+                f"obs.state names {height_scan.NAME!r}, the critic's height scan. "
+                "The robot has no source for it, so it belongs on obs.privileged only."
+            )
+        # Static: the catalog builds the scan only when the critic reads it.
+        self._scan_listed = height_scan.NAME in self._config.obs.privileged
+        self._scan_grid = jp.asarray(height_scan.body_grid(np), jp.float32)
 
         self._robot_spec: RobotSpec = load_robot_spec(robot_dir)
         self._preset = load_actuator_preset(robot_dir, preset_name, actuator_overrides)
@@ -442,7 +453,45 @@ class HumanoidEnv(mjx_env.MjxEnv):
     def _base_height(self, data):
         """Base height above the ground under it: the free joint's z here,
         on the flat floor at z = 0."""
-        return data.qpos[self._base_qadr + 2]
+        b = self._base_qadr
+        return self._height_at(data.qpos[b : b + 2], data.qpos[b + 2])
+
+    def _height_at(self, base_xy, base_z):
+        """Height above the ground of a base at world `base_xy` and z
+        `base_z`. Here it is `base_z`.
+
+        It reads only the pose, so a pose with no forward data reads the
+        same ground as `_base_height`."""
+        return base_z
+
+    def _ground_height(self, xy):
+        """Ground height under world `xy` (..., 2) -> (...): the flat floor,
+        exactly zero."""
+        return jp.zeros(xy.shape[:-1])
+
+    def _sole_ref_z(self, data):
+        """World z of the lowest sole: the minimum over the foot geoms of
+        centre z less radius."""
+        return jp.min(data.geom_xpos[self._foot_geom_ids, 2] - self._foot_geom_radius)
+
+    def _height_scan_clean(self, data):
+        """The scan at the base's pose, relative to the lowest sole's z.
+
+        The heading comes from the free joint's quaternion, not the IMU. On
+        the flat floor every value is minus the lowest sole's z, clipped."""
+        b = self._base_qadr
+        return self._scan_at(data.qpos[b : b + 2], data.qpos[b + 3 : b + 7], self._sole_ref_z(data))
+
+    def _scan_at(self, base_xy, base_quat, ref_z):
+        """The ground under `height_scan`'s grid, placed at world `base_xy`
+        and the heading of `base_quat` (w, x, y, z), less `ref_z` and
+        clipped.
+
+        It reads only the pose, so a pose with no forward data reads the
+        same ground as `_height_scan_clean`."""
+        yaw = height_scan.yaw_from_quat(base_quat, jp)
+        xy = height_scan.world_xy(self._scan_grid, base_xy, yaw, jp)
+        return height_scan.scan_values(self._ground_height(xy), ref_z, xp=jp)
 
     def _foot_site_pos(self, data):
         return data.site_xpos[self._foot_site_ids]
@@ -485,9 +534,10 @@ class HumanoidEnv(mjx_env.MjxEnv):
         Only gyro/gravity/joint_pos/joint_vel/last_action are signals a real
         robot can expose; the rest (linvel, height, actuator_force, contacts)
         are sim-only and belong on the privileged (critic) list, never on
-        the actor's.
+        the actor's. The height scan is there only when obs.privileged names
+        it, and obs.state never may.
         """
-        return {
+        catalog = {
             "gyro": self._gyro(data),
             "gravity": self._gravity_body(data),
             "joint_pos": data.qpos[self._qadr] - self._default_pose,
@@ -499,12 +549,16 @@ class HumanoidEnv(mjx_env.MjxEnv):
             "actuator_force": data.actuator_force,
             "contacts": self._foot_contact(data).astype(jp.float32),
         }
+        if self._scan_listed:
+            catalog[height_scan.NAME] = self._height_scan_clean(data)
+        return catalog
 
     def obs_component_sizes(self) -> dict[str, int]:
         """Width of every catalog component, from the model's dimensions.
 
         Untraced, so a caller can size an observation vector without data.
-        Task envs that add catalog entries extend it.
+        Task envs that add catalog entries extend it. The height scan is
+        sized whether or not a list names it.
         """
         nu = self.action_size
         return {
@@ -517,6 +571,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
             "height": 1,
             "actuator_force": nu,
             "contacts": self._n_feet,
+            height_scan.NAME: height_scan.SIZE,
         }
 
     def obs_slices(self, which: str) -> dict[str, slice]:

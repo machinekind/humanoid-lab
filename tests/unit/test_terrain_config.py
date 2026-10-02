@@ -161,12 +161,15 @@ def _compose(overrides):
 
 @pytest.mark.parametrize("robot", ["roboto_origin", "asimov_v1"])
 def test_terrain_task_composes_as_joystick_plus_its_ppo_keys(robot):
-    """terrain.yaml is joystick.yaml plus the PPO keys, and the robot
-    overlays still patch it."""
+    """terrain.yaml is joystick.yaml plus the critic's height scan and the
+    PPO keys, and the robot overlays still patch it."""
     terrain_cfg = _compose([f"robot={robot}", "task=terrain"])
     flat = _compose([f"robot={robot}", "task=joystick"])
     assert terrain_cfg.task.name == "terrain"
-    assert terrain_cfg.task.env == flat.task.env
+    env = OmegaConf.to_container(terrain_cfg.task.env)
+    flat_env = OmegaConf.to_container(flat.task.env)
+    assert env["obs"].pop("privileged") == [*flat_env["obs"].pop("privileged"), "height_scan_clean"]
+    assert env == flat_env
     assert OmegaConf.to_container(terrain_cfg.task.ppo) == {
         **OmegaConf.to_container(flat.task.ppo),
         "num_resets_per_eval": 0,
@@ -176,6 +179,20 @@ def test_terrain_task_composes_as_joystick_plus_its_ppo_keys(robot):
     env_cfg = terrain_default_config()
     _apply_overrides(env_cfg, OmegaConf.to_container(terrain_cfg.task.env, resolve=True))
     assert tuple(env_cfg.command.vx) == tuple(flat.task.env.command.vx)
+
+
+@pytest.mark.parametrize("robot", ["roboto_origin", "asimov_v1"])
+def test_terrain_yaml_critic_list_is_joystick_plus_the_scan(robot):
+    """The critic reads joystick's list, then the height scan. The actor
+    list is joystick's."""
+    terrain_cfg = _compose([f"robot={robot}", "task=terrain"])
+    obs = terrain_cfg.task.env.obs
+    joystick_obs = joystick_default_config().obs
+    assert list(obs.privileged) == [*joystick_obs.privileged, "height_scan_clean"]
+    assert list(obs.state) == list(joystick_obs.state)
+    env_cfg = terrain_default_config()
+    _apply_overrides(env_cfg, OmegaConf.to_container(terrain_cfg.task.env, resolve=True))
+    assert env_cfg.obs.privileged[-1] == "height_scan_clean"
 
 
 def test_a_bias_cannot_arm_an_out_of_box_draw():

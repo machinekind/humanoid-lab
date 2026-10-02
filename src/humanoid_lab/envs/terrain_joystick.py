@@ -46,6 +46,11 @@ tile on the stair and box tiles:
   clearance as low as -10.7 cm. A toe near a riser face read on the lookup
   would read contact and a negative clearance.
 
+The critic's height scan reads the exact ground too, so a riser shows at
+its own face. The catalog builds it when obs.privileged names
+`height_scan_clean`, as configs/task/terrain.yaml does. Measured with jax
+on a CPU on the CPU arena, it adds under 1% to a step at 16 and 64 worlds.
+
 Base contact reads the dilated spawn grid at each termination collider's
 lowest point. A termination cell resting on the default arena's stair and
 box tiles, at a uniform xy, yaw and tilt up to 45 degrees, reads late (at
@@ -512,13 +517,15 @@ class TerrainJoystick(Joystick):
 
     # -- ground reads -----------------------------------------------------------
     def _ground_height(self, xy):
-        return tg.height(self._tables, xy)
+        """The exact ground under world `xy`. The critic's height scan reads
+        it."""
+        return tg.ground(self._tables, xy)
 
-    def _base_height(self, data):
-        """Base height above the ground under the base. On the flat row it
-        is the free joint's z bit for bit."""
-        b = self._base_qadr
-        return data.qpos[b + 2] - self._ground_height(data.qpos[b : b + 2])
+    def _height_at(self, base_xy, base_z):
+        """Height above the lookup of a base at world `base_xy` and z
+        `base_z`. Base height and the `height` observation read it. On the
+        flat row it is `base_z` bit for bit."""
+        return base_z - tg.height(self._tables, base_xy)
 
     def _foot_gaps(self, data):
         """(gap (G, S), centre z (G,), in band (G,)) for the foot geoms. gap
