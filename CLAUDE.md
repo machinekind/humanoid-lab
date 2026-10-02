@@ -16,6 +16,7 @@ network and experiment groups.
 | `check-contacts` | measure the warp contact and constraint budgets a preset needs |
 | `check-friction` | verify a `dr.foot_friction` draw is the friction the feet walk on |
 | `check-terrain` | gate a terrain recipe against MJWarp's contact, CCD and row buffers |
+| `terrain-scan` | score a checkpoint on its robot's terrain scan suite |
 | `test` | `pytest tests/unit -q` — model-free, seconds, the edit loop |
 | `test-slow` / `test-all` | `tests/integration` (builds and steps MJX) / both, before a merge |
 | `battery` / `report` / `eval` | eval battery, report, video |

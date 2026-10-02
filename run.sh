@@ -33,6 +33,14 @@ case "${1:-}" in
   # [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH]
   # [hydra overrides...].
   check-terrain) shift; "$PY" -m humanoid_lab.check_terrain "$@" ;;
+  # Terrain scan suite -> runs/<name>/terrain_scan.json: the checkpoint
+  # crosses every cell of its robot's suite from the pad, at each suite
+  # speed. NOT forced onto CPU: the suite's arena has more ground boxes than
+  # the jax backend takes, so the full scan runs on warp on a GPU host.
+  # Passthrough args: --run runs/<name> [--cells a,b] [--speeds 0.3,0.6]
+  # [--backend auto|warp|jax] [--naconmax-per-env N] [--naccdmax-per-env N]
+  # [--njmax N] [--eval-seed N] [--out PATH] [--list-cells].
+  terrain-scan) shift; "$PY" -m humanoid_lab.eval.terrain_scan "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
@@ -135,7 +143,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|check-terrain|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|check-terrain|terrain-scan|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac
