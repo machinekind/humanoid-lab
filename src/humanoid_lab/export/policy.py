@@ -144,7 +144,14 @@ def load_for_export(run_dir) -> Loaded:
     the robot, preset, actuator overrides and PPO network shape all come
     from run.json. Its measurement overrides (pushes off, the no-progress
     cut off, the command resampler idle) touch training-only keys, so no
-    contract field moves.
+    contract field moves. A terrain run is rebuilt flat: its `terrain`
+    block is training-only, and its actor reads the same observations on
+    the flat floor.
+
+    The rebuilt env's actor list must equal the `obs.state` run.json
+    records. The env applies the run's overrides to the current default
+    config, and the contract describes the env, so a changed default would
+    otherwise ship a layout the network never read.
     """
     from humanoid_lab import policy_io
     from humanoid_lab.deploy_contract import build_contract, check_config_covered
@@ -160,8 +167,16 @@ def load_for_export(run_dir) -> Loaded:
     # training-only, so resolving the backend here changes nothing the
     # contract or the network reads.
     run, env, checkpoint, inference = battery.load_checkpoint_policy(
-        run_dir, extra_env_overrides={"sim": {"backend": "auto", "num_envs": 1}}
+        run_dir, extra_env_overrides={"sim": {"backend": "auto", "num_envs": 1}}, flat=True
     )
+    trained = list(((run.get("env_config") or {}).get("obs") or {}).get("state") or [])
+    rebuilt = list(env.actor_obs_names)
+    if rebuilt != trained:
+        raise ValueError(
+            f"the rebuilt env's actor observations {rebuilt} differ from the "
+            f"obs.state {trained} run.json records -- the contract would describe "
+            "a vector the network never read"
+        )
     meta = build_contract(env, run, checkpoint)
 
     obs_key = ((run.get("ppo_config") or {}).get("network_factory") or {}).get(

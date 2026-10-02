@@ -16,14 +16,13 @@ os.environ.setdefault("XLA_FLAGS", "--xla_gpu_triton_gemm_any=true")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
 
 import functools
-import json
 import time
 from datetime import datetime
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from humanoid_lab import paths
+from humanoid_lab import paths, run_record, tasks
 
 
 class EarlyStop(Exception):
@@ -112,6 +111,80 @@ def build_ppo_params(overrides, smoke: bool):
     return p
 
 
+def restore_options(ppo_params, restore_value: bool) -> dict:
+    """The keyword arguments restore.restore_arguments takes from this run:
+    its normalizer mode, its network keys and its restore_value."""
+    from humanoid_lab import restore as restore_mod
+
+    factory = ppo_params.network_factory
+    return {
+        "normalize_mode": ppo_params.get("normalize_observations_mode", restore_mod.WELFORD),
+        "policy_obs_key": factory.get("policy_obs_key", restore_mod.POLICY_OBS_KEY),
+        "value_obs_key": factory.get("value_obs_key", restore_mod.VALUE_OBS_KEY),
+        "restore_value": bool(restore_value),
+    }
+
+
+def apply_xla_defaults(task: str, environ=os.environ) -> dict:
+    """Set the task's XLA allocator defaults (tasks.xla_env_defaults) in
+    `environ` with setdefault, so a launcher's own value wins. Returns the
+    values now in effect. jaxlib reads them when it creates its client, so
+    this runs before any device use."""
+    return {k: environ.setdefault(k, v) for k, v in tasks.xla_env_defaults(task).items()}
+
+
+def check_terrain_training(task: str, ppo_params, early_stop) -> None:
+    """Refuse the PPO and early-stop settings a terrain run cannot use.
+
+    A periodic reset (`ppo.num_resets_per_eval` > 0) redraws every env's
+    level from reset's initial distribution, so the curriculum never
+    climbs. Early stopping keys on `eval/episode_reward`. Eval episodes
+    start from that same initial distribution, so on terrain the eval
+    reward is a fixed benchmark that plateaus while the curriculum still
+    climbs."""
+    if not tasks.is_terrain(task):
+        return
+    resets = int(ppo_params.get("num_resets_per_eval", 0) or 0)
+    if resets != 0:
+        raise ValueError(
+            f"task={task} needs ppo.num_resets_per_eval=0, got {resets}. A periodic reset "
+            "redraws every env's curriculum level."
+        )
+    if early_stop.get("enable", False):
+        raise ValueError(
+            f"task={task} refuses early_stop.enable=true. Early stopping keys on "
+            "eval/episode_reward, which on terrain is measured from reset's initial levels "
+            "and plateaus while the curriculum still climbs."
+        )
+
+
+def terrain_suffix(metrics: dict) -> str:
+    """The progress line's curriculum level, over the envs the curriculum
+    moves, when the call carries one."""
+    rates = run_record.curriculum_rates(metrics)
+    return "" if rates is None else f"  terrain_lvl {rates['level']:.2f}"
+
+
+def curriculum_log(metrics: dict) -> dict:
+    """wandb keys for the curriculum rates over the envs the curriculum
+    moves, when the call carries them. Pinned envs do not enter them."""
+    rates = run_record.curriculum_rates(metrics) or {}
+    return {f"curriculum/{k}": v for k, v in rates.items() if v is not None}
+
+
+def progress_line(num_steps: int, metrics: dict, sps: float) -> str:
+    """One progress callback as printed. Training-metric calls carry no
+    eval reward and print nan there."""
+    reward = metrics.get("eval/episode_reward", float("nan"))
+    # avg_episode_length exposes die-and-reset reward hacking that the
+    # reward number alone hides.
+    ep_len = metrics.get("eval/avg_episode_length", float("nan"))
+    return (
+        f"steps {num_steps:>12,}  reward {reward:8.2f}  "
+        f"ep_len {ep_len:6.0f}  {sps:,.0f} steps/s" + terrain_suffix(metrics)
+    )
+
+
 # Contact-budget preflight. Deliberately smaller than
 # check_contacts' own defaults (200 steps x 5 seeds): this runs in front of
 # every training job, and three seeds is what the fallen sweep's three
@@ -129,8 +202,9 @@ def _contact_preflight(env, cfg) -> dict:
     the live warp counters are unreachable from there. A short probe on the
     training env itself, on the real backend, measures the same per-world
     peaks -- and it runs BEFORE the job spends GPU hours, which is the point
-    of a preflight: an undersized buffer is a silent wrong-physics bug, not a
-    crash, so the only cheap moment to catch it is before the run.
+    of a preflight: an undersized buffer is a wrong-physics bug, not a
+    crash. MJWarp's overflow message goes to file descriptor 1, outside
+    Python's logging, so the only cheap moment to catch it is before the run.
 
     `smoke=true` skips the probe (a smoke run checks the pipeline, and the
     probe costs more than the training does), and `contact_preflight=false`
@@ -165,20 +239,25 @@ def _wandb_group(cfg: DictConfig) -> str | None:
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
+    # Before any device use: jaxlib reads the allocator settings when it
+    # creates its client.
+    apply_xla_defaults(cfg.task.name)
+    started_at = run_record.utc_now()
+
     import jax  # noqa: F401  # heavy imports stay inside main so --cfg job is fast
     from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.agents.ppo import train as ppo
 
+    from humanoid_lab import fd_capture
+    from humanoid_lab import restore as restore_mod
     from humanoid_lab.dr.randomize import make_domain_randomize
     from humanoid_lab.envs.wrappers import make_wrap_env_fn
-    from humanoid_lab.registry import make_env
+    from humanoid_lab.registry import env_args_from_config, make_env
     from humanoid_lab.robot.presets import effective_gains, load_actuator_preset
 
-    task = cfg.task.name
-    robot_dir = paths.REPO_ROOT / cfg.robot.dir
-    preset_name = cfg.actuators.name
-    actuator_overrides = (OmegaConf.to_container(cfg.actuators, resolve=True) or {}).get("overrides") or {}
-    env_overrides = OmegaConf.to_container(cfg.task.env, resolve=True) or {}
+    env_args = env_args_from_config(OmegaConf.to_container(cfg, resolve=True))
+    task, robot_dir, preset_name, env_overrides, actuator_overrides = env_args
+    terrain = tasks.is_terrain(task)
 
     # PPO params resolve before the envs because the warp backend sizes its
     # contact buffer across the whole training batch, so the env config
@@ -194,6 +273,7 @@ def main(cfg: DictConfig) -> None:
     ppo_overrides = OmegaConf.to_container(cfg.ppo, resolve=True) or {}
     _apply_ppo_overrides(ppo_params, task_ppo_overrides)
     _apply_ppo_overrides(ppo_params, ppo_overrides)
+    check_terrain_training(task, ppo_params, cfg.early_stop)
 
     # The eval wrapper vmaps num_eval_envs worlds through the same env, so
     # the warp contact budget covers the larger of the two batches. This is
@@ -221,14 +301,27 @@ def main(cfg: DictConfig) -> None:
     )
     print(f"actuator gains: {gains['model']} preset {gains['preset']}")
 
-    contacts = _contact_preflight(env, cfg)
+    # MJWarp prints its overflow messages from the device to fd 1, where
+    # Python never sees them. On a terrain run on warp the preflight runs
+    # under a descriptor capture that counts them.
+    capture = terrain and env._backend == "warp"
+    with fd_capture.capture_fd1(capture) as captured:
+        contacts = _contact_preflight(env, cfg)
+    preflight_messages = fd_capture.count_warp_messages("\n".join(captured)) if capture else None
     print(f"contacts: {contacts}")
     if contacts["overflow"] or contacts["rows_overflow"]:
         print(
             "WARNING: the preflight already reached a warp buffer ceiling. Warp drops "
-            "the overflow silently, so this run would be training against dropped "
+            "the overflow without raising, so this run would be training against dropped "
             "contacts or unenforced constraint rows. Raise task.env.sim.naconmax_per_env "
             "/ njmax (see ./run.sh check-contacts) before trusting the result."
+        )
+    if preflight_messages and any(preflight_messages[k] for k in fd_capture.GATING):
+        hits = {k: n for k, n in preflight_messages.items() if n and k in fd_capture.GATING}
+        print(
+            f"WARNING: MJWarp reported overflow during the preflight: {hits}. Those "
+            "contacts, pairs or rows were dropped. Raise the terrain budgets in "
+            "task.env.sim before trusting the result."
         )
 
     # Episode length follows the env config unless ppo yaml overrides it.
@@ -243,6 +336,27 @@ def main(cfg: DictConfig) -> None:
     restore = cfg.restore
     if restore and not os.path.isabs(restore):
         restore = str(paths.PROJECT_DIR / restore)
+    # A checkpoint whose critic list differs from this env's restores
+    # through adapted params; anything else goes to brax as a path. The
+    # planner checks the checkpoint against this run's network keys.
+    restore_plan, restore_kwargs = None, {"restore_checkpoint_path": restore}
+    if restore:
+        restore_plan, restore_kwargs = restore_mod.restore_arguments(
+            restore, env, **restore_options(ppo_params, cfg.restore_value)
+        )
+        print(
+            f"restore: {restore_plan.action} from {restore_plan.source_run or restore}"
+            + (f" (critic adds {list(restore_plan.added)}, drops {list(restore_plan.removed)})"
+               if restore_plan.action == restore_mod.ADAPT else "")
+        )
+
+    arena = None
+    if terrain:
+        arena = {
+            **env.arena_record(),
+            "xla_client_preallocate": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
+            "preflight_messages": preflight_messages,
+        }
 
     run_name = cfg.run_name or (
         ("smoke_" if cfg.smoke else "")
@@ -287,34 +401,61 @@ def main(cfg: DictConfig) -> None:
                     "hydra": OmegaConf.to_container(cfg, resolve=True),
                     "ppo": dict(ppo_params),
                     "env": env._config.to_dict(),
+                    "arena": arena,
                 },
             )
         except Exception as e:  # noqa: BLE001
             print(f"wandb disabled: {e}")
 
+    # run.json exists before training starts, so a run that dies still
+    # records what it was, and its checkpoints load.
+    record = run_record.RunRecord(
+        run_dir / "run.json",
+        {
+            "run_name": run_name,
+            "task": task,
+            "num_timesteps": int(ppo_params.num_timesteps),
+            "checkpoint_dir": str(ckpt_dir),
+            # Warp contact/constraint budgets and the preflight's peaks.
+            # Same schema as battery.json's, on every backend, so a GPU
+            # run and a local one diff without branching.
+            "contacts": contacts,
+            "env_config": env._config.to_dict(),
+            "ppo_config": ppo_params.to_dict(),
+            "hydra_config": OmegaConf.to_container(cfg, resolve=True),
+            "actuators": OmegaConf.to_container(cfg.actuators, resolve=True),
+            # What the BUILT model got, next to the `actuators` block
+            # above, which is what the config asked for. The two differ
+            # whenever actuators.overrides patches a gain: the override
+            # never appears in the preset yaml.
+            "actuator_gains": gains,
+        },
+        provenance=run_record.provenance(
+            paths.REPO_ROOT, wandb_run_id=None if wb is None else wb.id, started_at=started_at
+        ),
+        arena=arena,
+        restore=None if restore_plan is None else restore_plan.record(),
+    )
+
     t_last = [time.time(), 0]
     es = cfg.early_stop
     eval_rewards: list[float] = []
     last_eval = {"steps": 0, "metrics": {}}
+    trace = run_record.CurriculumTrace()
 
     def progress(num_steps: int, metrics: dict) -> None:
         now = time.time()
         sps = (num_steps - t_last[1]) / max(now - t_last[0], 1e-9)
         t_last[0], t_last[1] = now, num_steps
-        reward = metrics.get("eval/episode_reward", float("nan"))
-        # avg_episode_length exposes die-and-reset reward hacking that the
-        # reward number alone hides.
-        ep_len = metrics.get("eval/avg_episode_length", float("nan"))
-        print(
-            f"steps {num_steps:>12,}  reward {reward:8.2f}  "
-            f"ep_len {ep_len:6.0f}  {sps:,.0f} steps/s"
-        )
+        print(progress_line(num_steps, metrics, sps))
         if wb is not None:
-            wb.log({**metrics, "perf/steps_per_sec": sps}, step=num_steps)
+            wb.log({**metrics, **curriculum_log(metrics), "perf/steps_per_sec": sps}, step=num_steps)
+        trace.update(num_steps, metrics)
         # Training-metric calls carry no eval reward and record nothing; see
         # record_eval, which tests/unit/test_early_stop.py exercises directly.
         if not record_eval(metrics, num_steps, eval_rewards, last_eval):
             return
+        record.progress(num_steps, eval_rewards[-1], trace.record())
         if es.enable and plateau_stop(
             eval_rewards, es.min_evals, es.patience, es.min_delta
         ):
@@ -330,15 +471,18 @@ def main(cfg: DictConfig) -> None:
         **training_params,
         network_factory=network_factory,
         seed=cfg.seed,
-        # mujoco_playground's own wrapping, except with no_progress on, where
-        # it gains the respawn reseed layer (see envs/wrappers.py). Off, this
-        # IS wrapper.wrap_for_brax_training.
+        # mujoco_playground's own wrapping, with the curriculum auto-reset on
+        # a terrain env and the respawn reseed layer with no_progress on
+        # (see envs/wrappers.py). A flat run with both off gets
+        # wrapper.wrap_for_brax_training itself.
         wrap_env_fn=make_wrap_env_fn(env._config),
         save_checkpoint_path=str(ckpt_dir),
-        restore_checkpoint_path=restore,
+        restore_value_fn=bool(cfg.restore_value),
         progress_fn=progress,
+        **restore_kwargs,
     )
     early_stopped = False
+    record.start_clock()
     try:
         make_inference_fn, params, metrics = train_fn(
             environment=env, eval_env=eval_env
@@ -350,38 +494,27 @@ def main(cfg: DictConfig) -> None:
         # completed eval instead of brax's return values.
         early_stopped = True
         metrics = last_eval["metrics"]
-
-    (run_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_name": run_name,
-                "task": task,
-                "num_timesteps": int(ppo_params.num_timesteps),
-                "early_stopped": early_stopped,
-                # The last eval's step count. On a normal run that is the
-                # final eval, so this equals the budget brax actually ran.
-                "stopped_at_steps": int(last_eval["steps"]),
-                "final_reward": float(
-                    metrics.get("eval/episode_reward", float("nan"))
-                ),
-                "checkpoint_dir": str(ckpt_dir),
-                # Warp contact/constraint budgets and the preflight's peaks.
-                # Same schema as battery.json's, on every backend, so a GPU
-                # run and a local one diff without branching.
-                "contacts": contacts,
-                "env_config": env._config.to_dict(),
-                "ppo_config": ppo_params.to_dict(),
-                "hydra_config": OmegaConf.to_container(cfg, resolve=True),
-                "actuators": OmegaConf.to_container(cfg.actuators, resolve=True),
-                # What the BUILT model got, next to the `actuators` block
-                # above, which is what the config asked for. The two differ
-                # whenever actuators.overrides patches a gain: the override
-                # never appears in the preset yaml.
-                "actuator_gains": gains,
-            },
-            indent=2,
-            default=str,
+    except BaseException as e:
+        record.finish(
+            status=run_record.FAILED,
+            early_stopped=None,
+            stopped_at_steps=int(last_eval["steps"]),
+            final_reward=None,
+            steps=int(last_eval["steps"]),
+            curriculum=trace.record() if terrain else None,
+            error=repr(e),
         )
+        raise
+
+    # stopped_at_steps is the last eval's step count. On a normal run that
+    # is the final eval, so it equals the budget brax actually ran.
+    record.finish(
+        status=run_record.EARLY_STOPPED if early_stopped else run_record.FINISHED,
+        early_stopped=early_stopped,
+        stopped_at_steps=int(last_eval["steps"]),
+        final_reward=float(metrics.get("eval/episode_reward", float("nan"))),
+        steps=int(last_eval["steps"]),
+        curriculum=trace.record() if terrain else None,
     )
     print(f"done -> {run_dir}")
     if wb is not None:

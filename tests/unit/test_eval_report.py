@@ -1,6 +1,6 @@
-"""Build-order step 10 gate (part 2): eval/report.py's markdown rendering
-from a synthetic battery.json-shaped dict -- no checkpoint, no battery
-rollout, no env needed. Mirrors test_sizing_report.py's pattern.
+"""eval/report.py's markdown rendering from a synthetic battery.json-shaped
+dict -- no checkpoint, no battery rollout, no env needed. Mirrors
+test_sizing_report.py's pattern.
 """
 
 from __future__ import annotations
@@ -156,9 +156,10 @@ def test_the_contacts_block_is_reported_with_its_budgets():
 
 
 def test_an_overflowed_budget_is_flagged():
-    """Warp drops both overflows silently, so the report is the only place a
-    reader can find out that the numbers above it were measured on a
-    simulation missing contacts."""
+    """Warp drops both overflows without raising. Its message goes to file
+    descriptor 1, outside the battery's output. The report is where a reader
+    finds out that the numbers above it were measured on a simulation
+    missing contacts."""
     over = {**_CONTACTS, "nacon_max": 224, "overflow": True}
     md = render_markdown({**BATTERY, "contacts": over})
 

@@ -31,6 +31,9 @@ import pytest
 
 from humanoid_lab import paths
 from humanoid_lab.envs.joystick import Joystick, default_config
+from humanoid_lab.robot.build import compile_spec
+from humanoid_lab.terrain import scene
+from humanoid_lab.terrain.config import CPU_ARENA, arena_for, params_from_config
 
 ROBOT_DIR = paths.ROBOTS_DIR / "roboto_origin"
 ASIMOV_DIR = paths.ROBOTS_DIR / "asimov_v1"
@@ -398,3 +401,34 @@ def test_a_settle_that_is_still_toppling_raises():
     the settle to have come to rest."""
     with pytest.raises(ValueError, match="real_pose_ref"):
         build(real_pose_ref=True, robot_dir=ASIMOV_DIR, reset_keyframe="knees_bent")
+
+
+# -- the settle model ---------------------------------------------------------
+
+
+class _ArenaSettledOnThePlane(Joystick):
+    """Joystick on the CPU terrain arena that settles on its own floor plane."""
+
+    def _customize_spec(self, spec):
+        self.plane_model = compile_spec(spec)
+        scene.attach_terrain(spec, arena_for(params_from_config(CPU_ARENA)))
+
+    def _settle_model(self):
+        return self.plane_model
+
+
+def test_the_settle_runs_on_the_settle_model(anchored_envs):
+    """The settle copies `_settle_model()`, not the env's own model. Home's
+    base xy (0, 0) is a four-tile corner of the arena, where the ground is
+    not exactly flat. Settled on the plane, the anchor equals Joystick's bit
+    for bit."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.real_pose_ref = True
+    env = _ArenaSettledOnThePlane(ROBOT_DIR, "deploy_pd", cfg)
+    assert scene.is_terrain_model(env.mj_model)
+    assert not scene.is_terrain_model(env.plane_model)
+    plain = anchored_envs["deploy_pd"]
+    np.testing.assert_array_equal(np.asarray(env._reset_qpos), np.asarray(plain._reset_qpos))
+    np.testing.assert_array_equal(np.asarray(env._pose_anchor), np.asarray(plain._pose_anchor))
+    np.testing.assert_array_equal(np.asarray(env._settle_ctrl), np.asarray(plain._settle_ctrl))

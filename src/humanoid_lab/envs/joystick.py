@@ -49,9 +49,10 @@ def default_config() -> config_dict.ConfigDict:
             # buffers; only warp reads them (the jax branch of
             # envs/backend.py takes no kwargs). None defers to the robot's
             # own measured `sim_budget` block in robot.yaml, and a warp run
-            # with neither refuses at construction -- overflow is silent in
-            # both directions: contacts past naconmax are dropped and rows
-            # past njmax apply no force, with no warning anywhere.
+            # with neither refuses at construction. Contacts past naconmax
+            # are dropped and rows past njmax apply no force. Neither
+            # raises: MJWarp prints a message from the device to file
+            # descriptor 1, which Python's sys.stdout never sees.
             # ./run.sh check-contacts measures a robot's peaks and
             # recommends budgets; tests/integration/test_check_contacts.py
             # fails when new collision geometry outgrows a robot's recorded
@@ -62,6 +63,12 @@ def default_config() -> config_dict.ConfigDict:
             backend="auto",
             naconmax_per_env=None,
             njmax=None,
+            # Warp's CCD scratch pool per env, which MJWarp allocates on
+            # every collision call of a model with convex pairs (box-box or
+            # heightfield; see sim_budget.ccd_slot_bytes). None sizes it to
+            # the naconmax pool. It must not exceed naconmax_per_env. The
+            # flat floor has no convex pairs, so it matters on terrain only.
+            naccdmax_per_env=None,
             num_envs=1,
         ),
         episode_length=1000,
@@ -146,7 +153,7 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity zeroes with this prob (stand training). An untuned
             # starting value for a biped.
             zero_prob=0.15,
-            # Pure command draws (see _sample_command). Each redraws the
+            # Pure command draws (see _draw_command). Each redraws the
             # base uniform sample into a CLEAN single-axis command with the
             # given probability, all off by default.
             #
@@ -444,8 +451,17 @@ class Joystick(HumanoidEnv):
 
     # -- command / gait clock ------------------------------------------------
     def _sample_command(self, rng):
+        return self._draw_command(rng, self._config.command)
+
+    def _next_command(self, rng, info):
+        """The command a resample draws. A task env may draw it differently
+        per episode state."""
+        return self._sample_command(rng)
+
+    def _draw_command(self, rng, c):
+        """One command draw from the command config `c`. Every probability
+        in `c` is a static Python float."""
         r1, r2, r3, r4 = jax.random.split(rng, 4)
-        c = self._config.command
         vel = jp.array(
             [
                 jax.random.uniform(r1, minval=c.vx[0], maxval=c.vx[1]),
@@ -547,6 +563,9 @@ class Joystick(HumanoidEnv):
 
     # -- reset / step -------------------------------------------------------
     def reset(self, rng: jax.Array) -> mjx_env.State:
+        # _place_base gets the key as given. A task that draws there folds
+        # in a domain of its own, so its keys never equal the split below.
+        rng_in = rng
         rng, r_cmd, r_pose = jax.random.split(rng, 3)
         command = self._sample_command(r_cmd)
 
@@ -565,6 +584,7 @@ class Joystick(HumanoidEnv):
         reset_noise = self._config.get("reset_noise", 0.0)
         pose_noise = jax.random.uniform(r_pose, (self.action_size,), minval=-1.0, maxval=1.0)
         qpos = self._reset_qpos.at[self._qadr].add(pose_noise * reset_noise)
+        qpos, place_info = self._place_base(rng_in, qpos)
 
         data = self._make_data()
         data = data.replace(qpos=qpos, qvel=jp.zeros(self._mj_model.nv), ctrl=self._neutral_ctrl)
@@ -585,6 +605,7 @@ class Joystick(HumanoidEnv):
             "phase": jp.array(0.0),
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
+            **place_info,
         }
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
@@ -678,19 +699,20 @@ class Joystick(HumanoidEnv):
         done = fall
         if self._config.no_progress.enable:
             npg = self._config.no_progress
+            grace_sec, p_max = self._no_progress_params(info)
             cmd = info["command"]
             demand = self._cmd_speed(cmd)
             served = progress.served(self._local_linvel(data)[:2], self._gyro(data)[2], cmd)
             alpha = self.dt / npg.ema_sec
             info["progress_ema"] = (1.0 - alpha) * info["progress_ema"] + alpha * served
             progress_ratio = info["progress_ema"] / jp.maximum(demand, 1e-6)
-            hazard = progress.hazard(progress_ratio, npg.risk_below, npg.p_max)
-            armed = progress.armed(demand, info["steps_since_cmd"], self.dt, npg.grace_sec)
+            hazard = progress.hazard(progress_ratio, npg.risk_below, p_max)
+            armed = progress.armed(demand, info["steps_since_cmd"], self.dt, grace_sec)
             no_progress_cut = jax.random.bernoulli(r_term, jp.where(armed, hazard, 0.0))
             done = done | no_progress_cut
 
         resample = info["steps_since_cmd"] >= self._config.command.resample_steps
-        info["command"] = jp.where(resample, self._sample_command(r_cmd), info["command"])
+        info["command"] = jp.where(resample, self._next_command(r_cmd, info), info["command"])
         info["steps_since_cmd"] = jp.where(resample, 0, info["steps_since_cmd"])
         if self._config.no_progress.enable:
             # A fresh command restarts the meter at ratio 1: the EMA is
@@ -736,6 +758,24 @@ class Joystick(HumanoidEnv):
         obs = self._build_obs(data, info, r_noise)
         return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
+    # -- task hooks -----------------------------------------------------------
+    # Identity on this task. A task env that places the robot elsewhere or
+    # ends episodes on more than a fall overrides them.
+    def _place_base(self, rng, qpos):
+        """(qpos, extra info keys) for a fresh episode. Here the reset qpos
+        and no keys. It draws nothing, so the reset RNG stream is unchanged."""
+        return qpos, {}
+
+    def _no_progress_params(self, info):
+        """(grace_sec, p_max) of the no-progress cut for this step."""
+        npg = self._config.no_progress
+        return npg.grace_sec, npg.p_max
+
+    def _fall(self, data, gravity):
+        """Fall flag: base below fall.min_height or tilted past max_tilt_gz."""
+        base_height = self._base_height(data)
+        return (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
+
     # -- observations -------------------------------------------------------
     def _obs_catalog(self, data, info):
         catalog = super()._obs_catalog(data, info)
@@ -748,6 +788,9 @@ class Joystick(HumanoidEnv):
         """This task's own `info` inputs to the catalog: the command and the
         gait clock (see _obs_catalog). Shapes only -- the values are zeros."""
         return {**super()._catalog_probe_info(), "command": jp.zeros(3), "phase": jp.zeros(())}
+
+    def obs_component_sizes(self) -> dict[str, int]:
+        return {**super().obs_component_sizes(), "command": 3, "phase": 2 * len(_PHASE_OFFSETS)}
 
     # -- rewards --------------------------------------------------------------
     def _compute_rewards(self, data, info, action, first_contact, contact):
@@ -765,8 +808,7 @@ class Joystick(HumanoidEnv):
         target_clearance, _stance_mask = self._gait_targets(info)
         foot_vel = self._foot_linvel(data)
 
-        base_height = data.qpos[self._base_qadr + 2]
-        fall = (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
+        fall = self._fall(data, gravity)
 
         # Velocity tracking kernels: absolute or command-relative, optionally
         # blended with a wider far-field exponential, optionally gating each

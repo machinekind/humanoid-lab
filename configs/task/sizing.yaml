@@ -1,4 +1,4 @@
-# PLAN.md "First experiments" #2 / build step 7: the motor-sizing task.
+# The motor-sizing task.
 # `./run.sh train task=sizing` (or smoke/sizing-report) select this.
 #
 # Sizing is deliberately a thin Joystick subclass (see envs/sizing.py): same

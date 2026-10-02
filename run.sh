@@ -17,9 +17,30 @@ case "${1:-}" in
   # friction inside each foot-floor contact equals that env's draw (contact
   # priority makes the foot's value win; see dr/randomize.py). NOT forced
   # onto CPU: the point is the box's own backend, and warp on a GPU host is
-  # the answer a training run uses. Passthrough args: --robot NAME --preset
-  # NAME [--backend auto|warp|jax] [--num-envs N] [--range LO HI].
+  # the answer a training run uses. --task terrain runs the same check on
+  # the CPU terrain arena. Passthrough args: --robot NAME --preset NAME
+  # [--task joystick|terrain] [--backend auto|warp|jax] [--num-envs N]
+  # [--range LO HI].
   check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
+  # Terrain recipe vs MJWarp's contact, CCD and row buffers: rolls the
+  # training env over the arena's hardest tiles and reads the device
+  # messages off fd 1. NOT forced onto CPU: the gate is warp on a GPU host
+  # (--backend warp --require-warp). jax on a CPU reports unverified, and
+  # --engine mujoco is the C per-pair cap proxy. Passthrough args:
+  # [--engine mjx|mujoco] [--backend auto|warp|jax] [--arena train|eval]
+  # [--num-envs N] [--steps N] [--regimes stand,walk,fallen]
+  # [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N]
+  # [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH]
+  # [hydra overrides...].
+  check-terrain) shift; "$PY" -m humanoid_lab.check_terrain "$@" ;;
+  # Terrain scan suite -> runs/<name>/terrain_scan.json: the checkpoint
+  # crosses every cell of its robot's suite from the pad, at each suite
+  # speed. NOT forced onto CPU: the suite's arena has more ground boxes than
+  # the jax backend takes, so the full scan runs on warp on a GPU host.
+  # Passthrough args: --run runs/<name> [--cells a,b] [--speeds 0.3,0.6]
+  # [--backend auto|warp|jax] [--naconmax-per-env N] [--naccdmax-per-env N]
+  # [--njmax N] [--eval-seed N] [--out PATH] [--list-cells].
+  terrain-scan) shift; "$PY" -m humanoid_lab.eval.terrain_scan "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
   # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
@@ -122,7 +143,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|check-terrain|terrain-scan|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

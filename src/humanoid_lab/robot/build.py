@@ -26,6 +26,7 @@ from humanoid_lab.actuators.models import ACTUATOR_MODELS
 from humanoid_lab.robot.presets import load_actuator_preset, resolve
 from humanoid_lab.robot.spec import (
     ModelPatches,
+    ModelPatchGeom,
     RobotSpec,
     load_robot_spec,
     validate_against_model,
@@ -42,6 +43,13 @@ _GEOM_TYPE_BY_NAME = {
     "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
     "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
 }
+
+# Taken off each half-size of every split-box cell, in metres, so each
+# cell face sits this far inside its grid cell. Diagonal neighbours in a
+# chessboard share an edge or a corner. Two touching cells would both
+# report a contact at the shared point. Shrunk, any two filled cells are at
+# least 2x this apart along some axis.
+SPLIT_CELL_SHRINK = 0.0005
 
 # The three sensor types that reference an actuator by name (sensor.objname).
 _ACTUATOR_SENSOR_TYPES = (
@@ -171,6 +179,11 @@ def _apply_geoms_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
     forced to 3, the collision-geom convention renderers hide by default;
     inheriting a visible group draws the primitives over the visual meshes
     (roboto_origin rendered as its capsules until this was set).
+
+    A box with `split` is injected as its chessboard cells (split_box_cells)
+    instead of whole. Each cell goes through the same add_geom call the
+    whole box would, differing only in name, pos and size, so it inherits
+    exactly the contact attributes the box would have.
     """
     for name, geom in robot_spec.model_patches.geoms.items():
         body = spec.body(geom.body)
@@ -179,18 +192,124 @@ def _apply_geoms_patch(spec: mujoco.MjSpec, robot_spec: RobotSpec) -> None:
                 f"model_patches.geoms['{name}'] references body '{geom.body}', which is "
                 f"not in '{robot_spec.model_xml}'"
             )
-        kwargs = dict(
-            name=name,
-            type=_GEOM_TYPE_BY_NAME[geom.type],
-            size=list(geom.size),
-            quat=geom.quat,
-            group=3,
+        if geom.split is None:
+            parts = [(name, geom.pos, geom.size)]
+        else:
+            _require_geom_free_inertia(spec, body, name)
+            parts = split_box_cells(name, geom)
+        for part_name, pos, size in parts:
+            kwargs = dict(
+                name=part_name,
+                type=_GEOM_TYPE_BY_NAME[geom.type],
+                size=list(size),
+                quat=geom.quat,
+                group=3,
+            )
+            if pos is not None:
+                kwargs["pos"] = list(pos)
+            if geom.fromto is not None:
+                kwargs["fromto"] = geom.fromto
+            body.add_geom(**kwargs)
+
+
+def split_box_cells(
+    name: str, geom: ModelPatchGeom
+) -> list[tuple[str, tuple[float, float, float], tuple[float, float, float]]]:
+    """(name, body-frame centre, half-sizes) of each filled cell of a split box.
+
+    The box is cut into an nx x ny x nz grid in its own frame and cell
+    (i, j, k) is filled when i + j + k is even, so no two filled cells share
+    a face. A cell's half-sizes are its grid cell's less SPLIT_CELL_SHRINK,
+    so each face moves in by SPLIT_CELL_SHRINK. It keeps the box's quat and
+    is named f"{name}_{i}{j}{k}". The outermost cells reach every face of the
+    box to within SPLIT_CELL_SHRINK, and every grid layer along every axis
+    holds a cell. A split that breaks either raises.
+    """
+    nx, ny, nz = geom.split
+    hx, hy, hz = geom.size
+    half = (hx / nx - SPLIT_CELL_SHRINK, hy / ny - SPLIT_CELL_SHRINK, hz / nz - SPLIT_CELL_SHRINK)
+    if min(half) <= 0.0:
+        raise ValueError(
+            f"model_patches.geoms['{name}'] split {list(geom.split)} leaves a cell of "
+            f"half-size {half} once shrunk by {SPLIT_CELL_SHRINK}; use fewer cells"
         )
-        if geom.pos is not None:
-            kwargs["pos"] = geom.pos
-        if geom.fromto is not None:
-            kwargs["fromto"] = geom.fromto
-        body.add_geom(**kwargs)
+    filled = [
+        (i, j, k)
+        for i in range(nx)
+        for j in range(ny)
+        for k in range(nz)
+        if (i + j + k) % 2 == 0
+    ]
+    _require_full_extent(name, geom, filled, half)
+
+    quat = np.asarray(geom.quat, dtype=np.float64)
+    rot = np.zeros(9)
+    mujoco.mju_quat2Mat(rot, quat / np.linalg.norm(quat))
+    rot = rot.reshape(3, 3)
+    centre = np.zeros(3) if geom.pos is None else np.asarray(geom.pos, dtype=np.float64)
+
+    cells = []
+    for i, j, k in filled:
+        offset = np.array(
+            [
+                -hx + (2 * i + 1) * hx / nx,
+                -hy + (2 * j + 1) * hy / ny,
+                -hz + (2 * k + 1) * hz / nz,
+            ]
+        )
+        pos = tuple(float(x) for x in centre + rot @ offset)
+        cells.append((f"{name}_{i}{j}{k}", pos, half))
+    return cells
+
+
+def _require_full_extent(
+    name: str,
+    geom: ModelPatchGeom,
+    filled: list[tuple[int, int, int]],
+    half: tuple[float, float, float],
+) -> None:
+    """Refuse a split whose filled cells fall short of the box.
+
+    Each of the six faces needs a cell within SPLIT_CELL_SHRINK of it, and
+    each grid layer along each axis needs a cell, or a gap runs through the
+    box's whole cross-section. A grid cut along one axis only keeps just its
+    even layers: an even count misses a face, an odd count leaves gaps.
+    """
+    where = f"model_patches.geoms['{name}'] split {list(geom.split)}"
+    for axis, (h, n, cell_half) in enumerate(zip(geom.size, geom.split, half)):
+        centres = [-h + (2 * cell[axis] + 1) * h / n for cell in filled]
+        reach = h - SPLIT_CELL_SHRINK - 1e-12
+        if max(centres) + cell_half < reach or min(centres) - cell_half > -reach:
+            raise ValueError(
+                f"{where} leaves a {'xyz'[axis]} face of the box with no cell on it; "
+                "split at least two axes"
+            )
+        empty = sorted(set(range(n)) - {cell[axis] for cell in filled})
+        if empty:
+            raise ValueError(
+                f"{where} leaves {'xyz'[axis]} layer(s) {empty} with no cell, a gap through "
+                "the whole box; split at least two axes"
+            )
+
+
+def _require_geom_free_inertia(spec: mujoco.MjSpec, body: mujoco.MjsBody, name: str) -> None:
+    """Refuse a split on a body whose mass or inertia the compiler takes from its geoms.
+
+    The split is a collision detail. On a body without an explicit
+    <inertial>, or under compiler inertiafromgeom="true", the cells would
+    carry half the box's volume in different places and quietly change the
+    body's mass and inertia.
+    """
+    if not body.explicitinertial:
+        raise ValueError(
+            f"model_patches.geoms['{name}'] splits a box on body '{body.name}', which has no "
+            "explicit <inertial>; its mass would come from the cells"
+        )
+    if spec.compiler.inertiafromgeom == mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_TRUE:
+        raise ValueError(
+            f"model_patches.geoms['{name}'] splits a box, but compiler inertiafromgeom='true' "
+            "takes every body's inertia from its geoms"
+        )
 
 
 def _apply_mesh_collisions_patch(spec: mujoco.MjSpec, patches: ModelPatches) -> None:

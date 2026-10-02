@@ -19,6 +19,9 @@ FORBIDDEN = {
     "registry env": r"make" + r"_env\(",
     "spec build": r"build" + r"_spec\(",
     "spec compile": r"compile" + r"_spec",
+    # Only an empty-argument call matches, so re.compile(pattern) stays legal.
+    "spec compile (method)": r"\.compile" + r"\(\)",
+    "terrain scene": r"attach" + r"_terrain\(",
     "model upload": r"mjx\.put" + r"_model",
     "scene parse": r"MjModel\.from" + r"_xml|from" + r"_xml_(path|string)",
     "spec parse": r"MjSpec\.from" + r"_",
@@ -61,6 +64,21 @@ def test_the_split_directories_both_exist_and_are_populated():
     assert integration.is_dir(), "tests/integration does not exist"
     assert len(list(UNIT_DIR.glob("test_*.py"))) > 5
     assert len(list(integration.glob("test_*.py"))) > 5
+
+
+def test_no_module_name_is_shared_between_the_suites():
+    """The test directories have no __init__.py, so pytest imports every
+    module in them by its basename, helpers included. `./run.sh test-all`
+    collects both suites in one run. There a shared test file name stops
+    collection, and a shared helper name shadows the other copy without an
+    error. pytest loads each directory's conftest.py on its own."""
+    unit = {p.name for p in UNIT_DIR.glob("*.py")}
+    shared = unit & {p.name for p in (TESTS_DIR / "integration").glob("*.py")}
+    shared.discard("conftest.py")
+    assert not shared, (
+        f"tests/unit and tests/integration both have {sorted(shared)}. The two suites share "
+        "one module namespace under `./run.sh test-all`. Rename one copy."
+    )
 
 
 def test_no_test_file_sits_outside_the_split():

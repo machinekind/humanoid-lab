@@ -1,7 +1,7 @@
-"""Build-order step 7 gate (part 1): the sizing task constructs on
-robots/asimov_v1 and runs a jitted reset/step without NaN, carries the three
-sizing/* metrics identically through reset() and step() (scan-carry
-parity), and penalizes torque/energy 5x joystick's starting scales.
+"""The sizing task constructs on robots/asimov_v1 and runs a jitted
+reset/step without NaN, carries the three sizing/* metrics identically
+through reset() and step() (scan-carry parity), and penalizes
+torque/energy 5x joystick's starting scales.
 
 CPU-fast on purpose, mirroring tests/test_env_joystick.py's shape.
 """

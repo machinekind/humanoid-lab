@@ -1,11 +1,11 @@
 """Checkpoint rollout collector for the sizing task's per-joint tau/omega
-telemetry (build order step 7, PLAN.md "First experiments" #2).
+telemetry.
 
 Run:
     python -m humanoid_lab.sizing.collect --run runs/<name> \
         [--episodes 4] [--steps 400] [--seed 0]
 
-Rebuilds the env exactly as train.py did (same registry.make_env path,
+Rebuilds the env as train.py did (same registry.make_env path,
 same task/robot/preset/env overrides, read back from run.json's
 hydra_config -- the one part of run.json that carries the un-resolved
 per-run knobs train.py itself passed to make_env), loads the checkpoint's
@@ -25,6 +25,12 @@ always runs on (JAX_PLATFORMS=cpu; the jax branch of make_data_fn ignores
 num_envs entirely). So this collector leaves sim.num_envs at the task's own
 default (1) rather than reconstructing the training batch size -- correct
 for a single-world python rollout loop, and unobservable on CPU either way.
+
+A terrain run deviates too. It is rebuilt on its flat counterpart
+(registry.flat_counterpart). The terrain block is dropped and every other
+override is kept. Its demand then compares with a flat run's. This
+collector runs on jax, and jax refuses an arena of more than JAX_BOX_LIMIT
+ground boxes.
 
 Writes <run>/sizing_data.npz:
     tau [T,12], omega [T,12], command [T,3], done [T]  (T = total kept
@@ -103,12 +109,19 @@ def make_env_for_run(run: dict):
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    # The run's own env, unchanged. Pushes and the env's own command
+    # The run's own env, on the flat floor. Pushes and the env's own command
     # sampling deliberately stay ON, unlike the battery's: sizing wants the
     # distribution the trained gait actually produces under its own command
     # envelope.
-    env_overrides = dict(hydra["task"].get("env") or {})
-    env = registry.make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
+    #
+    # A terrain run rolls on its flat counterpart, so its demand compares
+    # with a flat run's. This loop runs on jax, and jax refuses an arena of
+    # more than JAX_BOX_LIMIT ground boxes (envs/terrain_joystick.py). The
+    # default arena has more.
+    flat_task, env_overrides = registry.flat_counterpart(task, hydra["task"].get("env"))
+    if flat_task != task:
+        print(f"sizing on the flat scene: the {task} run rebuilds as {flat_task}")
+    env = registry.make_env(flat_task, robot_dir, preset_name, env_overrides, actuator_overrides)
     return env, robot_dir, preset_name, actuator_overrides
 
 
