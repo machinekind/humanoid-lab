@@ -28,6 +28,12 @@ run_name: null # default: <task>_<timestamp>
 seed: 0
 smoke: false # tiny CPU-sized run for a pipeline check
 restore: null # checkpoint dir to warm-start from
+# Restore the checkpoint's value network with its policy (brax's default).
+# false starts a fresh critic. A checkpoint whose critic list differs from
+# the env's restores through restore.py, e.g. a task=joystick run into
+# task=terrain, or back. Its critic then reads the shared columns as the
+# source critic did.
+restore_value: true
 domain_rand: false
 
 # Measure the warp contact/constraint peaks on a short probe before training

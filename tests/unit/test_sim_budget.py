@@ -1,13 +1,15 @@
 """Tests for sim_budget.py: the warp contact/constraint budget accounting.
 
-Everything here is pure dict and array arithmetic. The two live counters
-(`data._impl.nacon`, `data._impl.nefc`) only exist on the warp backend, which
-needs CUDA, so the warp branch is exercised with a stub object standing in for
-`data._impl` -- structure, not physics.
+Everything here is pure dict and array arithmetic. The live counters
+(`data._impl.nacon`, `data._impl.nefc`, `data._impl.ncollision`) exist only
+on the warp backend. Stepping warp needs CUDA, so a stub object stands in for
+`data._impl` and supplies the counter values. The stubs' field names are
+checked against the real warp Data class, which imports on CPU.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import types
 
 import numpy as np
@@ -263,3 +265,85 @@ def test_a_box_box_only_model_runs_sixteen_epa_iterations():
     assert sim_budget.ccd_slot_bytes(35, box_box=True, all_convex_box_box=True) == (
         sim_budget.ccd_slot_bytes(16, box_box=True)
     )
+
+
+# -- traced telemetry ----------------------------------------------------------
+
+
+def test_traced_counters_on_jax_and_warp_shaped_data():
+    """jax data has no live counters and reads zeros, whatever buffer sizes
+    its impl carries. On warp data `nefc` is per world and reads its max.
+    The pool counters read the same as a scalar or as a copy broadcast
+    across worlds."""
+    jax_impl = types.SimpleNamespace(nefc=np.full(4, 2025), ncon=np.full(4, 499))
+    assert [int(c) for c in sim_budget.traced_counters(_stub_data(jax_impl))] == [0, 0, 0]
+    assert [int(c) for c in sim_budget.traced_counters(types.SimpleNamespace())] == [0, 0, 0]
+
+    pool = types.SimpleNamespace(nefc=np.array([40, 61, 12]), nacon=np.array([17]), ncollision=np.int32(90))
+    broadcast = types.SimpleNamespace(
+        nefc=np.array([40, 61, 12]), nacon=np.full(3, 17), ncollision=np.full((3, 1), 90)
+    )
+    for impl in (pool, broadcast):
+        counters = sim_budget.traced_counters(_stub_data(impl))
+        assert [int(c) for c in counters] == [61, 17, 90]
+        assert all(np.asarray(c).shape == () and np.asarray(c).dtype == np.int32 for c in counters)
+
+
+def test_the_counter_names_are_the_warp_data_fields():
+    """The stubs above use the real field names. A rename of `nacon` would
+    turn warp telemetry into silent zeros, because its absence marks jax
+    data. A rename of `nefc` or `ncollision` would raise only at trace
+    time on a GPU host."""
+    from mujoco.mjx._src import types as jax_types
+    from mujoco.mjx.warp import types as warp_types
+
+    assert set(sim_budget.TELEMETRY_COUNTERS) <= {f.name for f in dataclasses.fields(warp_types.DataWarp)}
+    assert "nacon" not in {f.name for f in dataclasses.fields(jax_types.DataJAX)}
+
+
+def test_telemetry_caps_are_njmax_and_the_pool():
+    """Rows have one world's budget, njmax. Contacts and broadphase
+    candidates share the pool: naconmax_per_env times the env count."""
+    env = _stub_env(backend="warp", naconmax_per_env=32, njmax=320, num_envs=64)
+    assert sim_budget.telemetry_caps(env) == (320, 2048, 2048)
+    assert sim_budget.telemetry_caps(env)[1] == sim_budget.budget_report_for_env(env, None, None)["pool"]
+
+
+CAPS = (320, 1000, 1000)
+
+
+def test_telemetry_peaks_are_monotone():
+    peaks = np.zeros(3, np.int32)
+    seen = []
+    for counters in ([100, 50, 80], [90, 400, 70], [10, 10, 10], [200, 300, 500]):
+        peaks, _, _ = sim_budget.telemetry_step(peaks, counters, CAPS)
+        seen.append(np.asarray(peaks).tolist())
+    assert seen == [[100, 50, 80], [100, 400, 80], [100, 400, 80], [200, 400, 500]]
+
+
+def test_telemetry_fires_once_at_the_first_90pct_crossing():
+    """The rows reach 288 of 320 on the second step and fire there. A later,
+    higher peak does not fire again. The pool counters never reach 900."""
+    peaks = np.zeros(3, np.int32)
+    fired = []
+    for counters in ([280, 10, 10], [288, 899, 10], [319, 10, 10], [320, 10, 10]):
+        peaks, _, fire = sim_budget.telemetry_step(peaks, counters, CAPS)
+        fired.append(np.asarray(fire).tolist())
+    assert fired == [[False] * 3, [True, False, False], [False] * 3, [False] * 3]
+    _, _, fire = sim_budget.telemetry_step(peaks, [0, 900, 950], CAPS)
+    assert np.asarray(fire).tolist() == [False, True, True]
+
+
+def test_telemetry_fractions_are_the_peaks_over_their_own_caps():
+    caps = (320, 2048, 2048)
+    _, fracs, _ = sim_budget.telemetry_step(np.zeros(3, np.int32), [160, 1024, 512], caps)
+    np.testing.assert_allclose(np.asarray(fracs), [0.5, 0.5, 0.25])
+
+
+def test_telemetry_warning_names_each_fired_counter_and_its_budget():
+    text = sim_budget.telemetry_warning([300, 950, 100], CAPS, [True, True, False])
+    lines = text.splitlines()
+    assert len(lines) == 2
+    assert "nefc peaked at 300 of njmax 320" in lines[0] and "task.env.sim.njmax" in lines[0]
+    assert "nacon peaked at 950 of the naconmax pool 1000" in lines[1]
+    assert sim_budget.telemetry_warning([0, 0, 0], CAPS, [False] * 3) == ""

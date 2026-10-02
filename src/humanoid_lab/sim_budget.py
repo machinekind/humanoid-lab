@@ -183,6 +183,85 @@ def budget_report_for_env(env, nacon_max, nefc_max) -> dict:
     )
 
 
+# -- traced telemetry: the counters inside a jitted training step ----------
+
+# Fraction of a budget at which the telemetry warns.
+TELEMETRY_WARN_FRAC = 0.9
+# The three counters, in the order traced_counters returns them.
+TELEMETRY_COUNTERS = ("nefc", "nacon", "ncollision")
+
+
+def traced_counters(data):
+    """(nefc, nacon, ncollision) of a batched warp `mjx.Data`, as traced
+    int32 scalars.
+
+    `nefc` is one row count per world, and the max over worlds is
+    returned. `nacon` and `ncollision` count the batch's one shared pool.
+    `ncollision` counts broadphase candidate pairs, which share the
+    naconmax buffer with the contacts. `jp.max` reads a pool scalar and a
+    copy broadcast across worlds alike. jax data has no live counters (its
+    impl has no `nacon`), and every counter reads 0 there.
+
+    jax.numpy is imported here, so the module's host helpers stay free of
+    it."""
+    import jax.numpy as jp
+
+    impl = getattr(data, "_impl", None)
+    if impl is None or not hasattr(impl, "nacon"):
+        zero = jp.zeros((), jp.int32)
+        return zero, zero, zero
+    return tuple(jp.max(jp.asarray(getattr(impl, k))).astype(jp.int32) for k in TELEMETRY_COUNTERS)
+
+
+def telemetry_caps(env) -> tuple[int, int, int]:
+    """The budgets of the three TELEMETRY_COUNTERS for `env`: its resolved
+    njmax for rows, and its naconmax pool for nacon and ncollision. The
+    pool is `budget_report`'s: naconmax_per_env x num_envs."""
+    pool = int(env._naconmax_per_env) * int(env._config.sim.num_envs)
+    return int(env._njmax), pool, pool
+
+
+def telemetry_step(prev_peaks, counters, caps):
+    """(peaks, fracs, fire) after one step, traced.
+
+    `prev_peaks` and `counters` hold the three TELEMETRY_COUNTERS. `caps`
+    are their budgets as static ints: the resolved njmax for rows, and the
+    naconmax pool (naconmax_per_env x num_envs) for both pool counters.
+    Peaks are running maxima, and `fracs` are the peaks over the caps.
+    `fire` is True for a counter whose peak reached TELEMETRY_WARN_FRAC of
+    its cap on this step and not before. Peaks never fall, so each counter
+    fires at most once until a reset zeroes the peaks."""
+    import jax.numpy as jp
+
+    prev = jp.asarray(prev_peaks, jp.int32)
+    peaks = jp.maximum(prev, jp.asarray(counters, jp.int32))
+    cap = jp.asarray(caps, jp.float32)
+    threshold = TELEMETRY_WARN_FRAC * cap
+    fire = (peaks >= threshold) & (threshold > prev)
+    return peaks, peaks / cap, fire
+
+
+def telemetry_warning(peaks, caps, fire) -> str:
+    """The warning lines for the counters `fire` flags, host side."""
+    budget = {"nefc": "njmax", "nacon": "the naconmax pool", "ncollision": "the naconmax pool"}
+    advice = {
+        "nefc": "Constraint rows past njmax apply no force. Raise task.env.sim.njmax.",
+        "nacon": "Contacts past the pool are dropped. Raise task.env.sim.naconmax_per_env.",
+        "ncollision": (
+            "Broadphase candidates share the contact pool, and candidates past it are "
+            "dropped. Raise task.env.sim.naconmax_per_env."
+        ),
+    }
+    lines = []
+    for name, peak, cap, hit in zip(TELEMETRY_COUNTERS, np.asarray(peaks), caps, np.asarray(fire)):
+        if hit:
+            lines.append(
+                f"WARNING: warp {name} peaked at {int(peak)} of {budget[name]} {int(cap)}, "
+                f"over {TELEMETRY_WARN_FRAC:.0%}. {advice[name]}"
+            )
+    return "\n".join(lines)
+
+
 # MJWarp's EPA scratch bounds (mujoco_warp/_src/types.py): faces EPA may add
 # per iteration, and the longest horizon it tracks.
 _EPA_FACES_PER_ITER = 5

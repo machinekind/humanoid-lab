@@ -62,9 +62,10 @@
 #
 # Partial-failure policy:
 #   - A training that exits nonzero ends the script with its exit code.
-#     When it left a fresh run.json first (a crash at teardown), the stage
-#     measures the run's newest checkpoint before the script exits. Without
-#     a run name, that run.json must carry this config.
+#     When it left a fresh run.json (train.py writes one before training
+#     starts), the stage measures the run's newest checkpoint before the
+#     script exits. Without a run name, that run.json must carry this
+#     config.
 #   - A training that exits 0 followed by successful evals exits 0. The run
 #     dir then holds courses.json, battery.json and eval_report.md.
 #   - A training that exits 0 followed by a failed or timed-out eval exits
@@ -76,8 +77,8 @@
 #     or several fresh run.json files that this config cannot tell apart,
 #     exits 75 with nothing measured.
 #   - With no run name and no fresh run.json, the script warns and exits
-#     with the training's code. train.py writes run.json before it returns,
-#     so only a training that died early leaves none.
+#     with the training's code. train.py writes run.json before training
+#     starts, so only a training that died before that leaves none.
 #   - A SIGTERM or SIGKILL to this script's process group ends it before
 #     the stage. The caller measures that run (jobs/README.md).
 #   - The same kill during the stage ends the stage too. No eval outlives

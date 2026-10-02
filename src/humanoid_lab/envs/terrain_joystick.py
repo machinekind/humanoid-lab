@@ -107,6 +107,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from humanoid_lab import sim_budget
+from humanoid_lab.envs import curriculum
 from humanoid_lab.envs import terrain_geometry as tg
 from humanoid_lab.envs.backend import resolve_backend
 from humanoid_lab.envs.joystick import Joystick, check_pure_draw_ranges
@@ -154,13 +155,33 @@ _COLLIDER_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_SPHERE): "sphere",
 }
 
+# level_per_step is the level of every training episode, pinned ones
+# included. level_free_per_step is the level times info['curriculum_free'],
+# and free_per_step is the flag. Brax's logger averages each over the
+# episodes that ended. The ratio of the two means is the mean level of the
+# episodes the curriculum moves (run_record.curriculum_rates).
 TERRAIN_METRICS = (
     "terrain/level_per_step",
+    "terrain/level_free_per_step",
+    "terrain/free_per_step",
     "terrain/on_flat_per_step",
     "terrain/spawn_fallback_per_step",
     "terrain/base_contact_at_done",
     "terrain/early_end",
 )
+# Metrics the curriculum auto-reset wrapper writes (envs/terrain_wrapper.py).
+# brax's EpisodeWrapper builds its accumulator from the metrics `reset`
+# returns below it, so the env seeds them, as zeros, and its step carries
+# them through.
+CURRICULUM_METRICS = ("terrain/promoted", "terrain/demoted")
+# The wrapper's warp telemetry, seeded on warp only.
+TELEMETRY_METRICS = (
+    "terrain/nefc_peak_per_step",
+    "terrain/nacon_pool_frac_per_step",
+    "terrain/ncollision_pool_frac_per_step",
+)
+# Running warp counter peaks in info, in sim_budget.TELEMETRY_COUNTERS order.
+TELEMETRY_PEAKS = ("nefc_peak", "nacon_peak", "ncollision_peak")
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -669,11 +690,14 @@ class TerrainJoystick(Joystick):
             "cheby_min": r0,
             "cheby_max": r0,
             "commanded_dist": jp.zeros(()),
+            "served_dist": jp.zeros(()),
             "since_spawn": jp.zeros((), jp.int32),
             "curriculum_strikes": jp.zeros((), jp.int32),
+            # False for an env the curriculum wrapper pins to a row.
+            "curriculum_free": jp.ones((), bool),
         }
         if self._backend == "warp":
-            for key in ("nefc_peak", "nacon_peak", "ncollision_peak"):
+            for key in TELEMETRY_PEAKS:
                 info[key] = jp.zeros((), jp.int32)
         return qpos, info
 
@@ -682,7 +706,10 @@ class TerrainJoystick(Joystick):
         self._check_jax_box_limit()
         state = super().reset(rng)
         info = dict(state.info)
-        metrics = {**state.metrics, **{k: jp.zeros(()) for k in TERRAIN_METRICS}}
+        seeded = TERRAIN_METRICS + CURRICULUM_METRICS
+        if self._backend == "warp":
+            seeded += TELEMETRY_METRICS
+        metrics = {**state.metrics, **{k: jp.zeros(()) for k in seeded}}
         obs = state.obs
         if self._bias_cmd is not None:
             biased = self._draw_command(self._terrain_keys(rng).bias, self._bias_cmd)
@@ -703,15 +730,22 @@ class TerrainJoystick(Joystick):
         info["since_spawn"] = info["since_spawn"] + 1
         info["last_xy"] = xy
         info["commanded_dist"] = info["commanded_dist"] + jp.linalg.norm(cmd[:2]) * self.dt
+        # Progress along the command, in the frame the tracking reward reads.
+        info["served_dist"] = info["served_dist"] + curriculum.served_step(
+            self._local_linvel(nxt.data)[:2], cmd, self.dt
+        )
         r = tg.chebyshev(xy, info["tile_origin"])
         info["cheby_min"] = jp.minimum(info["cheby_min"], r)
         info["cheby_max"] = jp.maximum(info["cheby_max"], r)
 
         level = info["terrain_level"]
+        free = info["curriculum_free"].astype(jp.float32)
         done = nxt.done > 0
         metrics = {
             **nxt.metrics,
             "terrain/level_per_step": level.astype(jp.float32),
+            "terrain/level_free_per_step": level.astype(jp.float32) * free,
+            "terrain/free_per_step": free,
             "terrain/on_flat_per_step": self._on_flat(level).astype(jp.float32),
             "terrain/spawn_fallback_per_step": (info["spawn_kind"] == tg.SPAWN_FALLBACK).astype(
                 jp.float32

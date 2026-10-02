@@ -75,11 +75,13 @@
 # started, with early_stopped false, or with stopped_at_steps at or past
 # num_timesteps. Whatever phase A's exit code, the chain decides on that
 # file:
-#   - No fresh run.json (a signal, OOM, a crash before training returned):
+#   - No fresh run.json, or one whose early_stopped and stopped_at_steps
+#     are still null (a signal, OOM, a crash before training returned):
 #     phase B does not run; the chain exits with phase A's code, or 1 if
-#     that code was 0 or 75. train.py installs no signal handler, so a
-#     SIGTERM aimed at the trainer alone ends it without a run.json, and
-#     phase B never starts.
+#     that code was 0 or 75. train.py writes run.json before training
+#     starts and fills those fields when training returns. It installs no
+#     signal handler, so a SIGTERM aimed at the trainer alone ends it with
+#     the fields null, and phase B never starts.
 #   - A fresh run.json cut short of its budget: phase B does not run; the
 #     chain exits with phase A's code, or 143 if that code was 0 or 75.
 #     train.py writes such a run.json only after a plateau stop, which

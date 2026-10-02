@@ -1,0 +1,32 @@
+# @package _global_
+# The terrain pipeline on a CPU: ./run.sh smoke experiment=terrain_cpu.
+#
+# The arena is terrain/config.py's CPU_ARENA. It has the flat row and one
+# terrain row at difficulty 0.5. The terrain row holds all eight terrain
+# types. Its 33 boxes are all stairs. The default arena has more ground
+# boxes than the jax backend accepts. A jax step of 16 worlds on this arena
+# costs about 67 ms. The ppo sizes keep the run near ten minutes.
+# training_metrics_steps is below num_timesteps. Training metrics then log
+# before the run ends. The curriculum level shows in them. None of these
+# numbers is tuned.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: terrain
+
+task:
+  env:
+    terrain:
+      arena:
+        difficulties: [0.5]
+        flat_row: true
+        discrete_count: 0
+        grid_fill_prob: 0.0
+        border: 0.4
+
+ppo:
+  num_envs: 16
+  num_eval_envs: 16
+  batch_size: 16
+  num_minibatches: 4
+  num_timesteps: 20000
+  training_metrics_steps: 2000

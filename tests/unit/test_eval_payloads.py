@@ -531,9 +531,9 @@ def test_two_fresh_run_jsons_with_this_config_are_not_measured_and_exit_75_or_th
 
 
 def test_a_failed_unnamed_training_does_not_take_another_jobs_lone_run_json(jobs):
-    """train.py writes run.json only when training returns. A training that
-    died before that leaves none of its own, and the only fresh run.json can
-    be another job's, at another config."""
+    """A training that died before train.py wrote its run.json leaves none
+    of its own, and the only fresh run.json can be another job's, at
+    another config."""
     res = _fresh_runs(jobs, seeds=(1,), STUB_FAIL="train=3")
     assert res.code == 3, res.out
     assert _evals(res.calls) == []
@@ -719,6 +719,24 @@ def test_chain_phase_a_75_without_a_fresh_run_json_exits_1(jobs):
     assert "phase A (c_a) exited rc=75 without writing runs/c_a/run.json" in res.out
 
 
+def test_chain_phase_a_killed_mid_training_does_not_start_phase_b(jobs):
+    """train.py writes run.json before training, with early_stopped and
+    stopped_at_steps null until training returns. A phase A killed in
+    between leaves that record. Its stage measures it, and phase B does not
+    start."""
+    record = {"status": "running", "early_stopped": None, "stopped_at_steps": None}
+    (jobs.stub / "run_c_a.json").write_text(json.dumps(record))
+    res = jobs.run("train_chain.sh", STUB_FAIL="train:c_a=137", **CHAIN)
+    assert res.code == 137, res.out
+    assert "phase A (c_a) exited rc=137 and runs/c_a/run.json has no readable" in res.out
+    trained = [
+        a for c in res.calls if _module(c) == "humanoid_lab.train" and "--cfg" not in c["args"]
+        for a in c["args"] if a.startswith("run_name=")
+    ]
+    assert trained == ["run_name=c_a"]
+    assert [run for what, run in _evals(res.calls) if what == "courses"] == ["c_a"]
+
+
 def test_chain_measures_both_phases(jobs):
     """Each phase's stage takes the caller's EVAL_TIMEOUT and EVAL_WORKERS."""
     res = jobs.run("train_chain.sh", EVAL_TIMEOUT="60", EVAL_WORKERS="3", **CHAIN)
@@ -772,8 +790,9 @@ def test_a_run_whose_newest_step_dir_is_incomplete_is_skipped(jobs):
 
 
 def test_run_status_does_not_gate_the_measurement(jobs):
-    """train.py writes no status. A run.json its caller wrote may carry one,
-    and the run is measured on its newest checkpoint whatever it says."""
+    """train.py writes run.json with status running before training, so a
+    killed run's says running. The run is measured on its newest checkpoint
+    whatever the status says."""
     _make_run(jobs.root, "a", steps=(OLDER, STEP), run={"status": "running"})
     res = jobs.run("eval_runs.sh", RUNS="a")
     assert res.code == 0, res.out

@@ -34,6 +34,20 @@ CLIP = 0.5  # m, each value is clipped to +-CLIP
 # The obs catalog name. Critic only: the robot has no source for it.
 NAME = "height_scan_clean"
 
+# m, the scan's mean and std on the default arena (ArenaParams()), pooled
+# over every column. A warm start that adds the scan to a critic writes
+# them into its normalizer columns (restore.py). Measured with the base at
+# a uniform xy within each tile's feature radius of its centre, a uniform
+# yaw, and every tile of the ten rows and eight types equally. The
+# reference was the lowest ground under roboto_origin's sole sample points
+# at its reset pose. The std grows from 0.012 m on the easiest row to
+# 0.106 m on the hardest. Per column it runs from 0.028 m to 0.107 m. The
+# mean is under 0.03 m on every row. A fresh run's first normalizer update
+# reads pad spawns on rows 0 to 4. There the scan's mean is about 0.000 m
+# and its std about 0.026 m. Not tuned by training.
+PRIOR_MEAN = 0.014
+PRIOR_STD = 0.066
+
 
 def body_grid(xp=np):
     """(SIZE, 2) yaw-frame points, index ix * NY + iy."""
