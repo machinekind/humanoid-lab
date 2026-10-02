@@ -1,12 +1,19 @@
-"""Task registry: name -> (env class, default config), plus override merge.
+"""Task registry: name -> (env class, default config), plus override merge
+and the `make_env` arguments a composed Hydra config names.
 
 Env configs are ml_collections ConfigDicts built in code; Hydra yaml carries
 plain dicts/lists. _apply_overrides merges the latter onto the former with
 tuple/float coercion so yaml `vx: [-0.8, 1.8]` lands on a tuple field.
 """
 
+import copy
+from collections.abc import Mapping
+from pathlib import Path
+from typing import NamedTuple
+
 from ml_collections import config_dict
 
+from humanoid_lab import paths
 from humanoid_lab.envs.joystick import Joystick
 from humanoid_lab.envs.joystick import default_config as joystick_default_config
 from humanoid_lab.envs.sizing import Sizing
@@ -40,6 +47,31 @@ def _apply_overrides(cfg: config_dict.ConfigDict, overrides: dict) -> None:
                 setattr(cfg, key, tuple(float(v) for v in value))
             continue
         setattr(cfg, key, value)
+
+
+class EnvArgs(NamedTuple):
+    """`make_env`'s positional arguments, in order."""
+
+    task: str
+    robot_dir: Path
+    preset_name: str
+    env_overrides: dict
+    actuator_overrides: dict
+
+
+def env_args_from_config(cfg: Mapping) -> EnvArgs:
+    """`make_env`'s arguments from a composed Hydra config, given as a
+    plain container (`OmegaConf.to_container(cfg, resolve=True)`).
+
+    The overrides are copies, so a caller may edit them."""
+    actuators = cfg.get("actuators") or {}
+    return EnvArgs(
+        task=cfg["task"]["name"],
+        robot_dir=paths.REPO_ROOT / cfg["robot"]["dir"],
+        preset_name=actuators["name"],
+        env_overrides=copy.deepcopy(cfg["task"].get("env") or {}),
+        actuator_overrides=copy.deepcopy(actuators.get("overrides") or {}),
+    )
 
 
 def make_env(

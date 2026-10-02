@@ -1,9 +1,11 @@
 """Training-time env wrappers layered on mujoco_playground's.
 
 One wrapper lives here: the no-progress meter's respawn reseed. It is
-applied only when `no_progress.enable` is on, and `make_wrap_env_fn` hands
-back playground's own function unchanged otherwise, so a run with the cut
-off takes the identical training path it always did.
+applied only when `no_progress.enable` is on. A terrain env (a config with
+a `terrain` block) trains under the curriculum auto-reset stack of
+envs/terrain_wrapper.py. `make_wrap_env_fn` hands back playground's own
+function unchanged when neither applies, so a flat run with the cut off
+takes the identical training path it always did.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ import jax
 import jax.numpy as jp
 from mujoco_playground import wrapper as playground_wrapper
 from mujoco_playground._src import mjx_env
+
+from humanoid_lab.envs.terrain_wrapper import wrap_for_terrain_brax_training
 
 
 class ProgressReseedWrapper(playground_wrapper.Wrapper):
@@ -22,6 +26,9 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
     returns `state.info` untouched ("only data and obs are reset, not the
     environment info" -- its own docstring). `info` therefore survives every
     termination: a fall, a truncation, and the no-progress cut itself.
+    The terrain stack's auto-reset (envs/terrain_wrapper.py) rewrites only
+    the curriculum's info keys. The progress keys survive there too. The
+    reseed covers both stacks.
 
     That is fatal for the cut specifically. It can only fire once the grace
     window has elapsed, so the respawn arrives already armed, carrying the
@@ -39,7 +46,7 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
     deliberately left alone: the respawn continues serving it, and the meter
     is now measured against it from a fresh start.
 
-    This sits OUTSIDE the vmap that `wrap_for_brax_training` puts on, so
+    This sits OUTSIDE the vmap that either stack puts on, so
     every info leaf carries a leading env axis. Nothing here is conditional
     on the cut being armed or on why the episode ended -- a respawn is a new
     episode however it was reached.
@@ -58,17 +65,24 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
 def make_wrap_env_fn(env_config):
     """The `wrap_env_fn` train.py hands brax's ppo.train.
 
-    With the no-progress cut off this IS
-    `mujoco_playground.wrapper.wrap_for_brax_training`, the same object, so
-    no run that does not use the cut changes shape.
+    A config with a `terrain` block gets the curriculum stack,
+    `wrap_for_terrain_brax_training`. Every other config gets
+    `mujoco_playground.wrapper.wrap_for_brax_training`. With the
+    no-progress cut on, the reseed wraps either stack from outside. A flat
+    config with the cut off gets playground's function itself, the same
+    object, so no such run changes shape. brax passes `episode_length` to
+    the returned function for the training env and the eval env alike.
     """
+    terrain = env_config.get("terrain") is not None
     no_progress = env_config.get("no_progress")
-    if no_progress is None or not no_progress.enable:
+    reseed = no_progress is not None and no_progress.enable
+    if not terrain and not reseed:
         return playground_wrapper.wrap_for_brax_training
+    stack = wrap_for_terrain_brax_training if terrain else playground_wrapper.wrap_for_brax_training
+    if not reseed:
+        return stack
 
     def wrap_for_brax_training(env, **kwargs):
-        return ProgressReseedWrapper(
-            playground_wrapper.wrap_for_brax_training(env, **kwargs)
-        )
+        return ProgressReseedWrapper(stack(env, **kwargs))
 
     return wrap_for_brax_training

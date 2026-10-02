@@ -1,15 +1,18 @@
-"""envs/height_scan.py: the critic scan's grid, placement and values.
-Model-free."""
+"""envs/height_scan.py: the critic scan's grid, placement, values and
+normalizer prior. Model-free."""
 
 from __future__ import annotations
 
 import math
 
+import jax
 import jax.numpy as jp
 import numpy as np
 import pytest
 
+from humanoid_lab import terrain
 from humanoid_lab.envs import height_scan as hs
+from humanoid_lab.envs import terrain_geometry as tg
 
 
 def _quat(axis, angle):
@@ -89,3 +92,33 @@ def test_scan_values_are_relative_and_clipped():
     np.testing.assert_allclose(hs.scan_values(heights, 0.01), [0.5, -0.5, 0.01, 0.5], atol=1e-12)
     np.testing.assert_allclose(hs.scan_values(heights, 0.01, clip=0.3), [0.3, -0.3, 0.01, 0.3], atol=1e-12)
     assert hs.CLIP == 0.5
+
+
+def test_the_prior_is_the_scan_spread_on_the_default_arena():
+    """PRIOR_MEAN and PRIOR_STD re-measured on the default arena. The base
+    sits at 100 points per tile, uniform over the disc of the tile's
+    feature radius about its centre, each with a uniform yaw. The reference
+    is the lowest ground under a fixed 3 x 3 footprint at +-0.1 m, not
+    roboto_origin's sole points. That raises the mean by about 0.004 m."""
+    t = tg.tables_from_arena(terrain.generate(terrain.ArenaParams()))
+    rng = np.random.default_rng(0)
+    radius = np.asarray(t.feature_r)
+    shape = (*radius.shape, 100)
+    r = radius[..., None] * np.sqrt(rng.uniform(size=shape))
+    theta = rng.uniform(-np.pi, np.pi, shape)
+    offset = np.stack([r * np.cos(theta), r * np.sin(theta)], axis=-1)
+    base = jp.asarray(np.asarray(t.origin_xy)[..., None, :] + offset)[..., None, :]
+    yaw = jp.asarray(rng.uniform(-np.pi, np.pi, shape))[..., None]
+    side = np.array([-0.1, 0.0, 0.1])
+    footprint = jp.asarray(np.stack(np.meshgrid(side, side, indexing="ij"), axis=-1).reshape(-1, 2))
+
+    # Jitted, it runs in 0.2 s. Eager, it takes 3 s.
+    @jax.jit
+    def scan_at(base, yaw):
+        ref = tg.ground(t, hs.world_xy(footprint, base, yaw, jp)).min(axis=-1)
+        heights = tg.ground(t, hs.world_xy(hs.body_grid(jp), base, yaw, jp))
+        return hs.scan_values(heights, ref[..., None], xp=jp)
+
+    scan = np.asarray(scan_at(base, yaw))
+    assert abs(scan.std() - hs.PRIOR_STD) < 0.15 * scan.std()
+    assert abs(scan.mean() - hs.PRIOR_MEAN) < 0.01

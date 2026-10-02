@@ -29,9 +29,12 @@ env:
       - actuator_force
       - height_scan_clean
 
+# train.py refuses a terrain run whose num_resets_per_eval is not 0. It
+# also refuses early_stop.enable=true.
 ppo:
   # A periodic reset redraws every env's curriculum level.
   num_resets_per_eval: 0
-  # The curriculum level shows in training metrics only.
+  # The curriculum level shows in training metrics only. Eval episodes
+  # start from reset's initial levels.
   log_training_metrics: true
   training_metrics_steps: 10000000

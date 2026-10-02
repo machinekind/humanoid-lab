@@ -18,9 +18,10 @@ import mujoco
 import numpy as np
 import pytest
 from mujoco import mjx
+from mujoco_playground._src import mjx_env
 
 from humanoid_lab import paths
-from humanoid_lab.envs import height_scan
+from humanoid_lab.envs import curriculum, height_scan
 from humanoid_lab.envs import terrain_geometry as tg
 from humanoid_lab.envs.terrain_joystick import (
     JAX_BOX_LIMIT,
@@ -52,6 +53,8 @@ TERRAIN_INFO = {
     "cheby_min": ((), np.dtype("float32")),
     "cheby_max": ((), np.dtype("float32")),
     "commanded_dist": ((), np.dtype("float32")),
+    "served_dist": ((), np.dtype("float32")),
+    "curriculum_free": ((), np.dtype("bool")),
     "terrain_rng": ((2,), np.dtype("uint32")),
 }
 # The keys a step leaves as they are. Only a reset writes them.
@@ -63,6 +66,7 @@ SPAWN_INFO = (
     "spawn_kind",
     "tile_origin",
     "curriculum_strikes",
+    "curriculum_free",
 )
 
 
@@ -1217,6 +1221,7 @@ def test_info_and_metric_keys_match_between_reset_and_step(stepping):
     for k, want in TERRAIN_INFO.items():
         assert (jp.shape(s0.info[k]), jp.result_type(s0.info[k])) == want, k
     assert int(s0.info["curriculum_strikes"]) == 0
+    assert float(s0.info["served_dist"]) == 0.0 and bool(s0.info["curriculum_free"])
     assert float(s0.info["cheby_min"]) == float(s0.info["cheby_max"])
     for k in SPAWN_INFO:
         np.testing.assert_array_equal(np.asarray(s1.info[k]), np.asarray(s0.info[k]), err_msg=k)
@@ -1246,6 +1251,8 @@ def test_terrain_metrics_after_a_step(stepping):
     assert float(s1.done) == 0.0
     assert metrics(s1) == {
         "level_per_step": 0.0,
+        "level_free_per_step": 0.0,
+        "free_per_step": 1.0,
         "on_flat_per_step": 1.0,
         "spawn_fallback_per_step": 0.0,
         "base_contact_at_done": 0.0,
@@ -1255,6 +1262,10 @@ def test_terrain_metrics_after_a_step(stepping):
         assert metrics(stepped(spawn_kind=kind))["spawn_fallback_per_step"] == want, kind
     m = metrics(stepped(terrain_level=1))
     assert m["level_per_step"] == 1.0 and m["on_flat_per_step"] == 0.0
+    assert (m["level_free_per_step"], m["free_per_step"]) == (1.0, 1.0)
+    # A pinned env keeps its level in level_per_step only.
+    m = metrics(stepped(terrain_level=1, curriculum_free=False))
+    assert (m["level_per_step"], m["level_free_per_step"], m["free_per_step"]) == (1.0, 0.0, 0.0)
 
     # Base 0.5 m down: the height check ends the episode, and no
     # termination cell is near the floor. An end within EARLY_SEC of the
@@ -1283,6 +1294,8 @@ def test_step_tracks_the_band_with_the_command_that_drove_it(stepping):
     xy = np.asarray(s1.data.qpos[b : b + 2])
     assert not np.array_equal(np.asarray(s1.info["command"]), [0.3, 0.4, 0.8])
     assert float(s1.info["commanded_dist"]) == pytest.approx(0.5 * e.dt)
+    served = curriculum.served_step(e._local_linvel(s1.data)[:2], jp.array([0.3, 0.4, 0.8]), e.dt)
+    assert float(s1.info["served_dist"]) == pytest.approx(float(served), abs=1e-9)
     np.testing.assert_array_equal(np.asarray(s1.info["last_xy"]), xy)
     r = float(np.abs(xy - np.asarray(s0.info["tile_origin"])).max())
     r0 = float(s0.info["cheby_min"])
@@ -1290,6 +1303,64 @@ def test_step_tracks_the_band_with_the_command_that_drove_it(stepping):
     assert float(s1.info["cheby_max"]) == pytest.approx(max(r0, r))
     assert int(s1.info["since_spawn"]) == 1
     np.testing.assert_array_equal(np.asarray(s1.info["spawn_xy"]), np.asarray(s0.info["spawn_xy"]))
+
+
+def test_a_tracked_arc_serves_its_commanded_distance(env, monkeypatch):
+    """The physics step swapped for a base that holds the body-frame planar
+    velocity and yaw rate it reads from data.qvel. Three runs start on the
+    flat row under the command (0.6, 0, 6.0) m/s, rad/s. Each base moves
+    at 0.6 m/s and turns 4.8 rad in 40 steps on a 0.1 m circle. It ends
+    about 0.135 m from its spawn. served_dist reads the env's own linvel
+    sensor. Tracking the command serves the 0.48 m commanded. Crabbing
+    across it serves nothing. Backing against it serves -0.48 m."""
+    b, v = env._base_qadr, env._base_vadr
+    dt = env.dt
+    vx, vy, wz = command = (0.6, 0.0, 6.0)
+    n = 40
+
+    def turn(yaw, xy):
+        c, s = jp.cos(yaw), jp.sin(yaw)
+        return jp.stack([c * xy[0] - s * xy[1], s * xy[0] + c * xy[1]])
+
+    def kinematic(model, data, action, n_substeps=1):
+        quat = data.qpos[b + 3 : b + 7]
+        yaw = height_scan.yaw_from_quat(quat, jp)
+        rate = data.qvel[v + 5]
+        body = turn(-yaw, data.qvel[v : v + 2])
+        # One step's displacement in the frame of the yaw it starts from.
+        s, c = jp.sin(rate * dt) / rate, (1.0 - jp.cos(rate * dt)) / rate
+        arc = jp.stack([s * body[0] - c * body[1], c * body[0] + s * body[1]])
+        qpos = data.qpos.at[b : b + 2].add(turn(yaw, arc))
+        qpos = qpos.at[b + 3 : b + 7].set(tg.quat_mul(tg.yaw_quat(rate * dt), quat))
+        qvel = data.qvel.at[v : v + 2].set(turn(yaw + rate * dt, body))
+        return mjx.forward(model, data.replace(qpos=qpos, qvel=qvel, ctrl=action))
+
+    monkeypatch.setattr(mjx_env, "step", kinematic)
+    step = jax.jit(lambda state, action: env.step(state, action))
+    s0 = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    assert int(s0.info["terrain_level"]) == 0
+    # reset returns a weak-typed phase and step a strong one. The cast lets
+    # every step reuse the first compile.
+    info = {**s0.info, "phase": s0.info["phase"].astype(jp.float32), "command": jp.array(command)}
+    yaw0 = height_scan.yaw_from_quat(s0.data.qpos[b + 3 : b + 7], jp)
+    action = jp.zeros(env.action_size)
+    for body, sign in (((vx, vy), 1.0), ((vy, vx), 0.0), ((-vx, vy), -1.0)):
+        base = jp.concatenate([turn(yaw0, jp.array(body)), jp.array([0.0, 0.0, 0.0, wz])])
+        state = s0.replace(data=s0.data.replace(qvel=s0.data.qvel.at[v : v + 6].set(base)), info=info)
+        for _ in range(n):
+            state = step(state, action)
+            assert float(state.done) == 0.0
+        np.testing.assert_allclose(np.asarray(state.info["command"]), command)
+        commanded = float(state.info["commanded_dist"])
+        assert commanded == pytest.approx(vx * dt * n, rel=1e-5)
+        served = float(state.info["served_dist"])
+        if sign:
+            assert served == pytest.approx(sign * commanded, rel=1e-4), body
+        else:
+            assert abs(served) < 1e-3 * commanded, body
+        walked = np.linalg.norm(np.asarray(state.info["last_xy"]) - np.asarray(state.info["spawn_xy"]))
+        assert walked == pytest.approx(2 * vx / wz * math.sin(wz * dt * n / 2), abs=0.01), body
+        assert walked < 0.3 * commanded, body
 
 
 @pytest.mark.parametrize("robot", ["roboto_origin", "asimov_v1"])

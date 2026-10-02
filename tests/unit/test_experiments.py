@@ -75,3 +75,24 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
     robot_dir = paths.ROBOTS_DIR / "asimov_v1"
     with pytest.raises(ValueError):
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
+
+
+def test_terrain_cpu_experiment_is_the_cpu_arena_and_logs_training_metrics():
+    """The CPU smoke's arena is CPU_ARENA. It logs training metrics before
+    it ends, so the curriculum level shows, and it passes the terrain
+    guards."""
+    from humanoid_lab.terrain.config import CPU_ARENA
+    from humanoid_lab.train import build_ppo_params, check_terrain_training
+
+    cfg = _compose(["experiment=terrain_cpu"])
+    assert cfg.task.name == "terrain"
+    assert cfg.robot.name == "roboto_origin"
+    assert OmegaConf.to_container(cfg.task.env.terrain.arena) == CPU_ARENA
+    p = build_ppo_params({}, smoke=True)
+    p.update(OmegaConf.to_container(cfg.task.ppo))
+    p.update(OmegaConf.to_container(cfg.ppo))
+    assert p.log_training_metrics is True
+    assert p.training_metrics_steps < p.num_timesteps
+    assert p.num_eval_envs == p.num_envs
+    assert p.batch_size * p.num_minibatches % p.num_envs == 0
+    check_terrain_training(cfg.task.name, p, cfg.early_stop)

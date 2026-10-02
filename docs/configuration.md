@@ -166,7 +166,8 @@ CI before it costs GPU time.
 | `run_name` | `null` | Output goes to `runs/<run_name>`. Unset resolves to `<task>_<timestamp>`, prefixed `smoke_` under `smoke=true`. |
 | `seed` | `0` | PPO random seed. |
 | `smoke` | `false` | Shrinks PPO to a tiny CPU-sized budget (100k steps, 64 envs) and caps episode length at 200 steps. `run.sh smoke` also forces `JAX_PLATFORMS=cpu` and `wandb.enable=false`. |
-| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. |
+| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. A checkpoint whose critic list differs from the env's restores through `restore.py`. Shared critic columns keep their statistics and weights. Added columns get zero weights and their component's prior in the normalizer. The height scan's prior is mean 0.014 m and std 0.066 m, measured on the default arena (`envs/height_scan.py`). A component without one starts at mean 0 and std 1. The prior carries the weight of the source's whole sample count, so it holds long into the run. Removed columns are dropped. The actor list must match. The source's `network.policy_obs_key` must match this run's, and so must its `value_obs_key` unless `restore_value=false`. A `ppo.normalize_observations_mode` other than `welford`, in this run or the source's, refuses: brax's checkpoint load always rebuilds a Welford normalizer. `run.json`'s `restore` block records the plan and the priors. |
+| `restore_value` | `true` | Restore the checkpoint's value network with its policy. `false` starts a fresh critic and keeps the restored normalizer. |
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
 | `contact_preflight` | `true` | Measure the warp contact/constraint peaks on a short probe before training and record them in `run.json`. Skipped automatically under `smoke=true`. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
@@ -417,19 +418,22 @@ and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
 | `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
 
 The meter is also reseeded on every **respawn**, by a wrapper rather than by
-the env. `wrap_for_brax_training`, the trainer's own wrapping, ends in
-`BraxAutoResetWrapper(full_reset=False)`: on done it restores `data` and
-`obs` from the cached first state and returns `state.info` untouched. So
-`info` survives every termination, and a cut env would come back carrying the
-dying episode's shortfall and a `steps_since_cmd` well past `grace_sec` —
-armed on its first step, and dead again within a second. `envs/wrappers.py`'s
-`ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
-`steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
-`no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
-`wrap_for_brax_training` itself, unchanged. Reseeding only the EMA and
-carrying the counter over would re-arm the cut on the respawn's first step,
-so the counter is zeroed too. Any other wrapper that restarts an episode in
-place owns the same reseed.
+the env. On a flat config the trainer's wrapping is `wrap_for_brax_training`.
+It ends in `BraxAutoResetWrapper(full_reset=False)`. On done it restores
+`data` and `obs` from the cached first state and returns `state.info`
+untouched. A terrain config gets `envs/terrain_wrapper.py`'s stack. Its
+auto-reset rewrites only the curriculum's info keys. `progress_ema` and
+`steps_since_cmd` survive a respawn on both stacks. A cut env would
+therefore come back carrying the dying episode's shortfall and a
+`steps_since_cmd` well past `grace_sec`. It would be armed on its first step
+and dead again within a second. `envs/wrappers.py`'s `ProgressReseedWrapper`
+puts `progress_ema` back at the command's demand and `steps_since_cmd` back
+to 0 on done. `train.py` layers `ProgressReseedWrapper` on whichever stack
+applies, exactly when `no_progress.enable` is set. A flat config with the
+cut off gets `wrap_for_brax_training` itself, unchanged. Reseeding only the
+EMA and carrying the counter over would re-arm the cut on the respawn's first
+step, so the counter is zeroed too. Any other wrapper that restarts an
+episode in place owns the same reseed.
 
 ## Pure command draws (`task.env.command`)
 
@@ -799,9 +803,15 @@ call. Brax writes a checkpoint at every eval, so the newest checkpoint in
 `runs/<name>/checkpoints` is the early-stopped policy, and the reported
 metrics come from the last completed eval.
 
-`run.json` carries two fields whether or not the feature is on:
-`early_stopped` (bool) and `stopped_at_steps` (the last eval's step count,
-which on a completed run is the final eval's).
+train.py writes `run.json` before training starts. Its `status` is then
+`running`. `early_stopped`, `stopped_at_steps` and `final_reward` are null at
+that point. The `progress` block is rewritten after every eval. At the end
+the whole record is rewritten. `status` becomes `finished`, `early_stopped`
+or `failed`. On a finished or early-stopped run, `early_stopped` is a bool.
+`stopped_at_steps` is the last eval's step count. On a completed run that is
+the final eval's step count. On a failed run, `early_stopped` and
+`final_reward` stay null. Its `error` field holds the exception. A run that
+dies without a Python exception, as on SIGKILL, keeps `status: running`.
 
 Patience counts evals, not steps, so `ppo.num_evals` sets how much training
 each unit of patience buys. At the default 100M-step budget with brax's

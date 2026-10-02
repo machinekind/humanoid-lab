@@ -236,3 +236,81 @@ def test_default_lists_leave_the_catalog_keys_unchanged(task):
     sizes = e.obs_component_sizes()
     assert sizes[hs.NAME] == hs.SIZE
     assert {k: int(v.shape[0]) for k, v in catalog.items()} == {k: n for k, n in sizes.items() if k != hs.NAME}
+
+
+# -- the curriculum wrapper's splice ---------------------------------------------
+
+WRAP_N = 8
+
+
+def respawned(e):
+    """(first, out): a reset of WRAP_N envs on the flat row, one per
+    terrain type, and the step at which each times out having walked 3 m.
+    Each is promoted and respawns on its type's level-1 tile, at a new
+    pad point and yaw. The pads of the slope and stair tiles sit up to
+    0.425 m above or below the flat row."""
+    from humanoid_lab.envs.terrain_wrapper import wrap_for_terrain_brax_training
+
+    w = wrap_for_terrain_brax_training(e, episode_length=100)
+    first = jax.jit(w.reset)(jax.random.split(jax.random.PRNGKey(4), WRAP_N))
+    b = e._base_qadr
+    info = {
+        **first.info,
+        "steps": jp.full(WRAP_N, 99.0),
+        "terrain_type": jp.arange(WRAP_N, dtype=jp.int32),
+        "spawn_xy": first.data.qpos[:, b : b + 2] - jp.array([3.0, 0.0]),
+    }
+    out = jax.jit(w.step)(first.replace(info=info), jp.zeros((WRAP_N, e.action_size)))
+    assert np.asarray(out.done).all()
+    assert np.asarray(first.info["terrain_level"]).tolist() == [0] * WRAP_N
+    assert np.asarray(out.info["terrain_level"]).tolist() == [1] * WRAP_N
+    return first, out
+
+
+def test_wrapper_serves_the_height_and_scan_of_the_new_spawn(terrain_scan):
+    """The respawned critic obs carries the height and the scan that
+    `_obs_catalog` computes at the new pose, within 1e-5. The scan reads
+    the exact ground, the height the lookup."""
+    e = terrain_scan
+    first, out = respawned(e)
+    b = e._base_qadr
+    slices = e.obs_slices("privileged")
+    forward = _forward_fn(e)
+    moved = 0
+    for i in range(WRAP_N):
+        q = out.data.qpos[i]
+        data = forward(q)
+        info = {k: out.info[k][i] for k in e._catalog_probe_info()}
+        catalog = e._obs_catalog(data, info)
+        priv = np.asarray(out.obs["privileged_state"][i])
+        np.testing.assert_allclose(priv[slices["height"]], catalog["height"], atol=1e-5)
+        np.testing.assert_allclose(priv[slices[hs.NAME]], catalog[hs.NAME], atol=1e-5)
+        np.testing.assert_allclose(
+            priv[slices["height"]], float(q[b + 2] - tg.height(e._tables, q[b : b + 2])), atol=1e-6
+        )
+        cached = np.asarray(first.obs["privileged_state"][i])
+        moved += not np.allclose(priv[slices[hs.NAME]], cached[slices[hs.NAME]], atol=1e-3)
+        # Every other column is the first reset's.
+        rest = np.ones(priv.shape, bool)
+        rest[slices["height"]] = rest[slices[hs.NAME]] = False
+        np.testing.assert_array_equal(priv[rest], cached[rest])
+    # The new spawns see different ground than the first ones.
+    assert moved >= WRAP_N // 2
+    lift = np.asarray(out.data.qpos[:, b + 2] - first.data.qpos[:, b + 2])
+    assert np.abs(lift).max() > 0.4
+
+
+def test_wrapper_without_the_scan_is_untouched():
+    """With no scan listed only `height` is spliced. The critic stays
+    joystick's width, and every other column is the first reset's."""
+    e = build("terrain")
+    first, out = respawned(e)
+    b = e._base_qadr
+    assert out.obs["privileged_state"].shape == (WRAP_N, sum(e.obs_component_sizes()[n] for n in JOYSTICK_CRITIC))
+    height = e.obs_slices("privileged")["height"]
+    np.testing.assert_array_equal(out.obs["state"], first.obs["state"])
+    for i in range(WRAP_N):
+        q = out.data.qpos[i]
+        want = np.asarray(first.obs["privileged_state"][i]).copy()
+        want[height] = float(q[b + 2] - tg.height(e._tables, q[b : b + 2]))
+        np.testing.assert_allclose(np.asarray(out.obs["privileged_state"][i]), want, atol=1e-6)

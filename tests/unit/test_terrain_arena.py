@@ -30,7 +30,8 @@ from humanoid_lab.terrain.params import (
 
 # sha256 of two arenas. If a change moves either, that arena changed: bump
 # GENERATOR_VERSION, then re-pin both. The tread-range arena covers the
-# per-tile tread draw, which the default arena never takes.
+# per-tile tread draw, which the default arena never takes. A re-pin of the
+# default arena also re-measures height_scan.PRIOR_MEAN and PRIOR_STD.
 PINNED_FINGERPRINTS = {
     "default": "837fbf8ab9fca3292bca2b1b87976c0deb242e859504b28650e5d9bef155765f",
     "tread_range": "70684a28401e597cf72dda4dc0eed7298ad129c2f5a315472fdc2ae6dd60b3cb",
