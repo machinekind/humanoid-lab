@@ -181,7 +181,7 @@ def test_an_unclassified_env_key_blocks_the_contract(ideal_env):
         dc.build_contract(ideal_env, run, "ckpt")
 
 
-def test_a_non_joystick_task_is_refused(ideal_env):
+def test_a_task_outside_the_deployable_set_is_refused(ideal_env):
     run = run_for(ideal_env)
     run["task"] = "sizing"
     with pytest.raises(NotImplementedError, match="sizing"):

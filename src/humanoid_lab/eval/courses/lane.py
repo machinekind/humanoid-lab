@@ -157,9 +157,9 @@ def lane_data(course: Course, params: CourseParams, n_points: int, dt: float) ->
 
 
 def base_height(env, d):
-    """Base height above the ground under the robot. An env with its own
-    `_base_height` (a ground that is not flat) supplies it; otherwise it is
-    the free joint's z, which is the height above the flat floor."""
+    """Base height above the ground under the robot: the env's own
+    `_base_height`, which on the flat floor is the free joint's z. An env
+    without one reads that z directly."""
     fn = getattr(env, "_base_height", None)
     return fn(d) if fn is not None else d.qpos[env._base_qadr + 2]
 

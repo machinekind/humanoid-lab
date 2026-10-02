@@ -6,6 +6,15 @@ from __future__ import annotations
 # Tasks that train on a terrain arena.
 TERRAIN_TASKS = frozenset({"terrain"})
 
+# The flat task each terrain task rebuilds as. A terrain task's env config
+# is its flat task's plus one `terrain` block.
+FLAT_COUNTERPART = {"terrain": "joystick"}
+
+# The terrain task, and the tasks whose runs rebuild on it. A joystick
+# override applies to the terrain task's config unchanged.
+TERRAIN_TASK = "terrain"
+TERRAIN_SOURCE_TASKS = ("joystick", "terrain")
+
 # Allocator settings a terrain run starts with, unless the environment
 # already sets them. MJWarp allocates its CCD scratch outside the XLA pool,
 # on every collision call of a model with convex pairs, and a terrain scene

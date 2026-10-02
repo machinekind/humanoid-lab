@@ -1,10 +1,10 @@
 """The key ledger of the fail-closed deploy contract.
 
 These are the tests that ARE the feature: an env option nobody classified
-must not be able to ship. The completeness walk below fails the moment
-`envs/joystick.py::default_config()` grows a key that
-`deploy_contract.py` does not name, and `check_config_covered` refuses a
-run config carrying one.
+must not be able to ship. The completeness walk below fails the moment any
+registered task's `default_config()` grows a key that `deploy_contract.py`
+does not name, and `check_config_covered` refuses a run config carrying
+one.
 
 Unit-suite safe: `default_config()` is a plain ConfigDict builder, so
 nothing here compiles a spec or constructs an env (see
@@ -17,6 +17,8 @@ import pytest
 
 from humanoid_lab import deploy_contract as dc
 from humanoid_lab.envs.joystick import default_config
+from humanoid_lab.envs.terrain_joystick import default_config as terrain_default_config
+from humanoid_lab.registry import TASKS
 
 
 def leaf_paths(config, prefix: str = "") -> set[str]:
@@ -31,19 +33,28 @@ def leaf_paths(config, prefix: str = "") -> set[str]:
     return paths
 
 
-def test_every_default_config_key_is_classified():
+def every_task_key() -> set[str]:
+    """The union of every registered task's default config leaf paths."""
+    keys: set[str] = set()
+    for _cls, task_default_config in TASKS.values():
+        keys |= leaf_paths(task_default_config().to_dict())
+    return keys
+
+
+@pytest.mark.parametrize("task", sorted(TASKS))
+def test_every_default_config_key_is_classified(task):
     """The completeness walk. A new env option lands here before it ships."""
-    keys = leaf_paths(default_config().to_dict())
+    keys = leaf_paths(TASKS[task][1]().to_dict())
 
     unclassified = sorted(k for k in keys if not dc.is_classified(k))
     assert not unclassified, (
-        f"env config key(s) {unclassified} are neither in the ledger nor "
-        "covered by a prefix rule -- classify them in "
+        f"{task} env config key(s) {unclassified} are neither in the ledger "
+        "nor covered by a prefix rule -- classify them in "
         "src/humanoid_lab/deploy_contract.py"
     )
-    stale = sorted((dc.CONSUMED_KEYS | dc.TRAINING_ONLY_KEYS) - keys)
+    stale = sorted((dc.CONSUMED_KEYS | dc.TRAINING_ONLY_KEYS) - every_task_key())
     assert not stale, (
-        f"ledger entries {stale} name keys default_config() no longer has -- "
+        f"ledger entries {stale} name keys no task's default_config() has -- "
         "the ledger describes a config that does not exist"
     )
 
@@ -126,3 +137,55 @@ def test_an_armed_pure_draw_is_covered():
     dc.check_config_covered(config)
 
 
+def test_the_terrain_task_is_deployable():
+    """A terrain run exports from its flat rebuild. Its terrain block is
+    training-only whole, and sizing still has no runtime."""
+    assert {"joystick", "terrain"} <= dc.DEPLOYABLE_TASKS
+    assert "sizing" not in dc.DEPLOYABLE_TASKS
+    dc.check_config_covered(terrain_default_config().to_dict())
+    for key in (
+        "terrain.arena.seed",
+        "terrain.spawn.mode",
+        "terrain.command_bias.zero_prob",
+    ):
+        assert dc.is_classified(key) and key not in dc.CONSUMED_KEYS
+
+
+def test_a_new_terrain_key_needs_no_ledger_edit():
+    config = terrain_default_config().to_dict()
+    config["terrain"]["spawn"]["brand_new_knob"] = 1
+    config["terrain"]["brand_new_block"] = {"x": 0.5}
+    dc.check_config_covered(config)
+
+
+def test_a_terrain_prefix_does_not_cover_a_lookalike_key():
+    config = default_config().to_dict()
+    config["terrain_gate"] = 0.2
+    with pytest.raises(ValueError, match="terrain_gate"):
+        dc.check_config_covered(config)
+
+
+def _bias(**probs) -> dict:
+    """A run.json `env_config` with the terrain command bias on."""
+    bias = terrain_default_config().terrain.command_bias.to_dict()
+    bias.update(enable=True, **probs)
+    return {"terrain": {"command_bias": bias}}
+
+
+def test_an_in_box_command_bias_is_covered():
+    """The default bias arms no draw outside joystick's box."""
+    dc.check_terrain_command_bias(_bias(), default_config().command)
+    dc.check_terrain_command_bias({}, default_config().command)
+
+
+def test_an_out_of_box_command_bias_is_refused():
+    """roboto_origin's vx box is [-0.6, 1.0], and back_vx (-0.8, -0.2) lies
+    outside it. The flat rebuild carries no bias, so the contract checks the
+    run's own."""
+    command = default_config().command
+    command.vx = (-0.6, 1.0)
+    with pytest.raises(ValueError, match=r"terrain\.command_bias.*pure_back_prob"):
+        dc.check_terrain_command_bias(_bias(pure_back_prob=0.1), command)
+    off = _bias(pure_back_prob=0.1)
+    off["terrain"]["command_bias"]["enable"] = False
+    dc.check_terrain_command_bias(off, command)
