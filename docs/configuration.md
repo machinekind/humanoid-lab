@@ -941,6 +941,118 @@ axis already covers that: a different stiffness is a different preset, or an
 `actuators.overrides` entry on the group that needs it, and both land in this
 block.
 
+## Terrain scan (`terrain_scan.json`)
+
+`./run.sh terrain-scan --run runs/<name>` scores a checkpoint on its robot's
+terrain scan suite. `eval/terrain_suite.py` defines the suite. Roboto Origin
+has one. A run of any other robot is refused before anything is built. A run
+of a task other than joystick or terrain is refused.
+
+The suite's arena has six rows, at difficulties 0.2 to 1.2, and one tile of
+every terrain type per row. Each tile is a cell. A cell is named by its
+realized dimension, for example `pyramid_stairs_9.8cm`. `--list-cells`
+prints the 48 cells with their rows, values and bars, and builds nothing.
+
+A run is one forward crossing from the tile's pad:
+
+- The robot starts on the pad in the reset pose, offset along its heading
+  and facing it. The base sits at the pad height plus the reset height.
+- It stands at zero command for the settle, `protocol.settle_steps` = 50
+  control steps, 1 s.
+- It then walks at the constant command `[v, 0, 0]`. The policy first sees
+  that command one control step after the settle ends.
+- It passes when its base reaches Chebyshev `r_out` from the tile centre
+  after the settle, without a fall, before its deadline.
+
+`r_out` is 1.75 m on stair tiles and 1.85 m on every other tile. Each cell
+gets 64 runs per speed: 8 headings, 4 offsets and 2 draws. Two draws of one
+start differ only in the observation noise. The policy acts
+deterministically. The speeds are 0.3 and 0.6 m/s. A run's deadline is the
+settle plus 1.6 times its distance over the commanded speed.
+
+The env is the run rebuilt on the terrain task with the suite's arena, so a
+joystick run scans too. Pushes, command resampling, the no-progress cut and
+the command bias are off. Base contact is on at 1 cm. A fall is the env's
+`done`: base height, tilt or base contact. The scan refuses an arena whose
+params or fingerprint differ from the suite's. Scores compare only within
+one suite version.
+
+Every selected cell rolls in one batch per speed. The full suite is 3072
+worlds. The jax backend refuses an arena of more than 128 ground boxes. The
+suite's arena has 1139: its 1135 boxes and the 4 aprons. The full suite
+therefore runs on warp on a CUDA host. A human launches it. The tests scan a
+tiny suite on the CPU arena on jax. A world that has stopped is parked every
+step: rewritten in the reset pose with its soles 2 m above the arena's
+highest point, at rest. It makes no contact, so a fallen robot cannot fill
+the contact pool.
+
+`--cells` and `--speeds` scan a subset, and the warnings then say the scan
+is partial. `--eval-seed N` folds N into every cell's key. It redraws the
+observation noise on the same course. Seed 0 is the default stream. Run r of
+a cell gets the same key in any batch.
+
+Each cell entry carries its type, row, difficulty, value, unit, `r_out`,
+`bar`, `threshold` (runs of 64) and `provenance`, and one result per
+scanned speed:
+
+| Field | Meaning |
+|---|---|
+| `passed`, `of`, `rate`, `ci95` | Runs that finished without a fall, out of 64, their rate and its Wilson 95% interval. |
+| `falls`, `falls_in_settle` | Runs that fell, and those of them that fell during the settle. |
+| `timeouts` | Runs that neither finished nor fell before their deadline. |
+| `progress_mean` | The largest `(d - d0) / (r_out - d0)` a run reached after the settle, clipped to [0, 1]. `d` is the base's Chebyshev distance from the tile centre and `d0` the start's. |
+| `track_err` | Mean `\|v - body vx\|`, m/s. |
+| `saturation` | The fraction of actuator samples whose force exceeds 0.95 of that actuator's cap, as the battery counts it. |
+| `clearance` | Mean terrain-relative foot clearance, m. |
+| `measured` | Runs with a step after the settle. The four metrics above average over them, and read 0 when there are none. |
+| `steps_max` | The longest run's control steps. |
+
+The absolute gate reads every gated cell at every scanned speed:
+
+| Verdict | When |
+|---|---|
+| `invalid` | The scan is not physics-clean. |
+| `fail` | A gated cell passed fewer runs than its threshold. |
+| `incomplete` | Fewer (cell, speed) pairs were checked than the full suite gates. |
+| `pass` | Otherwise. |
+
+Twelve cells carry bars: rough ground, both slopes and waves on the three
+easiest rows. Their thresholds are 61, 52 and 39 of 64. Every bar is
+provisional. Stairs, obstacles and rubble are tracked and never gated. A
+finished scan exits 0 whatever its verdict. A refused request exits 2.
+
+On warp each dispatch runs under a capture of fd 1. The scan is
+physics-clean when no gating MJWarp message printed, no pool or row fill
+reached 1, and no running world's `qpos` went non-finite. The counters are
+sampled at each control step's last physics step. A scan that is not
+physics-clean keeps its numbers. jax prints no message and has no live
+counters, so there physics-clean covers non-finite states only.
+
+The suite's warp budgets are 256 contacts and 2048 rows per world, and the
+naconmax pool for CCD. All three are untuned. `--naconmax-per-env`,
+`--njmax` and `--naccdmax-per-env` override them. `check-terrain --arena
+eval` measures what the eval arena needs. At 3072 worlds and 256 slots per
+world, Roboto Origin's CCD scratch is 4.3 GB outside the XLA pool.
+
+| Key | Meaning |
+|---|---|
+| `schema` | Report version 1. |
+| `suite` | Robot, suite version, arena fingerprint and generator version. |
+| `run`, `checkpoint`, `trained_task` | What was scanned. |
+| `robot`, `preset`, `actuator_overrides`, `action_window` | What was built. `action_window` is `check-terrain`'s. |
+| `engine` | The backend and the jax, mujoco, mujoco_mjx and warp_lang versions. |
+| `protocol` | The suite's course and protocol constants, and the control step. |
+| `eval_seed` | The observation noise draw. |
+| `cells` | Per cell and speed, above. |
+| `contacts` | Per speed, the pool and row peaks against the budgets, their fills and the overflow flags. The peaks are null on jax. |
+| `nonfinite_runs` | Per speed, the running worlds whose `qpos` went non-finite. |
+| `messages` | MJWarp's messages, summed over the speeds. Null on jax. |
+| `physics_clean`, `gate`, `warnings` | The verdicts and what the scan flags. |
+| `perf` | Wall seconds with the compile, env steps, env steps per second, loop iterations per speed and the world count. |
+| `ccd_scratch` | Bytes per slot, slots and bytes of the scan's CCD scratch. |
+| `provenance` | Git commit and dirty flag, package versions, device, and when the scan started. `wandb_run_id` is null. |
+| `timestamp` | When the scan finished. |
+
 ## Eval videos
 
 `./run.sh eval --run runs/<name>` renders one battery scenario to MP4 —
@@ -1530,6 +1642,7 @@ Read from `run.sh` as it stands today:
 | `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--task joystick\|terrain] [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. `--task terrain` replaces the floor plane with the CPU terrain arena and stands each world on a flat-row pad. A foot contact with any ground geom counts. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
 | `check-terrain` | `python -m humanoid_lab.check_terrain` | `[--engine mjx\|mujoco] [--backend auto\|warp\|jax] [--arena train\|eval] [--num-envs N] [--steps N] [--regimes stand,walk,fallen] [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N] [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH] [hydra overrides...]`. Gates a terrain recipe against MJWarp's contact, CCD and row buffers and recommends its `task.env.sim` budgets. Not forced onto CPU. The gate itself is `--backend warp --require-warp` on a CUDA host. A host without CUDA runs only the jax check (status `unverified`) and the C proxy (`--engine mujoco`). Neither verifies a recipe. `--num-envs` defaults to 1024 on warp, 16 on jax and one world per tile on the proxy. See [Terrain budgets](#terrain-budgets-check-terrain). |
+| `terrain-scan` | `python -m humanoid_lab.eval.terrain_scan` | `--run runs/<name> [--cells a,b] [--speeds 0.3,0.6] [--backend auto\|warp\|jax] [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N] [--eval-seed N] [--out PATH] [--list-cells]`. Scores the checkpoint on its robot's terrain scan suite. Writes `<run>/terrain_scan.json` unless `--out` says otherwise. Not forced onto CPU. The full suite runs on warp on a CUDA host. `--list-cells` prints the cells and builds nothing. A refused request exits 2. See [Terrain scan](#terrain-scan-terrain_scanjson). |
 | `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
 | `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
