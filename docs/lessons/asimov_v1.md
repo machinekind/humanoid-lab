@@ -69,9 +69,12 @@ from `home` within about a second, so the "standing" regime's own opening
 steps, with every sole capsule loaded, are where its peak lands.
 
 The number that mattered: the carried-over default was `naconmax_per_env=32`,
-exactly asimov's standing peak. On the warp backend that run would have been
-dropping contacts from its second step, silently, with no counter or exception
-anywhere. Measure the budget on the robot rather than inheriting it.
+exactly asimov's standing peak. That budget left a world no headroom over its
+own peak. Warp shares one contact pool across the batch, sized
+`naconmax_per_env * num_envs`. It drops contacts only when the batch's
+contacts or broadphase candidate pairs pass that pool. A drop raises nothing.
+MJWarp's message goes only to file descriptor 1. Measure the budget on the
+robot rather than inheriting it.
 
 ## The vendored model is mirror-symmetric to 0.1 mm, not exactly
 

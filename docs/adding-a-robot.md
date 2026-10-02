@@ -179,8 +179,8 @@ for one preset and prints the warp budgets they need. Run it once for every
 preset in `robots/<name>/actuators/`, because presets can peak differently
 (Roboto Origin: 38 contacts under `sizing_ideal`, 32 under `deploy_pd`).
 Record the largest `naconmax_per_env` and the largest `njmax` across those
-runs as the robot.yaml `sim_budget` block (warp drops overflow silently —
-see `docs/configuration.md`'s warp contact budgets section; a warp run
+runs as the robot.yaml `sim_budget` block (warp drops overflow without
+raising; see `docs/configuration.md`'s warp contact budgets section; a warp run
 without a recorded budget refuses to construct). The two can come from
 different presets. Re-measure when you add a preset or change collision
 geometry. `tests/integration/test_check_contacts.py` discovers every robot

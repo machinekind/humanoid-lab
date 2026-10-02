@@ -123,15 +123,15 @@ def test_budget_report_records_the_pool_as_the_product():
 
 
 def test_budget_report_flags_contact_overflow_on_warp():
-    """At the per-env budget the pool is full and warp drops the overflow
-    silently, so >= is the flag, not >."""
+    """A per-env peak at the budget leaves no slot for one more contact, so
+    >= is the flag, not >."""
     assert sim_budget.budget_report("warp", 32, 10, 32, 320, 1)["overflow"] is True
     assert sim_budget.budget_report("warp", 31, 10, 32, 320, 1)["overflow"] is False
 
 
 def test_budget_report_flags_row_overflow_on_warp():
-    """The second budget, and the worse one: rows past njmax apply no force
-    and nothing warns anywhere."""
+    """The second budget, and the worse one: rows past njmax apply no force,
+    and nothing raises."""
     assert sim_budget.budget_report("warp", 1, 320, 32, 320, 1)["rows_overflow"] is True
     assert sim_budget.budget_report("warp", 1, 319, 32, 320, 1)["rows_overflow"] is False
 
@@ -265,6 +265,39 @@ def test_a_box_box_only_model_runs_sixteen_epa_iterations():
     assert sim_budget.ccd_slot_bytes(35, box_box=True, all_convex_box_box=True) == (
         sim_budget.ccd_slot_bytes(16, box_box=True)
     )
+
+
+# -- pool_report ----------------------------------------------------------------
+
+
+def test_pool_report_compares_against_the_pool():
+    """The pool counters count the whole batch. 500 contacts over 8 worlds
+    is well past a 100 per-env budget, but inside the 800-slot pool, so
+    nothing overflows. Broadphase candidates share the pool, so the larger
+    of the two counters is the demand. Rows stay per world, against
+    njmax."""
+    report = sim_budget.pool_report("warp", 500, 300, 900, 100, 1000, 8)
+    assert report["pool"] == 800
+    assert report["fill_pool"] == pytest.approx(500 / 800)
+    assert report["fill_rows"] == pytest.approx(0.9)
+    assert report["overflow"] is False and report["rows_overflow"] is False
+
+    assert sim_budget.pool_report("warp", 500, 801, 900, 100, 1000, 8)["overflow"] is True
+    assert sim_budget.pool_report("warp", 801, 10, 900, 100, 1000, 8)["overflow"] is True
+    # MJWarp drops past the buffer only when the count exceeds it. Here
+    # both counters sit exactly at their buffers, so neither flag is set.
+    r = sim_budget.pool_report("warp", 800, 800, 1000, 100, 1000, 8)
+    assert r["overflow"] is False and r["rows_overflow"] is False
+    assert sim_budget.pool_report("warp", 1, 1, 1001, 100, 1000, 8)["rows_overflow"] is True
+
+
+def test_pool_report_is_unmeasured_off_warp():
+    """jax has no pool counters and no fixed buffers: no fill, no flag."""
+    report = sim_budget.pool_report("jax", None, None, None, 512, 4096, 16)
+    assert report["fill_pool"] is None and report["fill_rows"] is None
+    assert report["overflow"] is False and report["rows_overflow"] is False
+    assert report["pool"] == 512 * 16
+    assert sim_budget.pool_report("jax", 10_000, 10_000, 10_000, 1, 1, 1)["overflow"] is False
 
 
 # -- traced telemetry ----------------------------------------------------------

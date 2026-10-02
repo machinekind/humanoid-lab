@@ -213,8 +213,9 @@ def _contact_preflight(env, cfg) -> dict:
     the live warp counters are unreachable from there. A short probe on the
     training env itself, on the real backend, measures the same per-world
     peaks -- and it runs BEFORE the job spends GPU hours, which is the point
-    of a preflight: an undersized buffer is a silent wrong-physics bug, not a
-    crash, so the only cheap moment to catch it is before the run.
+    of a preflight: an undersized buffer is a wrong-physics bug, not a
+    crash. MJWarp's overflow message goes to file descriptor 1, outside
+    Python's logging, so the only cheap moment to catch it is before the run.
 
     `smoke=true` skips the probe (a smoke run checks the pipeline, and the
     probe costs more than the training does), and `contact_preflight=false`
@@ -322,7 +323,7 @@ def main(cfg: DictConfig) -> None:
     if contacts["overflow"] or contacts["rows_overflow"]:
         print(
             "WARNING: the preflight already reached a warp buffer ceiling. Warp drops "
-            "the overflow silently, so this run would be training against dropped "
+            "the overflow without raising, so this run would be training against dropped "
             "contacts or unenforced constraint rows. Raise task.env.sim.naconmax_per_env "
             "/ njmax (see ./run.sh check-contacts) before trusting the result."
         )

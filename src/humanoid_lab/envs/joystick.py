@@ -50,9 +50,10 @@ def default_config() -> config_dict.ConfigDict:
             # buffers; only warp reads them (the jax branch of
             # envs/backend.py takes no kwargs). None defers to the robot's
             # own measured `sim_budget` block in robot.yaml, and a warp run
-            # with neither refuses at construction -- overflow is silent in
-            # both directions: contacts past naconmax are dropped and rows
-            # past njmax apply no force, with no warning anywhere.
+            # with neither refuses at construction. Contacts past naconmax
+            # are dropped and rows past njmax apply no force. Neither
+            # raises: MJWarp prints a message from the device to file
+            # descriptor 1, which Python's sys.stdout never sees.
             # ./run.sh check-contacts measures a robot's peaks and
             # recommends budgets; tests/integration/test_check_contacts.py
             # fails when new collision geometry outgrows a robot's recorded
