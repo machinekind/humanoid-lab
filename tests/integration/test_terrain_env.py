@@ -20,6 +20,7 @@ import pytest
 from mujoco import mjx
 
 from humanoid_lab import paths
+from humanoid_lab.envs import height_scan
 from humanoid_lab.envs import terrain_geometry as tg
 from humanoid_lab.envs.terrain_joystick import (
     JAX_BOX_LIMIT,
@@ -204,10 +205,14 @@ def test_actor_obs_match_the_joystick_env(env, flat):
 
 @pytest.mark.parametrize("which", ["joystick", "terrain"])
 def test_obs_component_sizes_match_the_catalog(which, env, flat):
+    """Every catalog entry has its size. The sizes also list the height
+    scan, which the catalog builds only when a list names it."""
     e = env if which == "terrain" else flat
     data = posed(e)
     catalog = e._obs_catalog(data, e._catalog_probe_info())
-    assert {k: int(v.shape[0]) for k, v in catalog.items()} == e.obs_component_sizes()
+    sizes = e.obs_component_sizes()
+    assert set(sizes) - set(catalog) == {height_scan.NAME}
+    assert {k: int(v.shape[0]) for k, v in catalog.items()} == {k: sizes[k] for k in catalog}
     for which_list in ("state", "privileged"):
         slices = e.obs_slices(which_list)
         assert list(slices) == list(e._config.obs[which_list])

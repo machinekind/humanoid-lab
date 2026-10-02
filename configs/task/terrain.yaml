@@ -10,7 +10,24 @@ defaults:
 
 name: terrain
 
-env: {}
+env:
+  obs:
+    # joystick.yaml's critic list plus the height scan, last: the ground
+    # around the base relative to the lowest sole (envs/height_scan.py).
+    # The actor list stays joystick.yaml's.
+    privileged:
+      - gyro
+      - gravity
+      - joint_pos
+      - joint_vel
+      - last_action
+      - command
+      - phase
+      - linvel
+      - height
+      - contacts
+      - actuator_force
+      - height_scan_clean
 
 ppo:
   # A periodic reset redraws every env's curriculum level.
