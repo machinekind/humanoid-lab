@@ -25,9 +25,9 @@ node grid. Each box's top is written onto the nodes inside its footprint,
 edges included. `ArenaParams` refuses box sizes that could cover no node:
 obstacle and rubble half-sizes under cell_size / sqrt(2), and stair treads
 under two cell_size, so every ring band spans a node line. Every box
-therefore shows in it. Height queries read it through `bilinear` instead of
-casting rays, so it has to match the physics geometry node for node.
-Between nodes it can only blend.
+therefore shows in it. `bilinear` reads it instead of casting rays, so it
+has to match the physics geometry node for node. Between nodes it can only
+blend. `triangle` reads the heightfield alone, as MuJoCo collides with it.
 
 Where a box edge lies on a node line, the lookup reaches the top at that
 edge node and ramps up over the cell outside it. It reads the box up to
@@ -36,13 +36,18 @@ rim lie on node lines, so the pit's flat pad reads flat out to
 pad_radius - cell_size. Where an edge falls between node lines, the ramp
 straddles it. Within one cell of the edge the lookup reads the higher side
 low and the lower side high, by up to the full step. On the default arena
-the 0.7 m and 1.3 m tread edges fall mid-cell, and the lookup reads a
-d = 1 tread lip up to half its 15 cm riser low. Nearly every yawed
-obstacle and rubble edge falls between node lines too. A consumer that
-must never read the ground below a box, such as fall termination or foot
-clearance, can take the max of the four nodes around a point. That reads
-no axis-aligned box a cell or more wide low. A yawed box's corner can
-still reach into a cell past all four of its nodes.
+the 0.7 m and 1.3 m tread edges fall mid-cell. Along such an edge the
+lookup reads the tread lip half a riser low. At a corner where both edges
+fall mid-cell, one node of the cell's four is on the tread. The lookup
+reads 3/4 of a riser low there, 11.25 cm under the 15 cm riser at d = 1.
+No point inside a stair reads lower. Nearly every yawed obstacle and
+rubble edge falls between node lines too. A consumer that must never read
+the ground below a box, such as fall termination, can take the max of the
+four nodes around a point. That reads no axis-aligned box a cell or more
+wide low. It reads up to a box's full step high within one cell beside the
+box. On the default arena it reads more than 1 cm high on 4.9% of the
+surface. A yawed box's corner can still reach into a cell past all four of
+its nodes.
 
 MuJoCo splits each heightfield cell into two triangles, where `bilinear`
 blends four nodes. At the cell centre the two differ by a quarter of the

@@ -33,7 +33,7 @@ three link-mass scales and the first foot's friction scale was an affine
 image of the kd scale -- correlation 1.0 in both, measured. Two DR axes
 were one axis wearing two names. Offsetting the domain puts every field's
 key out of reach of any split of `rng`, however wide that split later
-grows. envs/joystick.py::_sample_command carries the same offset for the
+grows. envs/joystick.py::_draw_command carries the same offset for the
 same reason. tests/integration/test_randomize.py pins both halves.
 """
 

@@ -545,14 +545,15 @@ decorrelation.
 
 Only the warp backend reads these. `envs/backend.py`'s `make_data_fn` passes
 them to `mjx.make_data` on the warp branch and calls `make_data(mjx_model)`
-with no kwargs on the jax branch, so changing either one cannot move a jax
-rollout by a bit.
+with no kwargs on the jax branch, so changing any of the three budgets
+cannot move a jax rollout by a bit.
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `sim.backend` | `auto` | `auto` picks warp on a CUDA host and jax elsewhere. `jax` and `warp` pass through. |
 | `sim.naconmax_per_env` | `None` | Contact budget per world. `None` defers to the robot's `sim_budget` block in its robot.yaml. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
 | `sim.njmax` | `None` | Constraint-row budget per world, same `None` fallback. Never multiplied by the env count. |
+| `sim.naccdmax_per_env` | `None` | CCD scratch slots per world for convex pairs. Heightfield pairs and box-box pairs are convex. Warp allocates ONE pool for the batch, sized `naccdmax_per_env * num_envs`. It allocates it on every collision call, outside the XLA pool. `sim_budget.ccd_slot_bytes` gives the bytes per slot. `None` sizes it to the naconmax pool. It has no robot.yaml fallback. It must not exceed `naconmax_per_env`. MJWarp refuses a larger value in `make_data`, and the terrain task refuses it at construction. A pair past the pool is dropped, and MJWarp prints `CCD overflow`. Neither robot's flat model has a convex pair, so a flat run allocates no CCD scratch. |
 | `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
 
 Both overflows are silent. Contacts past `naconmax` are dropped; rows past

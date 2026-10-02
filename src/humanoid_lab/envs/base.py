@@ -115,6 +115,9 @@ class HumanoidEnv(mjx_env.MjxEnv):
                 "./run.sh check-contacts and record naconmax_per_env/njmax "
                 "in robot.yaml"
             )
+        # The CCD scratch pool has no robot.yaml fallback. None lets MJWarp
+        # size it to the naconmax pool.
+        self._naccdmax_per_env = sim.get("naccdmax_per_env")
         self._make_data_fn = make_data_fn(
             self._backend,
             self._mj_model,
@@ -122,6 +125,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
             self._naconmax_per_env,
             self._njmax,
             sim.num_envs,
+            self._naccdmax_per_env,
         )
 
         m = self._mj_model
@@ -435,6 +439,11 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return brax_math.rotate(world_linvel, brax_math.quat_inv(self._quat(data)))
 
 
+    def _base_height(self, data):
+        """Base height above the ground under it: the free joint's z here,
+        on the flat floor at z = 0."""
+        return data.qpos[self._base_qadr + 2]
+
     def _foot_site_pos(self, data):
         return data.site_xpos[self._foot_site_ids]
 
@@ -490,6 +499,37 @@ class HumanoidEnv(mjx_env.MjxEnv):
             "actuator_force": data.actuator_force,
             "contacts": self._foot_contact(data).astype(jp.float32),
         }
+
+    def obs_component_sizes(self) -> dict[str, int]:
+        """Width of every catalog component, from the model's dimensions.
+
+        Untraced, so a caller can size an observation vector without data.
+        Task envs that add catalog entries extend it.
+        """
+        nu = self.action_size
+        return {
+            "gyro": 3,
+            "gravity": 3,
+            "joint_pos": nu,
+            "joint_vel": nu,
+            "last_action": nu,
+            "linvel": 3,
+            "height": 1,
+            "actuator_force": nu,
+            "contacts": self._n_feet,
+        }
+
+    def obs_slices(self, which: str) -> dict[str, slice]:
+        """Where each component of the `state` or `privileged` list sits in
+        its observation vector."""
+        if which not in ("state", "privileged"):
+            raise ValueError(f"which must be 'state' or 'privileged', got {which!r}")
+        sizes = self.obs_component_sizes()
+        slices, start = {}, 0
+        for name in self._config.obs[which]:
+            slices[name] = slice(start, start + sizes[name])
+            start += sizes[name]
+        return slices
 
     @property
     def actor_obs_names(self):

@@ -1,0 +1,20 @@
+# Joystick on a procedural terrain arena: configs/task/joystick.yaml plus
+# what follows. The arena, spawn, curriculum and the other terrain knobs
+# default in code (envs/terrain_joystick.py's default_config). Override
+# them under task.env.terrain. Robot overlays carry no terrain keys: such a
+# key would make task=joystick refuse the overlay. Another robot's terrain
+# values go in an experiment.
+defaults:
+  - joystick
+  - _self_
+
+name: terrain
+
+env: {}
+
+ppo:
+  # A periodic reset redraws every env's curriculum level.
+  num_resets_per_eval: 0
+  # The curriculum level shows in training metrics only.
+  log_training_metrics: true
+  training_metrics_steps: 10000000

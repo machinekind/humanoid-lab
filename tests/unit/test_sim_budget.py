@@ -243,3 +243,23 @@ def test_budget_report_for_env_flags_overflow_on_a_warp_env():
     )
     assert block["overflow"] is True
     assert block["rows_overflow"] is True
+
+
+# -- ccd_slot_bytes -----------------------------------------------------------
+
+
+def test_ccd_slot_bytes_matches_the_allocation():
+    """MJWarp's per-slot CCD scratch at 35 EPA iterations, the iteration
+    count both robots compile with: 4,996 B of EPA scratch, plus 484 B of
+    multi-contact scratch when the model has box-box pairs."""
+    assert sim_budget.ccd_slot_bytes(35, box_box=False) == 4996
+    assert sim_budget.ccd_slot_bytes(35, box_box=True) == 5480
+    # Every term grows with the iteration count: 2 vertices of 16 B and 5
+    # faces of 20 B per iteration.
+    assert sim_budget.ccd_slot_bytes(36, box_box=False) - 4996 == 2 * 16 + 5 * 20
+
+
+def test_a_box_box_only_model_runs_sixteen_epa_iterations():
+    assert sim_budget.ccd_slot_bytes(35, box_box=True, all_convex_box_box=True) == (
+        sim_budget.ccd_slot_bytes(16, box_box=True)
+    )

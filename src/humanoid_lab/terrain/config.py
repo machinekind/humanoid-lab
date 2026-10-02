@@ -1,4 +1,5 @@
-"""Arena params as an env config block, and the arena cache.
+"""Arena params as an env config block, the arena cache, and the terrain
+task's warp budget check.
 
 A config block is `params_to_dict` output with `type_caps` expanded to every
 terrain type. A fixed key set lets an override name any type's cap, and an
@@ -54,3 +55,54 @@ def arena_for(params: ArenaParams) -> Arena:
     arena.lookup.flags.writeable = False
     arena.hfield_data.flags.writeable = False
     return arena
+
+
+def ccd_scratch(sim: Mapping, bytes_per_slot: int, naconmax_per_env: int | None = None) -> dict:
+    """The warp CCD scratch a run with sim config `sim` holds outside the
+    XLA pool: `naccdmax_per_env`, else the naconmax budget, times
+    `num_envs` slots of `bytes_per_slot`. `naconmax_per_env` stands in for
+    an unset `sim.naconmax_per_env`. Slots and bytes are None when neither
+    budget is known."""
+    per_env = sim.get("naccdmax_per_env")
+    source = "sim.naccdmax_per_env"
+    if per_env is None:
+        per_env = sim.get("naconmax_per_env")
+        if per_env is None:
+            per_env = naconmax_per_env
+        source = "naconmax pool"
+    slots = None if per_env is None else int(per_env) * int(sim.get("num_envs", 1))
+    return {
+        "bytes_per_slot": int(bytes_per_slot),
+        "slots": slots,
+        "bytes": None if slots is None else slots * int(bytes_per_slot),
+        "source": source,
+    }
+
+
+def require_terrain_budgets(backend: str, sim: Mapping, *, ccd_slot_bytes: int) -> dict | None:
+    """Refuse a terrain run on warp without explicit contact budgets.
+
+    robot.yaml's `sim_budget` was measured on the flat floor. A terrain
+    scene adds heightfield and box contacts, so it cannot stand in. On warp
+    this raises unless `sim.naconmax_per_env` and `sim.njmax` are set. It
+    then prints and returns the CCD scratch projection (`ccd_scratch`). The
+    jax backend has no fixed buffers, and it returns None."""
+    if backend != "warp":
+        return None
+    missing = [k for k in ("naconmax_per_env", "njmax") if sim.get(k) is None]
+    if missing:
+        names = " and ".join(f"task.env.sim.{k}" for k in missing)
+        verb = "is" if len(missing) == 1 else "are"
+        raise ValueError(
+            f"a terrain run on warp needs explicit contact budgets. {names} {verb} unset. "
+            "robot.yaml's sim_budget is a flat-floor measurement. Measure the arena with "
+            "./run.sh check-terrain and set task.env.sim.naconmax_per_env and "
+            "task.env.sim.njmax."
+        )
+    scratch = ccd_scratch(sim, ccd_slot_bytes)
+    print(
+        f"CCD scratch: {scratch['slots']} slots x {scratch['bytes_per_slot']} B = "
+        f"{scratch['bytes'] / 1e9:.2f} GB outside the XLA pool "
+        f"(naccdmax: {scratch['source']})"
+    )
+    return scratch

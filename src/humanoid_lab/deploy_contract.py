@@ -96,6 +96,7 @@ TRAINING_ONLY_KEYS = frozenset(
         "sim_dt",
         "sim.backend",
         "sim.naconmax_per_env",
+        "sim.naccdmax_per_env",
         "sim.njmax",
         "sim.num_envs",
         # Episode structure. The robot has no episodes.

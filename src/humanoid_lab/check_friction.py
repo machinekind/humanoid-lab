@@ -13,11 +13,12 @@ also proves the floor's own friction draw no longer leaks into foot
 contacts. Run it on a GPU host to get the warp answer, which is the one a
 training run uses.
 
-`--task terrain` runs the same check on a terrain scene. The floor plane
-is replaced by `CPU_ARENA` (terrain/config.py), and world i stands on the
-flat row's pad i mod 8. A foot contact counts when its other geom is any
-ground geom: the heightfield, an arena box or an apron. The flat row is
-exactly 0, so each pad start is the keyframe pose moved in x and y.
+`--task terrain` runs the same check on the terrain task, with
+`CPU_ARENA` (terrain/config.py) in place of the floor plane. World i
+stands on the flat row's pad i mod 8, placed by the env's own spawn rule.
+A foot contact counts when its other geom is any ground geom: the
+heightfield, an arena box or an apron. The flat row is exactly 0, so each
+pad start is the keyframe pose moved in x and y.
 """
 
 import argparse
@@ -31,12 +32,10 @@ from mujoco import mjx
 
 from humanoid_lab import paths
 from humanoid_lab.dr.randomize import _find_floor_geom_id, make_domain_randomize
-from humanoid_lab.envs.joystick import Joystick
-from humanoid_lab.envs.joystick import default_config as joystick_default_config
-from humanoid_lab.registry import _apply_overrides, make_env
-from humanoid_lab.robot.build import compile_spec
-from humanoid_lab.terrain.config import CPU_ARENA, arena_for, params_from_config
-from humanoid_lab.terrain.scene import attach_terrain, ground_geom_ids
+from humanoid_lab.registry import make_env
+from humanoid_lab.robot.spec import load_robot_spec
+from humanoid_lab.terrain.config import CPU_ARENA
+from humanoid_lab.terrain.scene import ground_geom_ids
 
 # Sim steps (not control steps) before the contacts are read: the home
 # keyframes start the soles a few millimetres above the floor, so the feet
@@ -46,38 +45,28 @@ SETTLE_STEPS = 20
 TASKS = ("joystick", "terrain")
 
 
-class _ArenaJoystick(Joystick):
-    """Joystick with its floor plane replaced by `CPU_ARENA`.
-
-    The real_pose_ref settle still runs on the robot's own plane."""
-
-    def _customize_spec(self, spec):
-        self._flat_model = compile_spec(spec)
-        self.arena = arena_for(params_from_config(CPU_ARENA))
-        stat = (self._flat_model.stat.extent, self._flat_model.stat.center)
-        attach_terrain(spec, self.arena, stat=stat)
-
-    def _settle_model(self):
-        return self._flat_model
-
-
 def _build_env(task: str, robot: str, preset: str, sim: dict):
-    if task == "joystick":
-        return make_env("joystick", paths.ROBOTS_DIR / robot, preset, env_overrides={"sim": sim})
-    cfg = joystick_default_config()
-    _apply_overrides(cfg, {"sim": sim})
-    return _ArenaJoystick(paths.ROBOTS_DIR / robot, preset, cfg)
+    robot_dir = paths.ROBOTS_DIR / robot
+    overrides = {"sim": sim}
+    if task == "terrain":
+        overrides["terrain"] = {"arena": CPU_ARENA, "spawn": {"level": 0, "mode": "pad"}}
+        # The terrain task refuses warp without explicit budgets, because
+        # robot.yaml's sim_budget was measured on the flat floor. This probe
+        # stands each world on a flat-row pad, where only the feet touch the
+        # ground, so that budget covers it.
+        budget = load_robot_spec(robot_dir).sim_budget
+        overrides["sim"] = {**{k: v for k, v in budget.items() if k in ("naconmax_per_env", "njmax")}, **sim}
+    return make_env(task, robot_dir, preset, env_overrides=overrides)
 
 
 def _start_qpos(env, task: str, key_qpos, num_envs: int):
     """(num_envs, nq) start poses: the keyframe, on a flat-row pad for terrain."""
-    starts = np.tile(np.asarray(key_qpos), (num_envs, 1))
-    if task == "terrain":
-        pads = sorted((t for t in env.arena.spec.tiles if t.row == 0), key=lambda t: t.col)
-        b = env._base_qadr
-        for i in range(num_envs):
-            starts[i, b : b + 2] = pads[i % len(pads)].origin[:2]
-    return jp.array(starts)
+    if task == "joystick":
+        return jp.tile(key_qpos, (num_envs, 1))
+    pads = env._tables.origin_xy[0]
+    return jp.stack(
+        [env.spawn_qpos(key_qpos, pads[i % len(pads)], 0.0, 0) for i in range(num_envs)]
+    )
 
 
 def probe(
