@@ -856,6 +856,34 @@ def test_require_warp_with_the_proxy_exits_2(tmp_path):
     assert json.loads(out.read_text())["status"] == "error"
 
 
+@pytest.mark.parametrize("device, code, status", [("cpu", 2, "error"), ("gpu", 0, "pass")])
+def test_require_warp_refuses_warp_off_a_gpu_before_building(device, code, status, tmp_path, monkeypatch):
+    """MJWarp runs on the CPU device of a host without a GPU, so an
+    explicit warp backend alone does not prove the node class."""
+    import jax
+
+    built = []
+
+    def build(cfg, args):
+        built.append(args.backend)
+        return _fake_env(_cpu_arena())
+
+    monkeypatch.setattr(jax, "default_backend", lambda: device)
+    monkeypatch.setattr(check_terrain, "build_check_env", build)
+    monkeypatch.setattr(check_terrain, "run_mjx", lambda *a: ({"stand": _fake_regime(100, 200, 50)}, 1.0))
+    out = tmp_path / "r.json"
+    argv = ["experiment=terrain_cpu", "--backend", "warp", "--require-warp", "--num-envs", "4",
+            "--regimes", "stand", "--out", str(out)]
+    assert check_terrain.main(argv) == code
+    report = json.loads(out.read_text())
+    assert report["status"] == status
+    if device == "cpu":
+        assert "GPU" in report["error"]
+        assert (built, report["regimes"]) == ([], {})
+    else:
+        assert built == ["warp"]
+
+
 @pytest.mark.parametrize("engine", [[], ["--engine", "mujoco"]])
 def test_an_unknown_flag_exits_2(engine, tmp_path):
     """A misspelt flag is refused, not handed to Hydra as an override.

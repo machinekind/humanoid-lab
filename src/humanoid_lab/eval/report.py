@@ -249,16 +249,15 @@ def render_markdown(battery: dict) -> str:
         lines.append(
             f"- **contacts: ATTENTION** -- the contact pool overflowed "
             f"({contacts.get('nacon_max')} >= naconmax_per_env "
-            f"{contacts.get('naconmax_per_env')}). Warp drops the overflow silently, "
-            "so every number above was measured on a simulation missing contacts. "
-            "Raise the budget and re-run."
+            f"{contacts.get('naconmax_per_env')}). Warp drops the overflow without "
+            "raising, so every number above was measured on a simulation missing "
+            "contacts. Raise the budget and re-run."
         )
     if contacts and contacts.get("rows_overflow"):
         lines.append(
             f"- **contacts: ATTENTION** -- the constraint rows overflowed "
             f"({contacts.get('nefc_max')} >= njmax {contacts.get('njmax')}). Rows past "
-            "njmax apply no force, with no warning anywhere. Raise the budget and "
-            "re-run."
+            "njmax apply no force, and nothing raises. Raise the budget and re-run."
         )
     for name in scenario_names:
         flags = scenario_flags(name, battery[name])

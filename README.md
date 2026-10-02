@@ -9,6 +9,7 @@ The pipeline is robot-agnostic. A robot lives under `robots/<name>/` as a verbat
 ## What it does
 
 - Trains a joystick velocity-tracking policy (`task=joystick`) with domain randomization and configurable reward terms.
+- Trains the joystick policy on a procedural terrain arena with a level curriculum (`task=terrain`).
 - Measures the torque, velocity and power each joint needs (`task=sizing`), so actuators can be sized before they are bought.
 - Evaluates a checkpoint with a scenario battery, a report and videos.
 - Exports `policy.npz` and `policy_meta.json` for the on-robot runtime.
@@ -22,6 +23,7 @@ Configuration is Hydra. `./run.sh <verb> [overrides]` wraps the project venv.
 | `build` / `check` | build and check a robot's MJX model |
 | `train` | training run |
 | `smoke` | short CPU training run, wandb off |
+| `check-terrain` / `terrain-scan` | terrain warp budget gate, terrain scan suite |
 | `battery` / `report` / `eval` | evaluation battery, report, video |
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts from a checkpoint |
@@ -29,7 +31,7 @@ Configuration is Hydra. `./run.sh <verb> [overrides]` wraps the project venv.
 
 Example: `./run.sh train robot=roboto_origin ppo.num_timesteps=3e8 run_name=roboto_walk_v1`
 
-`docs/configuration.md` lists every verb and flag. `docs/adding-a-robot.md` explains the robot layout. `docs/deploy.md` states the export contract.
+`docs/configuration.md` lists every verb and flag. `docs/adding-a-robot.md` explains the robot layout. `docs/deploy.md` states the export contract. `docs/terrain.md` is the guide to the terrain path.
 
 Remote training goes through a separate, private ops tool. `jobs/` holds the cluster-agnostic payloads it calls, and `jobs/README.md` states their contract.
 

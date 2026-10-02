@@ -1,6 +1,5 @@
 """Sizing report: per-joint-group torque/speed/power percentiles and a
-torque-speed scatter, from a sizing/collect.py rollout (build order step 7,
-PLAN.md "First experiments" #2/#3).
+torque-speed scatter, from a sizing/collect.py rollout.
 
 Run:
     python -m humanoid_lab.sizing.report --run runs/<name> [--motors encos]

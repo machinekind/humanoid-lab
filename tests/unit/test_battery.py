@@ -1,7 +1,7 @@
-"""Build-order step 10 gate (part 1): eval/battery.py's pure metric
-functions and scenario command builders, exercised on synthetic arrays --
-no checkpoint, no env, no mujoco model. Mirrors sizing/report.py's own
-test_sizing_report.py pattern (pure numpy in, dict/scalar out).
+"""eval/battery.py's pure metric functions and scenario command builders,
+exercised on synthetic arrays -- no checkpoint, no env, no mujoco model.
+Mirrors sizing/report.py's own test_sizing_report.py pattern (pure numpy
+in, dict/scalar out).
 """
 
 from __future__ import annotations

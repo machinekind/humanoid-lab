@@ -1,7 +1,7 @@
-"""Build-order step 6 gate: the joystick task constructs on robots/asimov_v1
-and runs a jitted reset/step without NaN. CPU-fast on purpose (tiny episode
-length, no training loop) -- this is the per-task compile/NaN smoke test,
-not a training run (that's `./run.sh smoke`).
+"""The joystick task constructs on robots/asimov_v1 and runs a jitted
+reset/step without NaN. CPU-fast on purpose (tiny episode length, no
+training loop) -- this is the per-task compile/NaN smoke test, not a
+training run (that's `./run.sh smoke`).
 """
 
 from __future__ import annotations

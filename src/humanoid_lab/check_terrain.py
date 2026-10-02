@@ -6,9 +6,10 @@
     ./run.sh check-terrain experiment=terrain_cpu                # jax on a CPU
     ./run.sh check-terrain robot=roboto_origin --engine mujoco   # C proxy
 
-Leftover arguments are Hydra overrides. `task=terrain` goes first, so an
-experiment or a later `task=` can still change it. A composed task that is
-not a terrain task exits 2 before anything is built.
+Leftover arguments are Hydra overrides, after `task=terrain`. That
+command-line choice replaces an experiment's task pin. Only a later
+`task=` changes it. A composed task that is not a terrain task exits 2
+before anything is built.
 
 Scene. The env is the training env: `registry.env_args_from_config` and
 `make_env`, with the recipe's robot, preset, actuator overrides and arena.
@@ -94,8 +95,9 @@ Exit rules:
                exit 0.
   refused      error, exit 2: an unknown flag or regime, an empty --regimes,
                --steps below 1, a task other than terrain, a missing eval
-               arena, an arena over JAX_BOX_LIMIT boxes on jax, or
-               --require-warp with --engine mujoco.
+               arena, an arena over JAX_BOX_LIMIT boxes on jax,
+               --require-warp with --engine mujoco, or --require-warp with
+               warp where jax has no GPU.
   exception    error, exit 1, with the traceback in the report.
 
 The report goes to `--out`, default
@@ -388,7 +390,9 @@ def train_num_envs(cfg: Mapping) -> int:
 
 
 def compose(overrides: list[str]) -> dict:
-    """The composed Hydra config as a plain container, `task=terrain` first."""
+    """The composed Hydra config as a plain container. `task=terrain` goes
+    first. It replaces an experiment's task pin. A later `task=` replaces
+    it."""
     from hydra import compose as hydra_compose
     from hydra import initialize_config_dir
     from omegaconf import OmegaConf
@@ -852,6 +856,13 @@ def run(args, overrides: list[str], report: dict) -> tuple[str, list[str], int]:
 
     args.arena_block = arena_block(args.arena)
     args.backend = _resolve_backend(args.engine, args.backend)
+    if args.require_warp and args.backend == "warp":
+        import jax
+
+        # MJWarp runs on the CPU device of a host without a GPU. The gate
+        # is a GPU measurement, so --require-warp refuses that host.
+        if jax.default_backend() != "gpu":
+            raise CheckRefused(f"--require-warp needs warp on a GPU, and jax runs on {jax.default_backend()}")
     if args.num_envs is None:
         if args.engine == "mujoco":
             arena = effective_arena(registry.env_args_from_config(cfg).env_overrides, args.arena_block)
@@ -989,7 +1000,7 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--njmax", type=int, default=DEFAULT_NJMAX, help="rows per world when the recipe sets none")
     ap.add_argument("--max-fill", type=float, default=DEFAULT_MAX_FILL, help="pool and row fill that fails")
-    ap.add_argument("--require-warp", action="store_true", help="exit 2 unless the mjx engine runs on warp")
+    ap.add_argument("--require-warp", action="store_true", help="exit 2 unless the mjx engine runs on warp on a GPU")
     ap.add_argument("--strict", action="store_true", help="exit 1 on a C proxy cap hit")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None, help="report path")

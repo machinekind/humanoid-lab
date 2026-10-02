@@ -52,3 +52,6 @@ their own.
   only in seed reported 1,343,166 and 777,859 steps/s.
 - Memory ceilings and throughput do not transfer between node classes. Measure
   on the hardware the real run will use.
+- A terrain recipe on warp refuses to build until it sets its
+  `task.env.sim` budgets. `check-terrain --backend warp --require-warp`
+  measures them. docs/terrain.md gives the order of work.
