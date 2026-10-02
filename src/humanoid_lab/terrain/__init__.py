@@ -1,7 +1,8 @@
 """Procedural terrain arenas for terrain training, numpy only.
 
-`generate` builds an `Arena` from `ArenaParams`. `bilinear` is the one
-sampler every height read goes through, host or device.
+`generate` builds an `Arena` from `ArenaParams`. `bilinear` reads the
+lookup, host or device. `triangle` reads the heightfield as MuJoCo
+collides with it.
 """
 
 from humanoid_lab.terrain.arena import (
@@ -33,7 +34,7 @@ from humanoid_lab.terrain.params import (
     stair_tread_bounds,
     summit_platform_half,
 )
-from humanoid_lab.terrain.sampling import bilinear
+from humanoid_lab.terrain.sampling import bilinear, triangle
 
 __all__ = [
     "GENERATOR_VERSION",
@@ -62,4 +63,5 @@ __all__ = [
     "stair_steps",
     "stair_tread_bounds",
     "summit_platform_half",
+    "triangle",
 ]

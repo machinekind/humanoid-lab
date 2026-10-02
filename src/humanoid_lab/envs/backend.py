@@ -31,7 +31,11 @@ def resolve_backend(backend: str) -> str:
 
 
 def data_budget_kwargs(
-    backend: str, naconmax_per_env: int, njmax: int, num_envs: int
+    backend: str,
+    naconmax_per_env: int,
+    njmax: int,
+    num_envs: int,
+    naccdmax_per_env: int | None = None,
 ) -> dict:
     """make_data buffer kwargs for the resolved backend.
 
@@ -46,6 +50,12 @@ def data_budget_kwargs(
     batch gets its own njmax rows, so this number never multiplies by
     num_envs.
 
+    naccdmax sizes the CCD scratch that MJWarp allocates on every collision
+    call of a model with convex pairs (see sim_budget.ccd_slot_bytes). It is
+    one pool for the whole batch too, naccdmax_per_env multiplied by
+    num_envs. MJWarp refuses a naccdmax above naconmax. None leaves the
+    kwarg out, and MJWarp then sizes the scratch to the naconmax pool.
+
     If a buffer is too small, warp drops the overflow silently instead of
     raising an error. The measured numbers behind the defaults are in
     envs/joystick.py's `sim` block; `./run.sh check-contacts` re-measures
@@ -53,13 +63,18 @@ def data_budget_kwargs(
     """
     if backend != "warp":
         return {}
-    return {
+    kwargs = {
         "naconmax": int(naconmax_per_env) * int(num_envs),
         "njmax": int(njmax),
     }
+    if naccdmax_per_env is not None:
+        kwargs["naccdmax"] = int(naccdmax_per_env) * int(num_envs)
+    return kwargs
 
 
-def make_data_fn(backend, mj_model, mjx_model, naconmax_per_env, njmax, num_envs):
+def make_data_fn(
+    backend, mj_model, mjx_model, naconmax_per_env, njmax, num_envs, naccdmax_per_env=None
+):
     """Return a zero-argument callable that builds a fresh mjx.Data on the backend.
 
     The warp branch applies the buffer budgets from data_budget_kwargs. The
@@ -67,6 +82,8 @@ def make_data_fn(backend, mj_model, mjx_model, naconmax_per_env, njmax, num_envs
     flag existed.
     """
     if backend == "warp":
-        kwargs = data_budget_kwargs("warp", naconmax_per_env, njmax, num_envs)
+        kwargs = data_budget_kwargs(
+            "warp", naconmax_per_env, njmax, num_envs, naccdmax_per_env
+        )
         return lambda: mjx.make_data(mj_model, impl="warp", **kwargs)
     return lambda: mjx.make_data(mjx_model)

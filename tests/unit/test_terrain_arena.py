@@ -1177,6 +1177,51 @@ def test_the_lookup_blurs_a_box_edge_between_nodes_both_ways(arena):
         assert at(0.66) == pytest.approx(ring1, abs=1e-5), (ux, uy)
 
 
+@pytest.mark.parametrize(
+    "ttype, ratio", [("pyramid_stairs", 0.75), ("inverted_pyramid_stairs", 0.5)]
+)
+def test_a_stair_top_reads_at_most_three_quarters_of_a_riser_low(arena, ttype, ratio):
+    """On the top row's stairs, points within one cell inside a tread edge
+    read below the tread. A pyramid tread's outer corner, with both edges
+    mid-cell, has one of its cell's four nodes on the tread. Approaching
+    it, the lookup reads 3/4 of a riser low. Treads span at least two
+    cells, so the other three nodes lie one riser lower and nothing reads
+    lower. A pit tread's outer corners border the higher ring. Its low side
+    is the inner edge, which reads at most half a riser low."""
+    p = arena.spec.params
+    cell = p.cell_size
+    t = _tile(arena, ttype, arena.spec.n_rows - 1)
+    riser = p.stair_riser(t.difficulty)
+    cx, cy, _ = t.origin
+    boxes = [
+        b
+        for b in arena.boxes
+        if abs(b.pos[0] - cx) < p.tile_size / 2 and abs(b.pos[1] - cy) < p.tile_size / 2
+    ]
+
+    def top_at(x, y):
+        z = np.full_like(x, -np.inf)
+        for b in boxes:
+            inside = (np.abs(x - b.pos[0]) <= b.half[0]) & (np.abs(y - b.pos[1]) <= b.half[1])
+            z = np.where(inside, np.maximum(z, b.pos[2] + b.half[2]), z)
+        return z
+
+    worst = 0.0
+    for b in boxes:
+        hx, hy, _ = b.half
+        # The end points sit 1 um inside the corners.
+        u, v = np.meshgrid(
+            np.linspace(-hx + 1e-6, hx - 1e-6, 201), np.linspace(-hy + 1e-6, hy - 1e-6, 201)
+        )
+        band = (hx - np.abs(u) <= cell) | (hy - np.abs(v) <= cell)
+        x, y = b.pos[0] + u[band], b.pos[1] + v[band]
+        top = b.pos[2] + b.half[2]
+        mine = np.abs(top_at(x, y) - top) < 1e-9
+        low = top - terrain.lookup_height(arena, x[mine], y[mine])
+        worst = max(worst, float(low.max()))
+    assert ratio * riser - 1e-3 < worst <= ratio * riser + 1e-6, worst
+
+
 def test_bilinear_and_the_triangle_split_differ_by_under_4_5_mm_on_bare_cells(arena):
     """Within a cell, bilinear and either of MuJoCo's two triangles differ
     by at most a quarter of the cell's twist |h00 - h01 - h10 + h11|,

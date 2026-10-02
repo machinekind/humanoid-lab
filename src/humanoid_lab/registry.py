@@ -11,12 +11,15 @@ from humanoid_lab.envs.joystick import Joystick
 from humanoid_lab.envs.joystick import default_config as joystick_default_config
 from humanoid_lab.envs.sizing import Sizing
 from humanoid_lab.envs.sizing import default_config as sizing_default_config
+from humanoid_lab.envs.terrain_joystick import TerrainJoystick
+from humanoid_lab.envs.terrain_joystick import default_config as terrain_default_config
 
 # Tasks register themselves here as their env classes land (build order
 # step 6: joystick/velocity; step 7: sizing).
 TASKS = {
     "joystick": (Joystick, joystick_default_config),
     "sizing": (Sizing, sizing_default_config),
+    "terrain": (TerrainJoystick, terrain_default_config),
 }
 
 

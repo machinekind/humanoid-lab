@@ -181,3 +181,50 @@ def budget_report_for_env(env, nacon_max, nefc_max) -> dict:
         env._backend, nacon_max, nefc_max,
         env._naconmax_per_env, env._njmax, env._config.sim.num_envs,
     )
+
+
+# MJWarp's EPA scratch bounds (mujoco_warp/_src/types.py): faces EPA may add
+# per iteration, and the longest horizon it tracks.
+_EPA_FACES_PER_ITER = 5
+_EPA_HORIZON = 24
+# Scratch element sizes in MJWarp, which stores float32: a vec3, and an int
+# or a float.
+_VEC3_BYTES = 12
+_SCALAR_BYTES = 4
+# EPA's iteration count when every convex pair of a model is box-box.
+_BOX_BOX_EPA_ITERATIONS = 16
+
+
+def ccd_slot_bytes(ccd_iterations: int, box_box: bool, all_convex_box_box: bool = False) -> int:
+    """Bytes of CCD scratch per `naccdmax` slot, as MJWarp allocates them.
+
+    MJWarp allocates this scratch on every collision call of a model with
+    convex pairs, sized by `naccdmax` (a pool for the whole batch), outside
+    the XLA memory pool. A model without convex pairs skips it. A flat floor
+    pairs with primitive colliders only. Heightfield and box-box pairs are
+    convex.
+
+    EPA scratch comes first. EPA runs E = `ccd_iterations` iterations, or
+    16 when every convex pair of the model is box-box. Per slot it holds
+    10 + 2E vertices (a vec3 and an int each), 6 + 5E faces (an int, a vec3
+    and a float each) and a 24-entry horizon of ints. Box-box pairs add
+    484 B of multi-contact scratch: 4-sided clipping polygons and 3
+    candidate normals. That holds with multi-contact enabled, MuJoCo's
+    default, and no mesh pairs. At 35 iterations a slot is 4,996 B, and
+    5,480 B with box-box pairs.
+    """
+    e = _BOX_BOX_EPA_ITERATIONS if all_convex_box_box else int(ccd_iterations)
+    vertices = (10 + 2 * e) * (_VEC3_BYTES + _SCALAR_BYTES)
+    faces = (6 + _EPA_FACES_PER_ITER * e) * (_SCALAR_BYTES + _VEC3_BYTES + _SCALAR_BYTES)
+    horizon = _EPA_HORIZON * _SCALAR_BYTES
+    total = vertices + faces + horizon
+    if box_box:
+        polygon, degree = 4, 3
+        # Per polygon side: two vec3 in each of the polygon and its clipped
+        # copy, one vec3 in each of the two contact faces, and the side's
+        # plane normal (vec3) and distance (float).
+        total += polygon * (4 * _VEC3_BYTES + 2 * _VEC3_BYTES + _VEC3_BYTES + _SCALAR_BYTES)
+        # Per candidate: two normal indices (ints), two normals and an edge
+        # vertex (vec3 each).
+        total += degree * (2 * _SCALAR_BYTES + 3 * _VEC3_BYTES)
+    return total

@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from humanoid_lab import paths
+from humanoid_lab.envs import base
 from humanoid_lab.envs.joystick import Joystick, default_config
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
@@ -118,3 +119,55 @@ def test_armed_distance_term_refuses_a_robot_without_the_pair():
     toy = paths.REPO_ROOT / "tests" / "data" / "toy_robot"
     with pytest.raises(ValueError, match="ankle_roll"):
         Joystick(toy, "pd_test", cfg)
+
+
+def test_the_flat_hooks_return_the_legacy_values(env):
+    """The hooks a terrain task overrides are identities here: each returns
+    exactly what the inlined code computed before it became a hook."""
+    state = env.reset(jax.random.PRNGKey(0))
+    data = state.data
+    b = env._base_qadr
+
+    assert jp.array_equal(env._base_height(data), data.qpos[b + 2])
+
+    for z, gz in ((0.3, -1.0), (0.7, -1.0), (0.7, 0.0)):
+        posed = data.replace(qpos=data.qpos.at[b + 2].set(z))
+        gravity = jp.array([0.0, 0.0, gz])
+        legacy = (posed.qpos[b + 2] < env._config.fall.min_height) | (
+            gravity[2] > env._config.fall.max_tilt_gz
+        )
+        assert bool(env._fall(posed, gravity)) == bool(legacy)
+
+    key = jax.random.PRNGKey(3)
+    assert jp.array_equal(env._next_command(key, state.info), env._sample_command(key))
+    assert jp.array_equal(
+        env._draw_command(key, env._config.command), env._sample_command(key)
+    )
+
+    npg = env._config.no_progress
+    assert env._no_progress_params(state.info) == (npg.grace_sec, npg.p_max)
+
+    qpos = env._reset_qpos
+    placed, extra = env._place_base(key, qpos)
+    assert placed is qpos and extra == {}
+
+    assert env._settle_model() is env._mj_model
+
+
+def test_the_ccd_budget_reaches_make_data(monkeypatch):
+    """sim.naccdmax_per_env reaches the data builder as its last argument.
+    The default config passes None, so the flat path's data is unchanged."""
+    seen = []
+    real = base.make_data_fn
+
+    def record(*args):
+        seen.append(args)
+        return real(*args)
+
+    monkeypatch.setattr(base, "make_data_fn", record)
+    for naccd in (None, 24):
+        cfg = default_config()
+        cfg.episode_length = 50
+        cfg.sim.naccdmax_per_env = naccd
+        Joystick(ROBOT_DIR, PRESET, cfg)
+    assert [args[-1] for args in seen] == [None, 24]
