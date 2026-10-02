@@ -22,12 +22,17 @@ TRAINING_ONLY (it provably cannot). `check_config_covered` refuses a
 config carrying a key in neither set, and that refusal is the point: a
 new env option with deploy implications gets a contract field and runtime
 support before a policy trained with it can ship. Keys are full dotted
-paths into `envs/joystick.py::default_config()`, one entry per leaf.
+paths into every registered task's default config (`registry.TASKS`), one
+entry per leaf. The terrain task's config is joystick's plus one `terrain`
+block, and every leaf of that block is training-only.
 
 Three properties of the classification, each forced by this env:
 
-- Classification is by LEAF PATH, not by top-level block, so a new key
-  inside an already-classified block still fails the guard.
+- Classification is by LEAF PATH, not by top-level block. A new key
+  inside a ledger block such as `command` still fails the guard. The
+  `reward` and `terrain` blocks are the exceptions. A prefix rule
+  (`TRAINING_ONLY_PREFIXES`) classifies each of them whole as
+  training-only.
 - A policy that observes its gait clock can still ship. This clock is a
   fixed antiphase two-foot clock with a speed-scaled frequency, a closed
   form of ctrl_dt, the command and `gait.freq`, so it ships in `gait_clock`
@@ -49,6 +54,13 @@ from humanoid_lab.envs import progress
 from humanoid_lab.robot.presets import effective_gains
 
 SCHEMA_VERSION = 1
+
+# Tasks whose policies export. The terrain task trains the same actor
+# contract as joystick: the same `obs.state` catalog entries, action mapping
+# and gait clock. A terrain run's contract is built from its flat rebuild
+# (registry.flat_counterpart). The contract's `task` field is provenance,
+# and the runtime does not read it.
+DEPLOYABLE_TASKS = frozenset({"joystick", "terrain"})
 
 # Observations a robot can actually produce. `gyro`/`gravity` come from the
 # IMU, `joint_pos`/`joint_vel` from the encoders, `command` from the
@@ -176,7 +188,13 @@ TRAINING_ONLY_KEYS = frozenset(
 # Rewards shape what the network learned; the network is what ships, and no
 # reward knob is ever consumed by the runtime. A rule instead of one ledger
 # line per scale, so adding a reward term is not a two-file edit.
-TRAINING_ONLY_PREFIXES = ("reward.",)
+#
+# Every `terrain.*` leaf shapes the arena, the spawns, the curriculum, the
+# base-contact termination, the jax contact cap, the command draws off the
+# flat row or the no-progress cut's patience off the flat row. The control
+# loop reads none of them. The command draws are training-only on the
+# condition the pure draws above carry, and build_contract checks it.
+TRAINING_ONLY_PREFIXES = ("reward.", "terrain.")
 
 
 def is_classified(path: str) -> bool:
@@ -219,22 +237,47 @@ def check_config_covered(env_config) -> None:
         )
 
 
+def check_terrain_command_bias(env_config, command) -> None:
+    """Refuse a terrain run whose command bias draws outside `command`'s box.
+
+    `env_config` is a run.json `env_config` block, and `command` is the
+    command config of the env the contract is read off. The terrain env
+    refuses such a bias at construction. A terrain run's contract is read
+    off its flat rebuild, which has no bias, so the check runs here too.
+    """
+    bias = ((env_config.get("terrain") or {}).get("command_bias")) or {}
+    if not bias.get("enable"):
+        return
+    from humanoid_lab.envs.joystick import check_pure_draw_ranges
+    from humanoid_lab.envs.terrain_joystick import bias_command_config
+
+    try:
+        check_pure_draw_ranges(bias_command_config(command, bias))
+    except ValueError as e:
+        raise ValueError(f"terrain.command_bias: {e}") from e
+
+
 def build_contract(env, run: dict, checkpoint: str = "") -> dict:
-    """The `policy_meta.json` dict for a live `Joystick` env.
+    """The `policy_meta.json` dict for a live joystick-family env (a
+    terrain run is rebuilt flat).
 
     `env` is the run's own env, built with its robot, preset and env
-    config, so its resolved state IS the training-time state. `run` is the
+    config, so its resolved state IS the training-time state. A terrain
+    run's env is its flat rebuild: the actor contract is the same, and
+    nothing the contract reads comes from the `terrain` block. `run` is the
     parsed run.json; `checkpoint` the checkpoint directory that ships with
     this contract.
     """
-    check_config_covered(run.get("env_config") or {})
+    env_config = run.get("env_config") or {}
+    check_config_covered(env_config)
 
     task = run.get("task", "joystick")
-    if task != "joystick":
+    if task not in DEPLOYABLE_TASKS:
         raise NotImplementedError(
-            f"the deploy contract is defined for the joystick task only, got "
-            f"'{task}' -- no runtime maps that task's actions to a robot"
+            f"the deploy contract is defined for the tasks {sorted(DEPLOYABLE_TASKS)}, "
+            f"got '{task}' -- no runtime maps that task's actions to a robot"
         )
+    check_terrain_command_bias(env_config, env._config.command)
 
     names = list(env.actor_obs_names)
     undeployable = [n for n in names if n not in DEPLOYABLE_OBS]

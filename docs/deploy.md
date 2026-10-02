@@ -47,20 +47,22 @@ peaks the policy trained with.
 
 ### The key ledger
 
-`CONSUMED_KEYS` and `TRAINING_ONLY_KEYS` classify every leaf key of
-`envs/joystick.py::default_config()`. A consumed key's value reaches the
-robot, directly or through a resolved field. A training-only key cannot.
-Each entry carries a comment saying which and why.
+`CONSUMED_KEYS` and `TRAINING_ONLY_KEYS` classify every leaf key of every
+registered task's default config (`registry.TASKS`). Two prefix rules
+classify whole blocks as training-only: `reward.*` and `terrain.*`. A
+consumed key's value reaches the robot, directly or through a resolved
+field. A training-only key cannot. Each entry carries a comment saying
+which and why.
 
 `check_config_covered(env_config)` raises on a key in neither set, and
 `build_contract` calls it first. A new env option therefore blocks export
 until someone classifies it. `tests/unit/test_deploy_contract.py` walks
-`default_config()` and fails on the same condition, so the block lands at
-commit time rather than at export time.
+every task's `default_config()` and fails on the same condition, so the
+block lands at commit time rather than at export time.
 
-The consumed set is small: `ctrl_dt`, `action_scale`, `reset_keyframe`,
-`obs.state`, `obs.include`, the three command box ranges, and `gait.freq`.
-Everything else shapes training only.
+The consumed set is small: `ctrl_dt`, `reset_keyframe`, `obs.state`, the
+three command box ranges, and `gait.freq`. Everything else shapes training
+only.
 
 Two classifications carry an argument.
 
@@ -80,13 +82,20 @@ under. Setting a fast range above the box is a known way to pull a policy
 past a speed it deadlocks at; a run that wants that here widens `command.vx`
 to match.
 
+The terrain task's `terrain.command_bias` replaces the pure draw
+probabilities off the flat row. It carries the same condition. The terrain
+env checks it at construction. A terrain run's contract is read off its flat
+rebuild. The flat rebuild has no `terrain` block. `build_contract` therefore
+checks the bias in `run.json` again.
+
 ### Refusals
 
 `build_contract` raises on four conditions:
 
 - an env config key in neither ledger set
 - an armed pure command draw outside the trained box
-- a task other than `joystick`
+- a task outside `DEPLOYABLE_TASKS` (joystick, terrain). A terrain run's
+  contract is built from its flat rebuild
 - an actor observation with no source on the robot
 
 The last one is the list in `DEPLOYABLE_OBS`. The IMU gives `gyro` and
@@ -117,6 +126,12 @@ behind: the critic reads privileged observations the robot does not have.
 The export runs on CPU. It builds the run's env through `eval/battery.py`'s
 loader, so the robot, preset, actuator overrides and network shape all come
 from `run.json`, and it steps no physics.
+
+A terrain run is rebuilt as `joystick` on the flat floor, without its
+`terrain` block. Its actor reads the same observations there. The
+contract's `task` field still says `terrain`, as provenance. The export
+refuses a run whose rebuilt actor list differs from the `obs.state` that
+`run.json` records.
 
 ### Both validations run before either file is placed
 

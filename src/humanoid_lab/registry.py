@@ -13,7 +13,7 @@ from typing import NamedTuple
 
 from ml_collections import config_dict
 
-from humanoid_lab import paths
+from humanoid_lab import paths, tasks
 from humanoid_lab.envs.joystick import Joystick
 from humanoid_lab.envs.joystick import default_config as joystick_default_config
 from humanoid_lab.envs.sizing import Sizing
@@ -72,6 +72,34 @@ def env_args_from_config(cfg: Mapping) -> EnvArgs:
         env_overrides=copy.deepcopy(cfg["task"].get("env") or {}),
         actuator_overrides=copy.deepcopy(actuators.get("overrides") or {}),
     )
+
+
+def flat_counterpart(task: str, env_overrides: dict | None) -> tuple[str, dict]:
+    """The task and overrides that rebuild a `task` run on the flat floor.
+
+    A terrain task's config is its flat task's plus one `terrain` block, so
+    its flat rebuild drops that block and keeps every other override. Any
+    other task is its own counterpart. The overrides are copies."""
+    overrides = copy.deepcopy(dict(env_overrides or {}))
+    flat = tasks.FLAT_COUNTERPART.get(task)
+    if flat is None:
+        return task, overrides
+    overrides.pop("terrain", None)
+    return flat, overrides
+
+
+def terrain_counterpart(task: str, env_overrides: dict | None) -> tuple[str, dict]:
+    """The task and overrides that rebuild a `task` run on a terrain arena.
+
+    A joystick or terrain run keeps every override. A joystick run gets the
+    terrain block's defaults. Any other task raises. The overrides are
+    copies."""
+    if task not in tasks.TERRAIN_SOURCE_TASKS:
+        raise ValueError(
+            f"task '{task}' has no terrain counterpart. Tasks that have one: "
+            f"{list(tasks.TERRAIN_SOURCE_TASKS)}"
+        )
+    return tasks.TERRAIN_TASK, copy.deepcopy(dict(env_overrides or {}))
 
 
 def make_env(

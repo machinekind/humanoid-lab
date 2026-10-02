@@ -6,6 +6,11 @@ The env is rebuilt through this repo's env contract (registry.make_env with
 robot_dir/preset_name/task.env read back from run.json's hydra_config,
 mirroring sizing/collect.py's _load_run/make_env_for_run pattern).
 
+A terrain run is measured on its flat counterpart, Joystick on the flat
+floor (registry.flat_counterpart). Every run's battery then scores the same
+scenarios on the same ground, so a terrain run's numbers compare with a
+flat run's.
+
 There is no diagonal or lateral foot-pair correlation, no per-leg-joint-group
 splay or saturation, and no commanded-height concept: those are quadruped
 metrics, and asimov has no height command (see envs/joystick.py's module
@@ -44,6 +49,7 @@ from ml_collections import config_dict
 
 from humanoid_lab import sim_budget
 from humanoid_lab.eval.gait import gait_metrics
+from humanoid_lab.terrain import GENERATOR_VERSION, fingerprint
 
 # -- pure metric functions -------------------------------------------------
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
@@ -462,13 +468,65 @@ def merged_env_overrides(run: dict, extra: dict | None = None) -> dict:
     return overrides
 
 
-def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = None):
+def measurement_env_args(
+    run: dict, extra: dict | None = None, *, flat: bool = True
+) -> tuple[str, dict]:
+    """The task and env overrides the measurement env of `run` is built
+    from: `merged_env_overrides(run, extra)` on the run's counterpart task.
+
+    `flat` rebuilds the run on the flat floor (registry.flat_counterpart).
+    A terrain run becomes Joystick without its `terrain` block, and every
+    other task stays itself. `extra` may not name `terrain` then.
+
+    `flat=False` rebuilds a joystick or terrain run on the terrain task
+    (registry.terrain_counterpart). A joystick run gets the terrain block's
+    defaults. The merge stays one level deep, so a caller that replaces a
+    terrain sub-block, `terrain.arena` say, passes it complete.
+    """
+    from humanoid_lab import registry
+
+    if flat and "terrain" in (extra or {}):
+        raise ValueError(
+            "the extra env overrides name a `terrain` block, and the flat "
+            "rebuild has none. Pass flat=False to measure on a terrain arena"
+        )
+    overrides = merged_env_overrides(run, extra)
+    if flat:
+        return registry.flat_counterpart(run["task"], overrides)
+    return registry.terrain_counterpart(run["task"], overrides)
+
+
+def check_run_arena(env, run: dict) -> None:
+    """Refuse a terrain env whose arena is not the one `run` trained on.
+
+    Applies when run.json records an arena. The env's arena regenerates
+    from the run's own overrides on the current generator and defaults, so
+    a generator or default change since the run builds a different arena.
+    The fingerprint covers the generator version, the params and the
+    generated arrays."""
+    recorded = run.get("arena")
+    if not recorded:
+        return
+    want = (recorded.get("fingerprint"), recorded.get("generator_version"))
+    built = (fingerprint(env._arena), GENERATOR_VERSION)
+    if built != want:
+        raise ValueError(
+            f"run.json records arena {want[0]} from generator version {want[1]}. "
+            f"This checkout builds arena {built[0]} at generator version {built[1]}. "
+            "Pass an explicit terrain.arena, or use a generator at the recorded version"
+        )
+
+
+def load_checkpoint_policy(
+    run_dir: Path, extra_env_overrides: dict | None = None, *, flat: bool = True
+):
     """Load a run's measurement env + latest-checkpoint policy.
 
-    Rebuilds the env exactly as train.py did: registry.make_env with the
-    run's own robot/preset/task from run.json's hydra_config (the same
-    reconstruction sizing/collect.py's make_env_for_run uses), plus the
-    measurement-only overrides in _measurement_env_overrides. The PPO
+    Rebuilds the env through registry.make_env with the run's robot,
+    preset and env overrides from run.json's hydra_config. The task is the
+    counterpart measurement_env_args picks. Under the default flat=True
+    that is the reconstruction sizing/collect.py's make_env_for_run uses.
+    _measurement_env_overrides adds the measurement-only overrides. The PPO
     params come from run.json's own recorded ppo_config verbatim (not a
     replayed build_ppo_params + overrides), matching sizing/collect.py's
     _ppo_params_from_run: the network shape that produced this checkpoint
@@ -477,6 +535,14 @@ def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = Non
     `extra_env_overrides` is merged one level deep over those measurement
     overrides (see merged_env_overrides). The battery never passes it;
     eval/video.py's `--push` does.
+
+    `flat` picks the counterpart task (see measurement_env_args). The
+    default rebuilds a terrain run as Joystick on the flat floor, and
+    leaves a joystick or sizing run as it trained. The rebuild keeps both
+    observation lists. A terrain critic that lists the height scan reads
+    the flat floor's scan, so the critic keeps its width and the checkpoint
+    loads. With `flat=False` the env's arena must be the run's own (see
+    check_run_arena), unless `extra_env_overrides` names `terrain.arena`.
 
     Returns (run, env, ckpt_path, inf) where inf = jax.jit(policy).
     """
@@ -489,8 +555,10 @@ def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = Non
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    env_overrides = merged_env_overrides(run, extra_env_overrides)
-    env = make_env(run["task"], robot_dir, preset_name, env_overrides, actuator_overrides)
+    task, env_overrides = measurement_env_args(run, extra_env_overrides, flat=flat)
+    env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
+    if not flat and "arena" not in ((extra_env_overrides or {}).get("terrain") or {}):
+        check_run_arena(env, run)
 
     ckpt = _find_latest_checkpoint(run, run_dir)
     ppo_params = config_dict.ConfigDict(run["ppo_config"])
@@ -538,7 +606,9 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         rec["vx"].append(float(linvel[0]))
         rec["vy"].append(float(linvel[1]))
         rec["wz"].append(float(gyro[2]))
-        rec["height"].append(float(np.asarray(d.qpos)[env._base_qadr + 2]))
+        # The base above the ground under it. On the flat floor that is the
+        # free joint's z.
+        rec["height"].append(float(np.asarray(env._base_height(d))))
         rec["qvel"].append(np.asarray(d.qvel[env._vadr]))
         rec["contact"].append(contact)
         rec["foot_speed"].append(foot_speed)
@@ -547,9 +617,9 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         # foot_vel is already in hand for foot_speed above, so
         # its z channel costs nothing extra. Both are WORLD frame: clearance
         # is a height above the ground and touchdown speed is how hard the
-        # foot hits it, and the ground does not rotate with the robot. (See
-        # eval/gait.py on what _foot_clearance is referenced to -- the reset
-        # keyframe, not the floor.)
+        # foot hits it, and the ground does not rotate with the robot.
+        # _foot_clearance is the sole's height above the ground under it, so
+        # a planted foot reads about 0 (see eval/gait.py).
         rec["foot_clear"].append(np.asarray(env._foot_clearance(d)))
         rec["foot_vz"].append(foot_vel[:, 2])
         # Setpoint and angle over the actuated joints, for the servo KPI.

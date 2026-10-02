@@ -276,6 +276,33 @@ def test_an_unclassified_env_key_stops_the_export_before_anything_is_written(run
     assert not out_dir.exists()
 
 
+def test_a_flat_run_exports_from_its_own_task(loaded):
+    """The export's loader call rebuilds on the flat counterpart, and a
+    joystick run's counterpart is itself."""
+    assert type(loaded.env) is Joystick
+    assert loaded.meta["task"] == "joystick"
+    assert loaded.env.actor_obs_names == list(loaded.run["env_config"]["obs"]["state"])
+
+
+def test_an_actor_list_other_than_the_trained_one_stops_the_export(run_dir, tmp_path):
+    """run.json records the actor list the network trained on. A rebuild
+    that resolves another order would ship a layout the network never
+    read, at the same width."""
+    run = json.loads((run_dir / "run.json").read_text())
+    trained = list(run["env_config"]["obs"]["state"])
+    run["env_config"]["obs"]["state"] = trained[::-1]
+    reordered = tmp_path / "reordered_run"
+    reordered.mkdir()
+    (reordered / "run.json").write_text(json.dumps(run))
+
+    out_dir = tmp_path / "unreachable"
+    with pytest.raises(ValueError, match="obs.state") as excinfo:
+        export.export_run(reordered, out_dir)
+    assert str(trained) in str(excinfo.value)
+    assert str(trained[::-1]) in str(excinfo.value)
+    assert not out_dir.exists()
+
+
 def test_the_default_destination_is_the_runs_own_deploy_dir(run_dir):
     export.export_run(run_dir)
     assert (run_dir / "deploy" / "policy_meta.json").exists()
