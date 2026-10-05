@@ -47,13 +47,24 @@ task:
       min_height: 0.45
       max_tilt_gz: -0.4
 
+    # EventCfg.push_robot: one push per 10-15 s (500-750 steps), x/y
+    # +-0.5 m/s, z +-0.2 m/s, roll/pitch +-0.52 rad/s, yaw +-0.78 rad/s.
+    # Deltas: our planar kick has a fixed magnitude and uniform direction,
+    # and our kicks add where theirs overwrite.
+    push:
+      interval_steps_range: [500, 750]
+      vel: 0.5
+      vel_z: 0.2
+      ang_vel_rp: 0.52
+      ang_vel_yaw: 0.78
+
     # Partial reward overlay: only the upstream-mapped entries are pinned
     # here. configs/task/joystick.yaml defines no "reward" key (the reward
     # defaults live in envs/joystick.py's default_config()), so this block
     # is the resolved config's only task.env.reward content, and at env
     # construction registry._apply_overrides (make_env, the path train.py
     # uses) deep-merges task.env onto default_config() entry by entry.
-    # Every reward entry not listed here -- tracking_sigma, phase_sigma,
+    # Every reward entry not listed here -- tracking_sigma,
     # torque_limit_frac, and the scales with no same-shape upstream term --
     # keeps its Python default; the not-ported block at the bottom records
     # the upstream values whose shape does not match ours. Weight transfer
@@ -120,18 +131,82 @@ task:
         # differs: theirs is contact on torso/thigh bodies
         # (terminate_contacts_body_names), ours base height/tilt.
         termination: -200.0
+        # RPORewardCfg weights for the terms ported 1:1 (rewards/terms.py).
+        # Name map: dof_pos_limits -> joint_pos_limits, joint_vel_l2 ->
+        # joint_vel, dof_acc_l2 -> joint_acc, body_distance_y ->
+        # feet/knee_distance.
+        pose_l1: -1.0
+        joint_pos_limits: -1.0
+        joint_vel: -2e-4
+        joint_acc: -2.5e-7
+        upward: 0.4
+        feet_distance: 0.1
+        knee_distance: 0.1
+        feet_contact_without_cmd: 0.1
+        # RPORewardCfg.feet_air_time weight (rpo_env_cfg.py,
+        # mdp.feet_air_time_positive_biped). Same shape since the
+        # feet_air_time_biped port: per-step single-stance mode time,
+        # clamped at reward.biped_air_time_threshold (their 0.4 s).
+        # Residual difference: theirs gates on |cmd_xy| > 0.1, ours on the
+        # shared deadband, which counts yaw commands too. roboto_walk_v1
+        # trained without this term and never lifted a foot; the run 2
+        # rationale is in docs/plans/roboto-first-run.md.
+        feet_air_time_biped: 0.25
+        # Our landing-event shape, off for upstream parity: alongside the
+        # per-step term above it would price the same swing twice.
+        feet_air_time: 0.0
+        # Ours, not upstream. Pays each completed swing, at touchdown, for
+        # how close its PEAK clearance came to reward.apex_target.
+        # roboto_walk_v2 earned the air-time terms with millimeter lifts:
+        # rhythmic contact breaks, clearance under 5 mm, because lift-off
+        # and single stance are paid but height is not. 5.0 is the w01-tek
+        # stiff-ladder value for this exact term, where it measured 3-5 cm
+        # swings; the term is sparse (once per landing) so it needs an
+        # order more weight than the per-step terms (run 3,
+        # docs/plans/roboto-first-run.md).
+        feet_apex: 5.0
+        # Upstream has no L2 pose term; pose_l1 is its regularizer. Off to
+        # avoid pricing the deviation twice.
+        pose: 0.0
+      # joint_deviation_l1's groups as one weighted L1 term. scales.pose_l1
+      # carries the torso/arm weight (-1.0); each group here is relative.
+      pose_l1_weights:
+        thigh_yaw: 0.03 # joint_deviation_hip
+        thigh_roll: 0.03
+        thigh_pitch: 0.01 # joint_deviation_legs
+        knee: 0.01
+        ankle_pitch: 0.01
+        ankle_roll: 0.01
+        torso: 1.0 # joint_deviation_torso
+        arm_roll: 1.0
+        arm_yaw: 1.0
+        elbow_pitch: 1.0
+        elbow_yaw: 1.0
+        arm_pitch: 0.06 # joint_deviation_arms
+      # body_distance_y bands (rpo_env_cfg.py), m.
+      feet_distance_range: [0.16, 0.50]
+      knee_distance_range: [0.18, 0.35]
+      # Ours, not upstream (their recipe has no gait clock). The Python
+      # default 0.002 makes feet_phase flat at zero clearance, so a policy
+      # that never lifts sits outside the kernel's gradient; widened so a
+      # partial lift is scored (run 2, docs/plans/roboto-first-run.md).
+      phase_sigma: 0.01
+      # The re-derived value the Python default's comment asks for: this
+      # env's gait clock (gait.swing_height) asks for 0.08 m of swing, and
+      # the 0.05 default is the quadruped's leg, not this one. Keeping
+      # them apart would saturate feet_apex at 62% of the clock's ask
+      # (run 3, docs/plans/roboto-first-run.md).
+      apex_target: 0.08
 
 dr:
   dof:
-    # EventCfg.scale_joint_parameters armature_distribution_params
-    # (base_config.py), operation="scale" -- multiplicative, matching
-    # dr.dof.armature's own semantics. friction_distribution_params is
-    # (1.0, 1.0) upstream (a no-op range), so dr.dof.frictionloss is left
-    # at the base value; upstream has no raw dof_damping randomization
-    # (their only joint-level damping draw is the actuator gain-loop kd in
-    # scale_actuator_gains, mapped to dr.joint_gains.kd_pct below), so
-    # dr.dof.damping is also left at the base value.
-    armature: [0.5, 1.5]
+    # EventCfg.scale_joint_parameters armature scale. (0.8, 1.2) at the
+    # pinned robolab commit; the older snapshot's (0.5, 1.5) is
+    # superseded. Upstream randomizes no dof damping or friction, so both
+    # are pinned to no-op: arming dr.dof draws armature only.
+    armature: [0.8, 1.2]
+    damping: [1.0, 1.0]
+    frictionloss: [1.0, 1.0]
   joint_gains:
     # EventCfg.scale_actuator_gains stiffness/damping_distribution_params
     # (base_config.py), both (0.9, 1.1) = 1 +- 0.1.
@@ -142,17 +217,22 @@ dr:
     # +-0.025 m, z +-0.05 m.
     xy: 0.025
     z: 0.05
+  foot_friction:
+    # EventCfg.physics_material static friction (0.3, 1.6) on a
+    # friction-1.0 floor. Ours multiplies the feet's own 0.9, so
+    # 0.333-1.778 spans the same envelope. Verify on the training box
+    # with ./run.sh check-friction --backend warp.
+    range: [0.333, 1.778]
+  base_mass_add:
+    # EventCfg.add_base_mass (-1, 1) kg on torso_link; ours lands on the
+    # free-joint body. Our base_scale and link_scale draws stay on top.
+    kg: 1.0
 
 # not ported -- either no equivalent switch/term in our reward/DR
 # pipeline, or our term of the same name computes a different shape, so
 # the upstream weight would scale a different quantity. Numbers recorded
 # here so a future reward/DR pass has them in-repo. All from
 # rpo_env_cfg.py's RPORewardCfg or base_config.py's EventCfg unless noted:
-#   feet_air_time (mdp.feet_air_time_positive_biped): weight 0.25,
-#     threshold 0.4 -- shape differs: theirs is a per-step reward of the
-#     current single-stance mode time clamped to the threshold; ours
-#     (terms.feet_air_time) is a per-landing event reward of
-#     (air_time - min_air_time) at first contact.
 #   feet_slide: weight -0.3 -- shape differs: theirs penalizes the linear
 #     norm |v_xy| of each contacting foot; ours (terms.feet_slip) the
 #     squared speed v_xy^2, a different power law.
@@ -162,41 +242,6 @@ dr:
 #     of the zero-command mask, so the weight still does not transfer 1:1.
 #   undesired_contacts: weight -1.0, any non-ankle-roll body contact
 #   feet_force (mdp.body_force): weight -3e-3, threshold 500, max_reward 400
-#   feet_distance (mdp.body_distance_y, ankle_roll bodies): weight 0.1, min 0.16, max 0.50
-#   knee_distance (mdp.body_distance_y, knee bodies): weight 0.1, min 0.18, max 0.35
 #   feet_stumble: weight -1.0
-#   feet_contact_without_cmd: weight 0.1 -- rewards both feet in contact
-#     under zero command; no equivalent term (our zero-command shaping is
-#     the stand_still penalty, a different quantity)
 #   feet_orientation (mdp.body_orientation_l2, ankle_roll bodies): weight -0.1
 #   feet_height: weight 0.2, ankle_height 0.04, threshold 0.02
-#   upward: weight 0.4
-#   dof_pos_limits (mdp.joint_pos_limits): weight -1.0
-#   joint_vel_l2: weight -2e-4
-#   dof_acc_l2 (mdp.joint_acc_l2): weight -2.5e-7
-#   joint_deviation_* (mdp.joint_deviation_l1, per-group L1 deviation
-#     from the default pose): closest analog to our uniform-L2 pose term
-#     (terms.pose), but L1 vs L2 and a four-way per-group weight split,
-#     so no single weight transfers:
-#   joint_deviation_hip (thigh_yaw, thigh_roll): weight -0.03
-#   joint_deviation_torso (torso, arm_roll, arm_yaw, elbow_pitch, elbow_yaw): weight -1.0
-#   joint_deviation_arms (arm_pitch): weight -0.06
-#   joint_deviation_legs (thigh_pitch, knee, ankle_pitch, ankle_roll): weight -0.01
-#   base/link mass DR (EventCfg.add_base_mass, additive -3.0..3.0 kg on
-#     torso_link/base_link; EventCfg.scale_link_mass, multiplicative
-#     0.9-1.1 on left/right *_link): configs/dr/default.yaml has no
-#     base/link-mass switch -- randomize.py applies a fixed, non-config-
-#     exposed base_scale (0.7-1.3) and link_scale (0.9-1.1) unconditionally
-#     to every robot.
-#   push (EventCfg.push_robot): interval_range_s 10.0-15.0 s, velocity_range
-#     x/y +-0.5 m/s, z +-0.2 m/s, roll/pitch +-0.52 rad/s, yaw +-0.78 rad/s.
-#     envs/joystick.py's default_config() has its own push block (enable,
-#     interval_steps=200, vel=0.4 m/s, planar only) but configs/task/
-#     joystick.yaml's env: block does not expose it, so there is no yaml
-#     key to pin this to.
-#   action_scale: RobotCfg.action_scale = 0.25 (also set directly in
-#     RPOFlatEnvCfg.__post_init__). NOT ported: our action scaling is
-#     preset-owned (action_scale_factor in the actuators yaml). See
-#     robots/roboto_origin/actuators/deploy_pd.yaml's existing comment on
-#     why upstream's flat-0.25-rad scheme has no field in our
-#     ActuatorPreset schema.

@@ -12,7 +12,10 @@ License (per upstream): GPL-3.0 for the whole upstream repo, `rpo_description`
 included. The upstream top-level `LICENSE` is copied to `LICENSE` next to this
 file. The upstream training module that the actuator presets cite for gains
 and limits (`modules/roboparty_train/robolab/`) carries its own BSD-3-Clause
-license at that path; nothing from it is vendored.
+license at that path. No file from it is vendored, but several biped reward
+term shapes in `src/humanoid_lab/rewards/terms.py` are ported from its
+`mdp/rewards.py`; its license text is copied here as `robolab-LICENSE` and the
+attribution is in the top-level `NOTICE`.
 
 Vendoring date: 2026-07-15.
 

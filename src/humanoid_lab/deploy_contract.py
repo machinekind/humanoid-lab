@@ -120,7 +120,11 @@ TRAINING_ONLY_KEYS = frozenset(
         # control-loop counterpart.
         "push.enable",
         "push.interval_steps",
+        "push.interval_steps_range",
         "push.vel",
+        "push.vel_z",
+        "push.ang_vel_rp",
+        "push.ang_vel_yaw",
         # Command sampling curriculum: how often a new command is drawn and
         # which corners of the trained box get extra practice. Every draw
         # stays inside command_low/command_high (check_config_covered
@@ -145,6 +149,12 @@ TRAINING_ONLY_KEYS = frozenset(
         "no_progress.ema_sec",
         "no_progress.risk_below",
         "no_progress.p_max",
+        # Left/right mirror augmentation: half the training envs see a
+        # mirrored world and their actions are mirrored back before the
+        # physics. The network that ships reads and drives the real frame
+        # exactly like one trained without it; the robot never mirrors.
+        "symmetry.enable",
+        "symmetry.mirror_prob",
         # Episode termination thresholds. A fall ends a training episode; it
         # does not change the mapping from observation to ctrl. A deploy-side
         # safety cutout is a robot-side decision, not this policy's.

@@ -11,7 +11,9 @@ sync. `CLAUDE.local.md` says where that repo is. Nothing in this directory
 names a scheduler, a host, or a cluster, and nothing here may grow such a
 name.
 
-`train.sh` runs one training. `preflight_sizing.sh` runs bounded slices at
+`train.sh` runs one training. `train_chain.sh` runs two trainings back to
+back through `train.sh`, the second restored from the first's latest
+checkpoint. `preflight_sizing.sh` runs bounded slices at
 several env counts and reports peak GPU memory and steps/s per size, so a
 full-budget launch is sized from measurements. Each script's header documents
 its parameters, their defaults, and a worked example.

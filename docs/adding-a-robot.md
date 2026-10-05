@@ -121,8 +121,11 @@ a joint-group name to per-joint parameters. `effort_limit` is required in
 every group. `kp`, `kd`, `velocity_limit`, `armature`, and `frictionloss`
 are optional. Which ones apply depends on the actuator model.
 `soft_limit_factor` and `action_scale_factor` default to `0.9` and `0.3` if
-omitted. See `docs/configuration.md`'s preset section for how this file
-relates to `configs/actuators/<name>.yaml`.
+omitted. A `pd` preset may set `action_scale_rad` instead: a flat per-joint
+action scale in radians that replaces the `action_scale_factor` formula
+(roboto_origin's `deploy_pd` pins upstream's 0.25). See
+`docs/configuration.md`'s preset section for how this file relates to
+`configs/actuators/<name>.yaml`.
 
 ## 4. Run the build and check gates
 

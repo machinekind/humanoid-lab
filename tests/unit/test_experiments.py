@@ -75,3 +75,174 @@ def test_actuator_preset_rejects_a_typo_d_override_key():
     robot_dir = paths.ROBOTS_DIR / "asimov_v1"
     with pytest.raises(ValueError):
         load_actuator_preset(robot_dir, "sizing_ideal", {"groups": {"knee": {"kp_": 1.0}}})
+
+
+def test_roboto_walk_v5_arms_the_cut_style_package_on_top_of_the_v4_recipe():
+    cfg = _compose(["experiment=roboto_walk_v5"])
+
+    assert cfg.robot.name == "roboto_origin"
+    assert cfg.actuators.name == "deploy_pd"
+    assert cfg.domain_rand is True
+    for field in ("joint_gains", "com_offset", "dof", "foot_friction", "base_mass_add"):
+        assert cfg.dr[field].enable is True, field
+    # No-op decouple: upstream does not randomize effort limits.
+    assert cfg.dr.motor_strength.enable is True
+    assert cfg.dr.motor_strength.range == [1.0, 1.0]
+
+    # rpo_agent_cfg.py values, unchanged from v4.
+    assert cfg.ppo.discounting == 0.994
+    assert cfg.ppo.gae_lambda == 0.9
+    assert cfg.ppo.entropy_cost == 0.005
+    assert cfg.ppo.learning_rate == 1.0e-4
+    assert cfg.ppo.num_timesteps == 1.2e9
+
+    # The cut style package (gate-1 FAIL applied the pre-committed cut):
+    # gait_symmetry armed, energy tripled over the roboto_origin overlay's
+    # ported -1e-4 (the experiment overlay composes after the robot
+    # overlay, so this file must win). knee_stance and the clock change
+    # are gone: no overrides at all, so the env keeps its Python defaults
+    # (knee_stance 0.0 = off, freq 1.0-2.0, threshold 0.4).
+    scales = cfg.task.env.reward.scales
+    assert scales.gait_symmetry == -1.0
+    assert scales.energy == -3.0e-4
+    assert "knee_stance" not in scales
+    assert "gait" not in cfg.task.env
+    assert "biped_air_time_threshold" not in cfg.task.env.reward
+
+
+def _reward_and_ppo_split(experiment):
+    """The composed config as a plain dict, with task.env.reward (and its
+    scales) and ppo popped out of it."""
+    cfg = OmegaConf.to_container(_compose([f"experiment={experiment}"]), resolve=True)
+    reward = cfg["task"]["env"].pop("reward")
+    scales = reward.pop("scales")
+    return cfg, reward, scales, cfg.pop("ppo")
+
+
+def test_yolo_income_long_is_yolo_chain_income_b_with_feet_apex_doubled():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_income_long")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_chain_income_b")
+
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales.pop("feet_apex") == 10.0
+    assert base_scales.pop("feet_apex") == 5.0
+    assert ours_scales == base_scales
+    assert ours_scales["gait_symmetry_income"] == 0.5
+    assert ours_scales["energy"] == -3.0e-4
+    # The term clips at the target; the overlay's 0.08 stays.
+    assert ours_reward["apex_target"] == 0.08
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.5e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+    assert ours_ppo["num_evals"] == 24
+
+
+SMOOTHNESS_SCALES = {
+    "action_rate": -0.05,
+    "action_accel": -0.05,
+    "torque_rate": -3.0e-4,
+    "joint_acc": -7.5e-7,
+}
+
+
+def test_yolo_income_smooth_is_yolo_income_long_plus_the_smoothness_package():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_income_smooth")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_long")
+
+    assert ours == base
+    assert ours_reward.pop("stand_still_vel_weight") == 0.5
+    assert "stand_still_vel_weight" not in base_reward
+    assert ours_reward == base_reward
+    for key, value in SMOOTHNESS_SCALES.items():
+        assert ours_scales.pop(key) == pytest.approx(value), key
+        assert base_scales.pop(key, 0.0) != pytest.approx(value), key
+    assert ours_scales == base_scales
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.0e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+def test_yolo_income_smooth_reaches_the_env_config():
+    cfg = _compose(["experiment=yolo_income_smooth"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.reward.stand_still_vel_weight == 0.2
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.reward.stand_still_vel_weight == 0.5
+    for key, value in SMOOTHNESS_SCALES.items():
+        assert env_cfg.reward.scales[key] == pytest.approx(value), key
+    assert env_cfg.reward.scales.feet_apex == 10.0
+
+
+def test_yolo_apex_min_is_yolo_income_sym_with_feet_apex_swapped_for_feet_apex_min():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_apex_min")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_sym")
+
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_ppo == base_ppo
+    assert ours_scales.pop("feet_apex") == 0.0
+    assert base_scales.pop("feet_apex") == 10.0
+    assert ours_scales.pop("feet_apex_min") == 10.0
+    assert base_scales.pop("feet_apex_min", 0.0) == 0.0
+    assert ours_scales == base_scales
+
+
+def test_yolo_apex_min_reaches_the_env_config():
+    cfg = _compose(["experiment=yolo_apex_min"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.reward.scales.feet_apex_min == 0.0
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.reward.scales.feet_apex_min == 10.0
+    assert env_cfg.reward.scales.feet_apex == 0.0
+
+
+MIRROR_BLOCK = {"enable": True, "mirror_prob": 0.5}
+
+
+def test_yolo_mirror_is_yolo_income_long_plus_the_mirror_augmentation():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_mirror")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_income_long")
+
+    assert ours["task"]["env"].pop("symmetry") == MIRROR_BLOCK
+    assert "symmetry" not in base["task"]["env"]
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales == base_scales
+    assert ours_scales["gait_symmetry_income"] == 0.5
+    assert ours_scales["energy"] == -3.0e-4
+    assert ours_scales["feet_apex"] == 10.0
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.0e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+def test_yolo_v4_mirror_is_yolo_v4_plus_the_mirror_augmentation():
+    ours, ours_reward, ours_scales, ours_ppo = _reward_and_ppo_split("yolo_v4_mirror")
+    base, base_reward, base_scales, base_ppo = _reward_and_ppo_split("yolo_v4")
+
+    assert ours["task"]["env"].pop("symmetry") == MIRROR_BLOCK
+    assert "symmetry" not in base["task"]["env"]
+    assert ours == base
+    assert ours_reward == base_reward
+    assert ours_scales == base_scales
+
+    assert ours_ppo.pop("num_timesteps") == pytest.approx(1.5e9)
+    base_ppo.pop("num_timesteps")
+    assert ours_ppo == base_ppo
+
+
+@pytest.mark.parametrize("experiment", ["yolo_mirror", "yolo_v4_mirror"])
+def test_the_mirror_presets_reach_the_env_config(experiment):
+    cfg = _compose([f"experiment={experiment}"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    assert env_cfg.symmetry.enable is False
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    assert env_cfg.symmetry.enable is True
+    assert env_cfg.symmetry.mirror_prob == 0.5

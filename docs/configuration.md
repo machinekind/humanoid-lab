@@ -201,7 +201,10 @@ starts with no presets and must write its own.
 A preset also picks the actuator model. Implemented models are `pd` and
 `ideal_torque`. `dc_motor_speed_saturation` and `delayed` are registered but
 raise `NotImplementedError`. A `pd` preset also sets `soft_limit_factor` and
-`action_scale_factor`. See `src/humanoid_lab/robot/presets.py` for the full
+`action_scale_factor`, or a flat `action_scale_rad` (radians per unit
+action, every joint the same) that replaces the factor formula. Non-pd
+models ignore both scale fields. roboto_origin's `deploy_pd` pins
+upstream's 0.25 rad. See `src/humanoid_lab/robot/presets.py` for the full
 field contract.
 
 `load_actuator_preset` (`src/humanoid_lab/robot/presets.py`) deep-merges
@@ -242,7 +245,7 @@ exactly.
 | `tracking_rel_floor_ang` | `0.4` | Floor on the angular relative denominator, rad/s. Same role; on terrain this had to widen to `0.7`. |
 | `tracking_far_weight` | `0.0` | Mix a wide exponential into both kernels: `(1-w)*kernel + w*exp(-err²/tracking_far_sigma)`. Applies in the absolute and the relative branch alike, and the far kernel stays absolute in both. `exp(-err²/σ)` is gradient-free a few sigma out, so a capability the policy never explored gets no pull toward the command; the wide kernel keeps a usable gradient at range without moving the optimum or leaving `[0, 1]`. **This term alone creates a standing deadlock**: at a yaw rate error of 0.8 rad/s it pays `0.25*exp(-0.64/2.5)`, about 19% of the maximum angular reward, for standing still, and that gradient is weaker than the penalties a pivot attempt incurs. Turn it on only together with `tracking_product` or `tracking_relative`. |
 | `tracking_far_sigma` | `2.5` | Width of the far kernel, in (m/s)² and (rad/s)². Ten times `tracking_sigma`. |
-| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which has made stand-and-lift the top income under a command on a quadruped run: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time` and `feet_apex`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
+| `shaping_tracking_gate` | `false` | Multiply the positive gait-shaping terms by the linear tracking kernel, post-product when `tracking_product` is on. Those terms otherwise pay on a commanded env whether or not it translates, which has made stand-and-lift the top income under a command on a quadruped run: standing with one leg raised earned about 1.8 reward per step against honest walking's 0.25. Gated set: `feet_air_time`, `feet_apex` and `feet_apex_min`. `feet_phase` stays ungated — it is the clock-following gradient and has to survive at zero tracking, because stepping is how tracking starts. Stand-still penalties keep their `~moving` mask and are untouched. |
 
 ## Orientation tolerance cone (`task.env.reward`)
 
@@ -294,6 +297,7 @@ failing, which is when feet are being slammed into the floor.
 | Key | Default | Meaning |
 |---|---:|---|
 | `scales.feet_apex` | `0.0` | Weight of the per-swing apex reward. `0` = off. |
+| `scales.feet_apex_min` | `0.0` | Weight of the two-foot apex reward: each landing pays `clip(min(own peak, other foot's last completed peak) / apex_target, 0, 1)`, so a one-leg gait earns nothing from its lifting leg. Needs exactly two feet. `0` = off, and then no `reward/feet_apex_min` metric exists. In the `shaping_tracking_gate` set. |
 | `scales.feet_landing` | `0.0` | Weight of the soft-landing penalty (negative when on). `0` = off. |
 | `apex_target` | `0.05` | Swing peak the apex reward asks for, m. Clipped at: the term prices reaching the target, not exceeding it. **Re-derive for this leg** — a quadruped starting value, and our own `gait.swing_height` asks for 0.08 m. |
 | `glide_height` | `0.03` | Height band the landing penalty acts in, m. **Re-derive** with `apex_target`. |
@@ -301,6 +305,20 @@ failing, which is when feet are being slammed into the floor.
 `reward.stand_still_vel_weight` (default `0.2`) sets stand_still's
 velocity-damping share against a position share of 1; only the ratio
 matters, since `scales.stand_still` prices the sum.
+
+**Ported robolab terms** (`rewards/terms.py`; same shapes as upstream, so
+the upstream weights transfer): `scales.pose_l1` with
+`reward.pose_l1_weights` (a joint_group -> weight map, `null` = 1.0 for
+every joint), `scales.joint_pos_limits`, `scales.joint_vel`,
+`scales.joint_acc`, `scales.upward`, `scales.feet_distance` /
+`scales.knee_distance` with `feet_distance_range` / `knee_distance_range`
+(m, base frame), and `scales.feet_contact_without_cmd`. All default to
+`0.0` (off). `configs/robot/roboto_origin.yaml` pins the upstream weights.
+
+`task.env.push` has three optional knobs on top of the planar kick:
+`interval_steps_range` (random gap to the next push, steps), `vel_z`
+(vertical kick, m/s), and `ang_vel_rp` / `ang_vel_yaw` (angular kicks,
+rad/s). Off, the legacy fixed schedule is bit-identical.
 
 ## Settled pose anchor (`task.env.real_pose_ref`)
 
@@ -431,6 +449,28 @@ carrying the counter over would re-arm the cut on the respawn's first step,
 so the counter is zeroed too. Any other wrapper that restarts an episode in
 place owns the same reseed.
 
+## Mirror augmentation (`task.env.symmetry`)
+
+Off by default. When on, each env draws a flag at reset with probability
+`mirror_prob`, and a flagged env presents the policy a world mirrored about
+the body xz-plane: both observation vectors are mirrored on the way out and
+the action is mirrored back on the way in. Physics, rewards and termination
+stay in the real frame, so one policy has to walk both chiralities. Under
+the trainer's `BraxAutoResetWrapper(full_reset=False)` the flag lives in
+`info`, which survives every respawn, so it holds per env for the whole run.
+
+The maps are in `src/humanoid_lab/envs/symmetry.py`: left/right twins swap,
+and each joint's sign comes from its MJCF axis (the module docstring holds
+the derivation table). Signs exist for `roboto_origin` only; any other robot
+refuses at construction. The battery, eval video and export envs force
+`enable` off (`eval/battery.py`), and the key is training-only in the deploy
+contract.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `enable` | `false` | Off changes nothing: no info key, no RNG key split, no trace change, so a rollout stays bit-exact (`tests/integration/test_golden_baseline.py`). |
+| `mirror_prob` | `0.5` | Fraction of envs that present the mirrored world. |
+
 ## Pure command draws (`task.env.command`)
 
 The command sampler draws `(vx, vy, wz)` from one uniform box. That box
@@ -502,6 +542,7 @@ randomization on top, gated by its own `enable`.
 | `dr.dof` | `damping`, `armature`, `frictionloss` (multiplicative) | `[0.9, 1.1]` each |
 | `dr.foot_friction` | `range` (multiplicative, per foot geom) | `[0.8, 1.2]` |
 | `dr.motor_strength` | `range` (multiplicative, per actuator forcerange) | `[0.5, 1.1]` |
+| `dr.base_mass_add` | `kg` (additive, +-kg on the base body) | `1.0` |
 
 **Friction draws and MuJoCo's combine rule.** Two equal-priority geoms
 contact at the element-wise **max** of their frictions. So while
@@ -520,7 +561,7 @@ host before trusting a slip-randomized training run to warp.
 distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
 above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
 own — `1 joint_gains, 2 com_offset, 3 dof, 4 foot_friction, 5
-motor_strength`, fixed. The `0x100` offset is the same load-bearing constant
+motor_strength, 6 base_mass_add`, fixed. The `0x100` offset is the same load-bearing constant
 as the pure command draws use, for the same reason: `fold_in(key, i)` is
 bit-identical to `split(key, n)[i]` for every `i < n`, so a raw table index
 keys off one of the five base keys. Before the offset landed, `com_offset`
@@ -823,7 +864,7 @@ Read from `run.sh` as it stands today:
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
-| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH]`. Writes `<run>/battery.json` unless `--out` says otherwise. |
+| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--set BLOCK.KEY=VALUE ...]`. Writes `<run>/battery.json` unless `--out` says otherwise. `--set` re-scores the checkpoint under a changed `task.env` value (e.g. `obs_noise.joint_vel=1.75`), merged one level deep over the measurement env; VALUE is read as YAML. It requires an `--out` other than `<run>/battery.json`, so a re-scored variant never overwrites the run's own table, and the variant records the overrides under `env_overrides`. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
 | `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
 | `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |

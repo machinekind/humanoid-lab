@@ -1,0 +1,49 @@
+# @package _global_
+# The walking recipe (yolo_v4) with brax's adaptive-KL learning-rate
+# schedule, desired_kl 0.01 and clip 0.2, in place of the fixed 1e-4 step.
+# Hypothesis: a KL-controlled step size leaves the early flat phase faster
+# and refines late, so the run reaches the fixed-LR final reward well
+# inside the budget, and its training/learning_rate trace says whether
+# 1e-4 was too large, too small or right.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  - override /actuators: deploy_pd
+  - override /network: large
+
+domain_rand: true
+
+dr:
+  joint_gains: { enable: true }
+  com_offset: { enable: true }
+  dof: { enable: true }
+  foot_friction: { enable: true }
+  base_mass_add: { enable: true }
+  # Decouple forcerange from the gain draw with a no-op range: upstream
+  # does not randomize effort limits.
+  motor_strength: { enable: true, range: [1.0, 1.0] }
+
+# RSL-RL BaseAgentCfg values (rpo_agent_cfg.py), including its step-size
+# policy. Under ADAPTIVE_KL brax rescales the LR after every minibatch:
+# /1.5 when kl_mean > 2*desired_kl, *1.5 when kl_mean < desired_kl/2,
+# clamped to [min_lr, max_lr]; learning_rate is only the initial value.
+# max_lr 3e-3 (brax default 1e-2): the controller reaches it from 1e-4 in
+# 9 minibatch steps, so a higher cap only buys a larger overshoot while
+# the early critic loss makes KL transiently small. max_grad_norm 1.0 stays
+# from the playground config. Do not set bootstrap_on_timeout: it reads
+# state.info['time_out'], which neither brax's EpisodeWrapper nor
+# playground's wrap_for_brax_training populates.
+# num_envs and batch come from jobs/train.sh. num_evals sets the
+# checkpoint cadence: brax saves one at every eval.
+ppo:
+  discounting: 0.994
+  gae_lambda: 0.9
+  entropy_cost: 0.005
+  learning_rate: 1.0e-4
+  learning_rate_schedule: ADAPTIVE_KL
+  desired_kl: 0.01
+  learning_rate_schedule_min_lr: 1.0e-5
+  learning_rate_schedule_max_lr: 3.0e-3
+  clipping_epsilon: 0.2
+  num_timesteps: 1.0e9
+  num_evals: 24
