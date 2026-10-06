@@ -1071,8 +1071,8 @@ incomplete save, and the runner refuses it. The runner needs the run's
 run.json. train.py writes it when training returns or stops early. A
 training that is still running, or was killed before that, has none, and the
 runner exits 1. A run.json written after a kill, by whatever ran the
-training, makes the run measurable. The newest complete checkpoint is then
-measured. No run status gates the measurement.
+training, makes the run measurable. Its newest checkpoint is then measured.
+No run status gates the measurement.
 
 Exit codes:
 
@@ -1211,6 +1211,89 @@ the four seed bases and two reruns of base 0.
 
 Asimov's cost is not measured here. `perf` in the JSON records these numbers
 for every run.
+
+### When it runs
+
+Every trained run gets `courses.json`, along with `battery.json` and
+`eval_report.md`. `jobs/eval_runs.sh` runs all three on CPU for the runs named
+in `RUNS`. `jobs/README.md` states its contract. Three layers make sure no
+model is missed.
+
+| Layer | Measures | Cannot measure |
+|---|---|---|
+| `jobs/train.sh`'s eval stage | every training whose payload outlives the training call, whatever the call's exit code | a payload killed with its process group, `./run.sh train`, runs that predate the stage |
+| `RUNS=<runs> ./jobs/eval_runs.sh`, run by the caller after every training payload ends, for each run it trained (both phases of a chain) | killed and crashed runs, once they have a run.json | a run dir with checkpoints and no run.json |
+| `RUNS=all CHECK=true ./jobs/eval_runs.sh` | nothing: it lists every run whose `courses.json` is missing or not current, every `battery.json` not for its run's newest checkpoint, and every run dir with checkpoints but no run.json. It exits 1 when it lists any. | |
+
+A deadline stop kills the payload with its process group. Only the caller
+can measure that run. `train.py` installs no signal handler, so a SIGTERM
+ends the trainer without a run.json. The caller then writes one, and the run
+becomes measurable.
+
+**The stage.** With `EVAL=true`, the default, `jobs/train.sh` measures its
+run once the training call returns. The resolved config's `run_name` names
+the run. That name must be one dir name under `runs/`: no `/`, no
+whitespace, not `all`, `.` or `..`. `jobs/train.sh` refuses any other before
+the training starts, whatever `EVAL` is. Without a name, the stage takes the
+run.json this training wrote. The stage always writes the run's own
+canonical files and recomputes them even when they are current.
+`EVAL_TIMEOUT` bounds it: 1800 s by default, 0 for no bound. The bound needs
+GNU `timeout` on PATH. Without it the stage runs unbounded and prints a
+note. `EVAL_WORKERS` sets the stage's course lanes.
+A SIGTERM or SIGKILL to the payload's process group during the stage ends
+the stage too. No eval outlives the payload. `EVAL=false` skips the stage.
+
+**Exit 75.** A training that exits nonzero keeps its exit code. When the
+training exits 0 and its evals then fail or time out, `jobs/train.sh` exits
+75, sysexits' EX_TEMPFAIL. Python and Hydra never exit with 75 on their own,
+so it never reads as a training code. It means the run and its checkpoints
+are complete and only the measurement is missing.
+`RUNS=<run> ./jobs/eval_runs.sh` completes it. `jobs/train_chain.sh` still
+starts phase B after a phase A that exited 75. When phase B then succeeds,
+the chain exits 75 and names phase A's run.
+
+**What is measurable.** A run is measurable when it has a run.json and its
+newest numeric step dir holds `ppo_network_config.json`. train.py writes
+run.json only when training returns or stops early. A training that is still
+running therefore has none and is SKIPPED. A killed training becomes
+measurable once the caller writes its run.json. It is then measured on its
+newest checkpoint. No run status gates the measurement. A run whose newest
+checkpoint is incomplete is SKIPPED, and the pass exits 1.
+
+**The audit and backfill.** `RUNS=all CHECK=true` runs no eval. It lists
+every run whose `courses.json` is missing or not current, every
+`battery.json` that is not for its run's newest checkpoint, and every run dir
+with checkpoints but no run.json. The audit does not read
+`eval_report.md`. Every pass re-renders it from `courses.json` and
+`battery.json`, so `RUNS=<run> ./jobs/eval_runs.sh` restores a missing or
+stale report. `RUNS=all ./jobs/eval_runs.sh` measures every run that lacks
+current results and skips the rest, so it is safe to re-run. After a
+catalogue change every `courses.json` fails the fingerprint check, and the
+same command recomputes them.
+
+A replicate at another seed base goes in
+`runs/<run>/eval/<TAG>/courses.json`, next to the run's own `courses.json`.
+This command writes 8 seeds from seed 8 to
+`runs/<run>/eval/seeds8/courses.json`:
+
+```bash
+RUNS=<run> SEED_BASE=8 TAG=seeds8 EVALS=courses ./jobs/eval_runs.sh
+```
+
+A row's noise band needs replicates at seed bases 8, 16 and 24, each with
+its own TAG. The band is the sample SD across those three files and the
+run's own file. Nothing computes it. One replicate against the run's own
+file is a single draw, not a band.
+
+**Cost inside a job.** The stage runs on the training host's CPUs while its
+GPUs idle. On the 10-core M2 Pro above, one pass over the `yolo_v4` run took
+117 s: courses 63 s, the battery 53 s and the report 1 s. A pass that finds
+every file current took 1 s. A training host's CPUs were not measured. One
+training host trained at about 93k env-steps/s with 4096 envs. A 1e9-step run
+takes about 3 h there, and a 117 s stage adds about 1%. At the 0.78-1.34M
+steps/s in CLAUDE.md's facts, the same run takes 12-21 min, and the stage
+adds 9-16%. `EVAL=false`, with the caller's `eval_runs.sh` on a CPU host,
+moves that cost off the GPUs.
 
 ### Changing the catalogue
 

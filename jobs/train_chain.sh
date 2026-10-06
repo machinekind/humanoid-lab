@@ -18,7 +18,8 @@
 # Parameters:
 #   ROBOT               robot config                (REQUIRED, e.g. roboto_origin)
 #   RUN_NAME            phase B's run dir under runs/ (REQUIRED); phase A
-#                       runs as ${RUN_NAME}_a
+#                       runs as ${RUN_NAME}_a. One dir name: no '/', no
+#                       whitespace, not all, '.' or '..'
 #   PHASE_A_EXPERIMENT  hydra experiment preset for phase A (REQUIRED)
 #   PHASE_B_EXPERIMENT  hydra experiment preset for phase B (REQUIRED)
 #   PHASE_A_STEPS       phase A ppo.num_timesteps   (default 5.0e8)
@@ -32,6 +33,23 @@
 #                       separated, applied after the budget and restore keys
 #                       so they win
 #   TASK                task config, both phases    (default joystick)
+#   EVAL                jobs/train.sh's eval stage, both phases; each
+#                       phase reads it from the environment (default true)
+#   EVAL_TIMEOUT        the stage's bound in seconds, both phases, read the
+#                       same way (default 1800)
+#   EVAL_WORKERS        the stage's course lanes at once, both phases, read
+#                       the same way (default the courses CLI's: min(8, CPUs))
+#
+# Each phase's jobs/train.sh measures the run it trained (EVAL), so both
+# phases get courses.json, battery.json and eval_report.md. A phase that
+# trained but whose evals failed exits 75 from jobs/train.sh. For phase A
+# that still counts as trained, so the rules below decide on its run.json as
+# they would after an exit 0. When phase B then exits 0, the chain exits 75
+# and names phase A's run: RUNS=${RUN_NAME}_a ./jobs/eval_runs.sh measures
+# it. A SIGTERM to the process group ends the chain and any eval stage it
+# is running. The caller then runs
+# RUNS="${RUN_NAME}_a ${RUN_NAME}" ./jobs/eval_runs.sh and names only the
+# run dirs that exist.
 #
 # A chain:
 #   ROBOT=roboto_origin ACTUATORS=deploy_pd SEED=0 NUM_ENVS=4096 BATCH=128 \
@@ -57,21 +75,20 @@
 # started, with early_stopped false, or with stopped_at_steps at or past
 # num_timesteps. Whatever phase A's exit code, the chain decides on that
 # file:
-#   - No fresh run.json (SIGKILL, OOM, a crash before training returned):
+#   - No fresh run.json (a signal, OOM, a crash before training returned):
 #     phase B does not run; the chain exits with phase A's code, or 1 if
-#     that code was 0.
+#     that code was 0 or 75. train.py installs no signal handler, so a
+#     SIGTERM aimed at the trainer alone ends it without a run.json, and
+#     phase B never starts.
 #   - A fresh run.json cut short of its budget: phase B does not run; the
-#     chain exits with phase A's code, or 143 if that code was 0. train.py
-#     turns a SIGTERM to the trainer into an early stop: it writes run.json
-#     from the last eval and exits 0. With early_stop.enable off (the
-#     default) that is the only way run.json reads early_stopped, so a
-#     deadline or grace signal aimed at the trainer alone never starts
-#     phase B. With early_stop.enable on, a plateau stop reads the same and
-#     also ends the chain here.
+#     chain exits with phase A's code, or 143 if that code was 0 or 75.
+#     train.py writes such a run.json only after a plateau stop, which
+#     needs early_stop.enable on (off by default).
 #   - A full-budget run.json and a nonzero exit (a crash at interpreter
-#     exit, wandb or GPU teardown): phase B runs.
+#     exit, wandb or GPU teardown, or 75 from failed evals): phase B runs.
 #   - A full-budget run.json but no complete checkpoint: the chain exits 1.
-# Otherwise the chain exits with phase B's code. A SIGTERM to this script's
+# Otherwise the chain exits with phase B's code, or with 75 when phase B
+# exits 0 and phase A's evals failed. A SIGTERM to this script's
 # process group stops this bash as well, so no phase starts after it.
 # Phase A's run dir and checkpoints stay in place in every case.
 
@@ -96,6 +113,15 @@ fi
 : "${EXTRA_ARGS:=}"
 
 : "${TASK:=joystick}"
+
+# jobs/train.sh refuses a run_name jobs/eval_runs.sh cannot address. Phase
+# A's name can pass where phase B's fails (all_a and all), so RUN_NAME is
+# checked before phase A spends its budget.
+case "$RUN_NAME" in
+    all | . | .. | */* | *[[:space:]]*)
+        echo "ERROR: RUN_NAME '$RUN_NAME' must be one dir name under runs/: no '/', no whitespace, not all, '.' or '..'" >&2
+        exit 1 ;;
+esac
 
 RUN_A="${RUN_NAME}_a"
 CKPT_DIR_A="runs/$RUN_A/checkpoints"
@@ -185,10 +211,15 @@ echo "== chain phase A: run_name=$RUN_A experiment=$PHASE_A_EXPERIMENT steps=$PH
 rc_a=0
 run_phase "$RUN_A" "$PHASE_A_EXPERIMENT" \
     "++ppo.num_timesteps=$PHASE_A_STEPS $EXTRA_ARGS" || rc_a=$?
-# fail_a <code if phase A exited 0> <message>
+# jobs/train.sh's 75: phase A trained, and only its evals failed.
+eval_missing_a=0
+if [ "$rc_a" -eq 75 ]; then
+    eval_missing_a=1
+fi
+# fail_a <code if phase A exited 0 or 75> <message>
 fail_a() {
     echo "ERROR: phase A ($RUN_A) exited rc=$rc_a $2; phase B ($RUN_NAME) not started" >&2
-    if [ "$rc_a" -ne 0 ]; then
+    if [ "$rc_a" -ne 0 ] && [ "$eval_missing_a" -eq 0 ]; then
         exit "$rc_a"
     fi
     exit "$1"
@@ -202,9 +233,11 @@ if ! budget="$(run_json_budget "$RUN_JSON_A")"; then
 fi
 read -r early_stopped stopped_at budget_steps <<<"$budget"
 if [ "$early_stopped" = 1 ] && [ "$stopped_at" -lt "$budget_steps" ]; then
-    fail_a 143 "after an early stop at $stopped_at of $budget_steps steps (a SIGTERM to the trainer, or a plateau stop with early_stop.enable on)"
+    fail_a 143 "after an early stop at $stopped_at of $budget_steps steps (a plateau stop with early_stop.enable on)"
 fi
-if [ "$rc_a" -ne 0 ]; then
+if [ "$eval_missing_a" -eq 1 ]; then
+    echo "WARNING: phase A ($RUN_A) trained its full budget but its evals failed (rc=75); continuing to phase B" >&2
+elif [ "$rc_a" -ne 0 ]; then
     echo "WARNING: phase A ($RUN_A) exited rc=$rc_a after writing a full-budget $RUN_JSON_A; training finished, continuing to phase B" >&2
 fi
 
@@ -218,4 +251,10 @@ rc_b=0
 run_phase "$RUN_NAME" "$PHASE_B_EXPERIMENT" \
     "restore=$ckpt ++ppo.num_timesteps=$PHASE_B_STEPS $EXTRA_ARGS" || rc_b=$?
 echo "== chain done: phase A rc=$rc_a, phase B rc=$rc_b =="
+if [ "$eval_missing_a" -eq 1 ]; then
+    echo "ERROR: phase A ($RUN_A) trained but is not measured. RUNS=$RUN_A ./jobs/eval_runs.sh measures it" >&2
+    if [ "$rc_b" -eq 0 ]; then
+        exit 75
+    fi
+fi
 exit "$rc_b"
