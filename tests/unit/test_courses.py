@@ -1093,6 +1093,33 @@ def test_outcomes_are_decided_in_order():
     assert scoring.OUTCOMES == ("nonfinite", "settle_fell", "fell", "completed", "timed_out")
 
 
+def test_a_lanes_stop_flags_become_its_seed_entry():
+    def seed(steps, **flags):
+        base = {"nonfinite": False, "settle_fell": False, "fell": False, "reached": False}
+        # numpy scalars, as a lane's outputs read on the host.
+        out = SimpleNamespace(
+            steps=np.int32(steps), settle_height=np.float32(0.75), yaw_rad=np.float32(0.5),
+            **{k: np.bool_(v) for k, v in {**base, **flags}.items()},
+        )
+        return scoring.seed_out(out, 3)
+
+    def stop(steps, **flags):
+        s = seed(steps, **flags)
+        return s["outcome"], s["steps"], s["fell_at"]
+
+    # A course fall stopped on the step that tripped `done`, the last counted one.
+    assert stop(25, fell=True) == ("fell", 25, 24)
+    assert stop(0, settle_fell=True, fell=True) == ("settle_fell", 0, 0)
+    assert stop(0, nonfinite=True) == ("nonfinite", 0, None)
+    assert stop(7, nonfinite=True, fell=True) == ("nonfinite", 7, None)
+    assert stop(40, reached=True) == ("completed", 40, None)
+    assert stop(100) == ("timed_out", 100, None)
+    # Plain Python values, ready for the JSON writer.
+    assert seed(100) == {"seed": 3, "outcome": "timed_out", "steps": 100, "fell_at": None,
+                         "settle_height_m": 0.75, "yaw_rad": 0.5}
+    assert {type(v) for v in seed(100).values()} == {int, str, type(None), float}
+
+
 def test_speed_counts_only_where_motion_was_commanded():
     rec = _rec()
     rec["cmd"][:300, 0] = 0.0  # a pivot: the spin branch commands vx = 0
@@ -1152,9 +1179,10 @@ def test_spin_axes_score_a_right_spin_by_magnitude():
     r = _spin(left, _spin_rec(wz_cmd=left.wz, wz_err=left.wz))
     assert set(r["subscores"]) == set(SPIN_AXES)
     assert r["subscores"]["rotation"] == 1.0
-    r = _spin(right, _spin_rec(wz_cmd=right.wz, wz_err=abs(right.wz) / 10), yaw_rad=-2 * math.pi)
+    # A completed right spin made +2 pi of progress in its own direction.
+    r = _spin(right, _spin_rec(wz_cmd=right.wz, wz_err=abs(right.wz) / 10), yaw_rad=2 * math.pi)
     assert r["subscores"]["rotation"] == pytest.approx(10.0)
-    assert r["score"] > 0 and r["progress_rad"] == pytest.approx(-2 * math.pi, abs=1e-3)
+    assert r["score"] > 0 and r["progress_rad"] == pytest.approx(2 * math.pi, abs=1e-3)
     assert "progress_m" not in r and r["gait"] is None
     r = _spin(left, _spin_rec(wz_cmd=left.wz, drift=ROBOTO.stance_halfwidth_m))
     assert r["subscores"]["drift"] == 1.0 and r["binding"] == "drift"

@@ -74,6 +74,33 @@ def outcome(*, nonfinite: bool, settle_fell: bool, fell: bool, reached: bool) ->
     return "completed" if reached else "timed_out"
 
 
+def seed_out(out, seed: int) -> dict:
+    """A lane's stop flags as the mapping seed_result reads, in plain Python
+    values.
+
+    `out` is any object with the attributes `steps`, `nonfinite`,
+    `settle_fell`, `fell`, `reached`, `settle_height` and `yaw_rad`, as
+    lane.LaneOut has them. `fell_at` is 0 on a settle fall. On a course fall
+    it is `steps - 1`, the index of the step that tripped `done`. Otherwise
+    it is None."""
+    steps = int(out.steps)
+    result = outcome(
+        nonfinite=bool(out.nonfinite),
+        settle_fell=bool(out.settle_fell),
+        fell=bool(out.fell),
+        reached=bool(out.reached),
+    )
+    fell_at = {"settle_fell": 0, "fell": steps - 1}.get(result)
+    return {
+        "seed": seed,
+        "outcome": result,
+        "steps": steps,
+        "fell_at": fell_at,
+        "settle_height_m": float(out.settle_height),
+        "yaw_rad": float(out.yaw_rad),
+    }
+
+
 def _ratio(reference, error) -> float:
     """`reference / error`, capped at SUBSCORE_CAP and rounded to 3 decimals.
 
@@ -209,10 +236,10 @@ def spin_seed_result(rec: Mapping, out: Mapping, dt: float, course: SpinCourse,
                      params: CourseParams) -> dict:
     """One (spin row, seed) entry.
 
-    `out` is as for path_seed_result plus `yaw_rad`, the signed world-yaw
-    progress that gated completion. The rotation error runs over every
-    recorded step, the spin-up from stand included: executing the spin-up is
-    part of the row.
+    `out` is as for path_seed_result plus `yaw_rad`, the yaw progress in the
+    spin's direction that gated completion. The rotation error runs over
+    every recorded step, the spin-up from stand included: executing the
+    spin-up is part of the row.
     """
     n = int(out["steps"])
     rec = _trim(rec, n)

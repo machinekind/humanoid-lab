@@ -40,8 +40,10 @@ under that robot's pinned observation noise.
 
 Modules: spec (dataclasses, inputs, constants), geometry (polylines),
 families (the catalogue and its fingerprint), follower (the jax follower),
-scoring (per-seed results and aggregates), model_ids (friction geoms), report
-(the courses section). The output is `<run>/courses.json`, schema 1.
+lane (one jitted rollout per row and seed, and the thread pool that runs
+them), scoring (per-seed results and aggregates), model_ids (friction
+geoms), report (the courses section). The output is `<run>/courses.json`,
+schema 1.
 
 This module imports nothing, so `courses.report` loads without jax.
 """
