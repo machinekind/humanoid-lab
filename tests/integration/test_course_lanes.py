@@ -1,4 +1,5 @@
-"""Course lanes on a real model: eval/courses/lane.py.
+"""Course lanes on a real model: eval/courses/lane.py, and the runner that
+measures a run with them (eval/courses/runner.py).
 
 roboto_origin under deploy_pd. The run is a random-init checkpoint written
 by brax's own checkpoint code next to a run.json (run_fixtures), loaded
@@ -13,13 +14,17 @@ mid-lane, and a third at one never reached.
 
 One env and one compiled lane serve most tests. The record length and the
 padded path length are the flat class's (lane_shapes), as for a measured
-run. Compiles are what cost time here, about 10 s each.
+run. Compiles are what cost time here, about 10 s each. The runner tests
+measure the same random run end to end, each run_courses call with its own
+env and one compile per friction group. The module runs on CPU jax only.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
+import shutil
 import threading
 
 import jax
@@ -30,8 +35,17 @@ from run_fixtures import write_random_run
 
 from humanoid_lab import paths
 from humanoid_lab.eval import battery
-from humanoid_lab.eval.courses import families, follower, lane, scoring, spec
+from humanoid_lab.eval.courses import families, follower, lane, runner, scoring, spec
+from humanoid_lab.eval.render import DEFAULT_SIZE
 from humanoid_lab.registry import make_env
+
+pytestmark = pytest.mark.skipif(
+    jax.default_backend() != "cpu",
+    reason=(
+        f"course lanes reproduce bit for bit and run_courses measures on CPU jax only; "
+        f"this host's default backend is {jax.default_backend()!r}. Re-run with JAX_PLATFORMS=cpu."
+    ),
+)
 
 ROBOT = "roboto_origin"
 PRESET = "deploy_pd"
@@ -584,3 +598,341 @@ def test_vmapped_lanes_match_unbatched_outcomes_and_apply_the_hooks(
     nan_lane = jax.tree_util.tree_map(lambda x: x[2], out)
     seed = scoring.seed_out(nan_lane, 8)
     assert (seed["outcome"], seed["steps"]) == ("nonfinite", 0)
+
+
+# -- the runner ----------------------------------------------------------------------
+
+# Every lane of the runner tests is cut to this many course steps.
+CAP = 40
+# Three rows: a path row at nominal friction, a floor row and a spin row.
+THREE = ["straight_10m", "circle_r2_slippery", "spin_right"]
+# Two seeds from a nonzero base. Seed k of every row must use
+# PRNGKey(SEED_BASE + k): with one seed from base 0, a key that ignored the
+# base or k would pass.
+SEEDS, SEED_BASE = 2, 5
+
+
+def avals(data):
+    return jax.tree_util.tree_map(lambda x: (x.shape, x.dtype), data)
+
+
+def measure_recording(run_dir, **kw):
+    """runner.run_courses(run_dir, **kw), recording each friction group's lane
+    program (the make_lane_fn arguments and the compiled input shapes), every
+    lane's inputs and output, and the arguments of each path plot and video
+    write. Nothing is rendered."""
+    groups, lanes = [], []
+    written = {"plots": [], "videos": []}
+    state = {"friction": None}
+    real_set, real_make, real_compile = lane.set_friction, lane.make_lane_fn, lane.compile_lane
+
+    def set_friction(env, ids, mu):
+        # The restore passes the per-geom values read before the first swap.
+        state["friction"] = float(mu) if np.ndim(mu) == 0 else None
+        real_set(env, ids, mu)
+
+    def make_lane_fn(env, inf, **kwargs):
+        state["make"] = kwargs
+        return real_make(env, inf, **kwargs)
+
+    def compile_lane(fn, data):
+        compiled = real_compile(fn, data)
+        friction = state["friction"]
+        groups.append({"friction": friction, "make": state["make"], "avals": avals(data)})
+
+        def call(d, k):
+            out = compiled(d, k)
+            lanes.append({"friction": friction, "data": host(d), "key": np.asarray(k),
+                          "out": host(out._replace(state=None))})
+            return out
+
+        return call
+
+    def write_path_plot(out_png, course, trails, seed_numbers):
+        written["plots"].append({"out_png": out_png, "course": course, "trails": trails,
+                                 "seed_numbers": seed_numbers})
+
+    def write_videos(env, clips, out_dir, size, overlay_torque):
+        written["videos"].append({"clips": clips, "out_dir": out_dir, "size": size,
+                                  "overlay_torque": overlay_torque})
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(lane, "set_friction", set_friction)
+        mp.setattr(lane, "make_lane_fn", make_lane_fn)
+        mp.setattr(lane, "compile_lane", compile_lane)
+        mp.setattr(runner, "write_path_plot", write_path_plot)
+        mp.setattr(runner, "write_videos", write_videos)
+        doc = runner.run_courses(run_dir, **kw)
+    return doc, groups, lanes, written
+
+
+@pytest.fixture(scope="module")
+def full_run(run_dir):
+    """Every row, two seeds from base 5, the fall test off, every lane cut to
+    CAP steps."""
+    return measure_recording(run_dir, seeds=SEEDS, seed_base=SEED_BASE,
+                             extra_env_overrides=NO_FALL, budget_cap=CAP, workers=4)
+
+
+@pytest.fixture(scope="module")
+def artifacts_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("course_artifacts")
+
+
+@pytest.fixture(scope="module")
+def three_rows(run_dir, artifacts_dir):
+    """The same request with --only THREE, --paths, --video and
+    --overlay-torque. The plot and video writers are recorded, not run, so
+    the lanes are the same as without the flags."""
+    return measure_recording(run_dir, seeds=SEEDS, seed_base=SEED_BASE,
+                             extra_env_overrides=NO_FALL, budget_cap=CAP, workers=4, only=THREE,
+                             paths=True, video=True, overlay_torque=True,
+                             artifacts_dir=artifacts_dir)
+
+
+def key_tuple(k):
+    return tuple(np.asarray(k).tolist())
+
+
+def test_only_subset_reproduces_the_full_runs_lane_bit_for_bit(full_run, three_rows):
+    full_doc, full_groups, full_lanes, full_written = full_run
+    doc, groups, lanes, _ = three_rows
+    # Without --paths or --video nothing is plotted or rendered.
+    assert full_written == {"plots": [], "videos": []}
+    assert len(full_lanes) == 20 * SEEDS and len(lanes) == 3 * SEEDS
+    # One program per friction group, and a subset compiles the same one.
+    by_friction = {g["friction"]: g for g in full_groups}
+    assert set(by_friction) == {None, spec.SLIPPERY_MU}
+    assert [g["friction"] for g in groups] == [None, spec.SLIPPERY_MU]
+    for g in groups:
+        assert g["make"] == by_friction[g["friction"]]["make"]
+        assert g["avals"] == by_friction[g["friction"]]["avals"]
+
+    # Seed k of every row runs on PRNGKey(seed_base + k).
+    want_keys = {key_tuple(key(SEED_BASE + k)) for k in range(SEEDS)}
+    by_row: dict = {}
+    for sub in lanes:
+        leaves = tuple(np.asarray(x).tobytes() for x in jax.tree_util.tree_leaves(sub["data"]))
+        by_row.setdefault((sub["friction"], leaves), []).append(sub)
+    assert len(by_row) == 3
+    for pair in by_row.values():
+        assert sorted(key_tuple(s["key"]) for s in pair) == sorted(want_keys)
+        # Two different draws, not one lane run twice.
+        assert not np.array_equal(pair[0]["out"].rec["qpos"], pair[1]["out"].rec["qpos"])
+    full_keys = [key_tuple(f["key"]) for f in full_lanes]
+    assert all(full_keys.count(k) == 20 for k in want_keys)
+
+    def same_inputs(a, b):
+        leaves_a, leaves_b = jax.tree_util.tree_leaves(a["data"]), jax.tree_util.tree_leaves(b["data"])
+        return (a["friction"] == b["friction"] and np.array_equal(a["key"], b["key"])
+                and all(np.array_equal(x, y) for x, y in zip(leaves_a, leaves_b)))
+
+    for sub in lanes:
+        twins = [f for f in full_lanes if same_inputs(f, sub)]
+        assert len(twins) == 1
+        twin = twins[0]["out"]
+        assert int(sub["out"].steps) == int(twin.steps) == CAP
+        for name in twin.rec:
+            assert np.array_equal(sub["out"].rec[name], twin.rec[name]), name
+    for name in THREE:
+        per_seed = doc["courses"][name]["per_seed"]
+        assert per_seed == full_doc["courses"][name]["per_seed"]
+        assert [s["seed"] for s in per_seed] == [SEED_BASE + k for k in range(SEEDS)]
+
+
+def test_paths_and_video_keep_each_seeds_trail_and_the_first_seeds_clip(
+        three_rows, artifacts_dir, params, catalogue):
+    _, _, lanes, written = three_rows
+    n_points = lane.lane_shapes(params, DT)[1]
+
+    def lane_of(name, k):
+        """The recorded output of row `name`'s lane on PRNGKey(SEED_BASE + k),
+        found by its inputs rather than by the runner's own tag."""
+        data = lane.lane_data(catalogue[name], params, n_points, DT)
+        want = jax.tree_util.tree_leaves(
+            host(data._replace(budget=jp.minimum(data.budget, jp.int32(CAP)))))
+        hits = [
+            sub["out"] for sub in lanes
+            if np.array_equal(sub["key"], key(SEED_BASE + k))
+            and all(np.array_equal(a, b)
+                    for a, b in zip(jax.tree_util.tree_leaves(sub["data"]), want))
+        ]
+        assert len(hits) == 1, (name, k)
+        return hits[0]
+
+    # One plot per path row. A spin has no path to draw.
+    assert [call["course"].name for call in written["plots"]] == ["straight_10m",
+                                                                  "circle_r2_slippery"]
+    for call in written["plots"]:
+        name = call["course"].name
+        assert call["out_png"] == artifacts_dir / f"{name}_path.png"
+        # The legend names the seeds' own numbers, not 0..seeds-1.
+        assert call["seed_numbers"] == [SEED_BASE + k for k in range(SEEDS)]
+        assert len(call["trails"]) == SEEDS
+        for k, trail in enumerate(call["trails"]):
+            out = lane_of(name, k)
+            world = np.stack([out.rec["x"][:CAP], out.rec["y"][:CAP]], axis=-1)
+            assert trail.shape == (CAP, 2)
+            assert np.array_equal(trail, runner.course_frame(world, out.anchor))
+            # The settled anchor is never exactly the world origin, so a
+            # trail left in world coordinates differs from this one.
+            assert not np.allclose(trail, world, atol=0, rtol=0)
+
+    (video,) = written["videos"]
+    assert video["overlay_torque"] is True and video["out_dir"] == artifacts_dir
+    assert video["size"] == DEFAULT_SIZE
+    assert list(video["clips"]) == THREE
+    for name, (qpos, tau) in video["clips"].items():
+        first, second = lane_of(name, 0), lane_of(name, 1)
+        assert np.array_equal(qpos, first.rec["qpos"][:CAP]), name
+        assert np.array_equal(tau, first.rec["tau"][:CAP]), name
+        assert not np.array_equal(qpos, second.rec["qpos"][:CAP]), name
+
+
+SCHEMA_KEYS = {
+    "schema", "ground_class", "run", "run_status", "checkpoint", "checkpoint_step",
+    "checkpoint_sha256", "robot", "preset", "trained_task", "measured_task", "seeds",
+    "seed_base", "canonical", "env_overrides", "catalogue", "engine", "warnings", "summary",
+    "courses", "contacts", "messages", "physics_clean", "nonfinite_lanes", "perf",
+    "provenance", "timestamp",
+}
+CATALOGUE_KEYS = {"version", "fingerprint", "params_source", "inputs", "params", "follower",
+                  "protocol"}
+FOLLOWER_KEYS = {"lookahead_m", "yaw_cap", "k_yaw_spin", "spin_enter_rad", "spin_exit_rad",
+                 "goal_radius_m", "goal_min_progress_m", "resample_ds_m", "progress_window_m",
+                 "holonomic"}
+PROTOCOL_KEYS = {"ctrl_dt", "settle_s", "time_factor", "slack_s", "max_course_s", "min_score_s",
+                 "min_moving_s", "moving_threshold", "spin_min_rad_s", "vibration_cutoff_hz",
+                 "subscore_cap", "slippery_mu", "push_at_m", "nominal_friction", "obs_noise"}
+ENGINE_KEYS = {"backend", "platform", "executor", "workers", "machine", "cpu", "xla_flags", "jax",
+               "jaxlib", "mujoco", "mujoco_mjx"}
+ROW_KEYS = {"family", "isolates", "baseline", "kind", "spec_hash", "ground", "anchor", "origin",
+            "unscored", "friction", "push_at_m", "push_vel", "geometry", "speeds", "wz",
+            "length_m", "turn_rad", "ideal_s", "budget_steps", "perfect_unicycle", "score_median",
+            "score_worst", "seeds", "completed", "falls", "timeouts", "nonfinite",
+            "subscore_median", "raw_median", "gait_median", "binding", "vs_baseline", "per_seed"}
+SEED_KEYS = {"seed", "outcome", "completed", "fell_at", "steps", "score", "subscores", "raw",
+             "gait", "binding"}
+
+
+def test_run_courses_writes_schema_1_with_every_reserved_slot(three_rows, run_dir, params,
+                                                              tmp_path):
+    doc = three_rows[0]
+    out = tmp_path / "courses.json"
+    runner.write_result(out, doc)
+    written = json.loads(out.read_text())
+    assert written == json.loads(json.dumps(doc))
+
+    assert SCHEMA_KEYS <= set(written)
+    assert (written["schema"], written["ground_class"]) == (1, "flat")
+    assert (written["robot"], written["preset"], written["measured_task"]) == (
+        ROBOT, PRESET, "joystick")
+    assert (written["checkpoint"], written["checkpoint_step"]) == ("000000001024", 1024)
+    assert written["run_status"] is None
+    assert (written["seeds"], written["seed_base"], written["canonical"]) == (
+        SEEDS, SEED_BASE, False)
+    # The user's --set only: not the forced jax backend or the pinned noise.
+    assert written["env_overrides"] == NO_FALL
+    assert written["contacts"] is None and written["messages"] is None
+    assert written["physics_clean"] is True and written["nonfinite_lanes"] == 0
+    # The warnings check the requested rows against the run's own resolved
+    # box. The random run's task.env is {}, so its box is the joystick
+    # default (wz +-0.6), narrower than the follower's yaw cap and
+    # spin_right's rate: one wz warning per row.
+    recorded = json.loads((run_dir / "run.json").read_text())["env_config"]["command"]
+    want = runner.box_warnings([families.catalogue(params)[n] for n in THREE], params, recorded)
+    assert written["warnings"] == want
+    assert [w.split(":")[0] for w in want] == THREE and all(": wz " in w for w in want)
+
+    cat = written["catalogue"]
+    assert CATALOGUE_KEYS <= set(cat)
+    assert cat["fingerprint"] == families.catalogue_fingerprint(params)
+    assert cat["params_source"] == "pinned"
+    assert cat["params"] == json.loads(json.dumps(families.params_record(params)))
+    assert FOLLOWER_KEYS <= set(cat["follower"]) and cat["follower"]["yaw_cap"] == params.yaw_cap
+    assert PROTOCOL_KEYS <= set(cat["protocol"])
+    assert cat["protocol"]["ctrl_dt"] == DT and cat["protocol"]["nominal_friction"] == 0.9
+    assert cat["protocol"]["obs_noise"] == dict(params.obs_noise)
+    assert ENGINE_KEYS <= set(written["engine"])
+    assert (written["engine"]["backend"], written["engine"]["platform"]) == ("jax", "cpu")
+    assert set(written["summary"]) == {"lanes", "lanes_completed", "lanes_fell",
+                                       "lanes_timed_out", "lanes_nonfinite", "rows_all_completed"}
+    assert written["summary"]["lanes"] == 3 * SEEDS == written["summary"]["lanes_timed_out"]
+    assert {"workers", "lanes", "env_steps", "env_build_s", "compile_s", "unicycle_s", "wall_s",
+            "env_steps_per_s"} <= set(written["perf"])
+    assert written["perf"]["env_steps"] == 3 * SEEDS * (battery.settle_steps(DT) + CAP)
+    assert {"git_commit", "git_dirty", "versions", "device", "started_at",
+            "run_json_seed"} <= set(written["provenance"])
+
+    rows = written["courses"]
+    assert list(rows) == THREE
+    for name, row in rows.items():
+        assert ROW_KEYS <= set(row), name
+        assert row["spec_hash"] == families.spec_hash(families.catalogue(params)[name])
+        # The aggregates come before the seeds.
+        assert list(row)[-1] == "per_seed", name
+        assert len(row["per_seed"]) == SEEDS, name
+        for k, seed in enumerate(row["per_seed"]):
+            assert SEED_KEYS <= set(seed), name
+            assert (seed["seed"], seed["outcome"], seed["steps"]) == (
+                SEED_BASE + k, "timed_out", CAP), name
+    assert rows["straight_10m"]["friction"] == 0.9 and rows["spin_right"]["friction"] == 0.9
+    assert rows["circle_r2_slippery"]["friction"] == spec.SLIPPERY_MU
+    assert rows["circle_r2_slippery"]["vs_baseline"]["baseline"] == "circle_r2"
+    assert rows["straight_10m"]["vs_baseline"] is None
+    assert rows["straight_10m"]["perfect_unicycle"]["tracking"] == 1000.0
+    assert "progress_m" in rows["straight_10m"]["per_seed"][0]
+    spin = rows["spin_right"]
+    assert spin["perfect_unicycle"] is None and spin["length_m"] is None
+    assert spin["turn_rad"] == pytest.approx(2 * math.pi, abs=1e-4)
+    assert "progress_rad" in spin["per_seed"][0]
+
+
+def test_a_robot_without_pinned_inputs_is_measured_on_its_own_model(run_dir, monkeypatch):
+    pinned = spec.ROBOT_INPUTS[ROBOT]
+    monkeypatch.setattr(spec, "ROBOT_INPUTS",
+                        {r: v for r, v in spec.ROBOT_INPUTS.items() if r != ROBOT})
+    doc = runner.run_courses(run_dir, seeds=1, only=["spin_left"], extra_env_overrides=NO_FALL,
+                             budget_cap=CAP)
+    cat = doc["catalogue"]
+    assert cat["params_source"] == "measured" and cat["params"]["source"] == "measured"
+    assert any(w.startswith(f"{ROBOT} has no pinned inputs") for w in doc["warnings"])
+    # The model's own stance and height are the pinned ones within 0.5 mm.
+    for field in ("stance_halfwidth_m", "nominal_height_m"):
+        assert cat["inputs"][field] == pytest.approx(getattr(pinned, field), abs=5e-4), field
+    (seed,) = doc["courses"]["spin_left"]["per_seed"]
+    assert (seed["outcome"], seed["steps"]) == ("timed_out", CAP)
+
+
+def test_skip_if_current_and_check_round_trip_on_a_real_output(run_dir, tmp_path, monkeypatch):
+    out = tmp_path / "courses.json"
+    request = ["--run", str(run_dir), "--only", "spin_left", "--seeds", "1", "--out", str(out)]
+    assert runner.main(request) == 0
+    assert runner.main(request + ["--check"]) == 0
+
+    def no_load(*args, **kwargs):
+        raise AssertionError("a current output was measured again")
+
+    monkeypatch.setattr(runner, "run_courses", no_load)
+    assert runner.main(request + ["--skip-if-current"]) == 0
+    assert runner.main(request + ["--seed-base", "1", "--check"]) == 3
+    assert runner.main(request + ["--set", "obs_noise.joint_vel=0.2", "--check"]) == 3
+    assert runner.main(request[:3] + ["spin_left", "spin_right"] + request[4:] + ["--check"]) == 3
+
+
+def test_a_run_whose_newest_checkpoint_is_incomplete_is_refused(run_dir, tmp_path, capsys):
+    copy = tmp_path / "incomplete_run"
+    shutil.copytree(run_dir, copy)
+    record = json.loads((copy / "run.json").read_text())
+    record["checkpoint_dir"] = str(copy / "checkpoints")
+    (copy / "run.json").write_text(json.dumps(record))
+    (step,) = (copy / "checkpoints").iterdir()
+    (step / "ppo_network_config.json").unlink()
+
+    with pytest.raises(runner.Refused, match="ppo_network_config.json"):
+        runner.run_courses(copy, seeds=1, only=["spin_left"])
+    out = tmp_path / "courses.json"
+    assert runner.main(["--run", str(copy), "--only", "spin_left", "--seeds", "1",
+                        "--out", str(out)]) == 2
+    assert "is incomplete" in capsys.readouterr().err
+    assert not out.exists()

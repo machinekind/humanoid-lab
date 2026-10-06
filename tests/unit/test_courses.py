@@ -1,11 +1,12 @@
 """Course benchmark core: geometry, the derived catalogue, the frozen
-follower, scoring and the courses report section.
+follower, scoring, the courses report section and the CLI.
 
 Model-free. The follower runs eagerly on packed path arrays and only the
-perfect unicycle is jitted. A course score is compared across months of
-runs, so the robot inputs, the derived params, the follower constants and
-the catalogue fingerprint are asserted explicitly: a failure here is the
-alarm when one of them moves.
+perfect unicycle is jitted. The CLI runs against a run.json and checkpoint
+files on disk with runner.run_courses replaced by a stub, so no model loads.
+A course score is compared across months of runs, so the robot inputs, the
+derived params, the follower constants and the catalogue fingerprint are
+asserted explicitly: a failure here is the alarm when one of them moves.
 """
 
 from __future__ import annotations
@@ -14,10 +15,13 @@ import inspect
 import itertools
 import json
 import math
+import os
+import runpy
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
+import jax
 import numpy as np
 import pytest
 import yaml
@@ -26,7 +30,8 @@ from humanoid_lab import paths
 from humanoid_lab.envs import progress
 from humanoid_lab.envs.joystick import default_config
 from humanoid_lab.eval import battery
-from humanoid_lab.eval.courses import families, follower, scoring, spec
+from humanoid_lab.eval import report as eval_report
+from humanoid_lab.eval.courses import families, follower, runner, scoring, spec
 from humanoid_lab.eval.courses.families import (
     CATALOGUE_VERSION,
     catalogue,
@@ -66,6 +71,7 @@ from humanoid_lab.eval.courses.spec import (
     params_for,
 )
 from humanoid_lab.eval.gait import gait_metrics
+from humanoid_lab.eval.render import DEFAULT_SIZE
 
 ROBOTS = ("roboto_origin", "asimov_v1")
 PARAMS = {r: params_for(r) for r in ROBOTS}
@@ -1240,6 +1246,8 @@ def test_vs_baseline_carries_the_median_difference_and_the_slip_ratio():
         "baseline": "straight_fast", "d_score_median": None, "slip_ratio": None}
     assert s == {"lanes": 12, "lanes_completed": 12, "lanes_fell": 0, "lanes_timed_out": 0,
                  "lanes_nonfinite": 0, "rows_all_completed": 4}
+    # Filled in place, so a row's aggregates still come before its seeds.
+    assert all(list(row)[-1] == "per_seed" for row in rows.values())
 
 
 def test_summary_counts_lanes_by_outcome_across_rows():
@@ -1398,7 +1406,10 @@ def test_the_courses_section_renders_from_a_schema_1_dict():
     assert "version 1" in md and "roboto_origin" in md and "000786432000" in md
     assert "warning: straight_fast" in md
     assert "Compare a row across policies, never across rows." in md
-    assert "A difference below the noise band in docs/configuration.md is noise." in md
+    assert (
+        "A difference below twice the row's noise band in docs/configuration.md is noise."
+        in md
+    )
     assert "Height and grip are diagnostics" in md
     assert "seed 3 fell at step 290" in md
     slippery = next(line for line in md.splitlines() if line.startswith("| straight_slippery |"))
@@ -1426,3 +1437,597 @@ def test_courses_report_imports_no_jax():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "[]"
+
+
+# -- CLI -------------------------------------------------------------------------
+
+_STEP = "000000001024"
+
+
+@pytest.fixture
+def run_dir(tmp_path):
+    """A run.json and two complete checkpoints on disk, and no model."""
+    d = tmp_path / "runs" / "probe_run"
+    for step in ("000000000512", _STEP):
+        ckpt = d / "checkpoints" / step
+        (ckpt / "d").mkdir(parents=True)
+        (ckpt / "d" / "params").write_bytes(step.encode() * 8)
+        (ckpt / "ppo_network_config.json").write_text("{}")
+    record = {
+        "run_name": "probe_run",
+        "task": "joystick",
+        "checkpoint_dir": str(d / "checkpoints"),
+        "ppo_config": {},
+        "hydra_config": {
+            "robot": {"name": "roboto_origin", "dir": "robots/roboto_origin"},
+            "actuators": {"name": "deploy_pd"},
+            "task": {"name": "joystick", "env": {}},
+            "seed": 0,
+        },
+    }
+    (d / "run.json").write_text(json.dumps(record))
+    return d
+
+
+def _identity_doc(run_dir, *, only, seeds, seed_base, extra_env_overrides, **_):
+    """The fields is_current reads, as run_courses would fill them for this
+    request on the fixture run."""
+    rows = runner.select_rows(_CAT_R, only)
+    return {
+        "schema": spec.SCHEMA_VERSION,
+        "ground_class": "flat",
+        "run": "probe_run",
+        "robot": "roboto_origin",
+        "checkpoint": _STEP,
+        "checkpoint_sha256": runner.checkpoint_sha256(run_dir / "checkpoints" / _STEP),
+        "seeds": seeds,
+        "seed_base": seed_base,
+        "env_overrides": extra_env_overrides or None,
+        "budget_cap": None,
+        "catalogue": {
+            "version": CATALOGUE_VERSION,
+            "fingerprint": catalogue_fingerprint(ROBOTO),
+            "params_source": "pinned",
+        },
+        "courses": {n: {"score_median": 1.0, "score_worst": 0.5, "binding": "tracking",
+                        "seeds": seeds, "completed": seeds, "falls": 0} for n in rows},
+    }
+
+
+@pytest.fixture
+def measured(monkeypatch):
+    """runner.run_courses replaced by a stub that records each call and
+    returns the identity fields of a measurement."""
+    calls = []
+
+    def fake(run_dir, **kw):
+        calls.append({"run_dir": run_dir, **kw})
+        return _identity_doc(run_dir, **kw)
+
+    monkeypatch.setattr(runner, "run_courses", fake)
+    return calls
+
+
+def _main(*argv) -> int:
+    try:
+        return runner.main([str(a) for a in argv])
+    except SystemExit as exc:  # argparse's errors exit 2
+        return exc.code
+
+
+def test_seed_base_reaches_run_courses_as_an_int_default_0(run_dir, measured, tmp_path):
+    assert _main("--run", run_dir) == 0
+    assert measured[-1]["seed_base"] == 0 and type(measured[-1]["seed_base"]) is int
+    assert (run_dir / "courses.json").exists()
+    assert _main("--run", run_dir, "--seed-base", "8", "--out", tmp_path / "s8.json") == 0
+    assert measured[-1]["seed_base"] == 8 and type(measured[-1]["seed_base"]) is int
+    assert measured[-1]["seeds"] == spec.SEEDS
+    assert measured[-1]["artifacts_dir"] == tmp_path / "courses"
+
+
+def test_every_measurement_flag_reaches_run_courses(run_dir, measured, tmp_path):
+    # The whole keyword set at once, so a keyword renamed or added in
+    # run_courses and never passed by main fails here too.
+    assert _main("--run", run_dir) == 0
+    assert measured[-1] == {
+        "run_dir": run_dir, "ground": "flat", "seeds": spec.SEEDS, "seed_base": 0,
+        "only": None, "extra_env_overrides": None, "workers": None, "video": False,
+        "video_size": DEFAULT_SIZE, "overlay_torque": False, "paths": False,
+        "artifacts_dir": run_dir / "courses",
+    }
+    assert _main("--run", run_dir, "--out", tmp_path / "v.json", "--video", "--video-size",
+                 "320x240", "--overlay-torque", "--paths", "--workers", "3") == 0
+    call = measured[-1]
+    assert call["video"] is True and call["overlay_torque"] is True and call["paths"] is True
+    assert call["video_size"] == (320, 240)
+    assert call["workers"] == 3 and type(call["workers"]) is int
+    assert call["artifacts_dir"] == tmp_path / "courses"
+
+
+@pytest.mark.parametrize("flags", [
+    ["--only", "straight_10m"],
+    ["--set", "obs_noise.joint_vel=0.2"],
+    ["--seeds", "4"],
+    ["--seed-base", "8"],
+])
+def test_each_non_canonical_request_needs_another_out(run_dir, measured, tmp_path, flags):
+    # The run's own file holds the full measurement only, whether --out
+    # names it or is left out.
+    assert _main("--run", run_dir, *flags) == 2
+    assert _main("--run", run_dir, *flags, "--out", run_dir / "courses.json") == 2
+    assert not measured and not (run_dir / "courses.json").exists()
+    assert _main("--run", run_dir, *flags, "--out", tmp_path / "variant.json") == 0
+    assert len(measured) == 1
+
+
+@pytest.mark.parametrize("item", ["sim.backend=warp", "terrain.arena=stairs"])
+def test_a_sim_or_terrain_set_is_refused(run_dir, measured, tmp_path, item):
+    assert _main("--run", run_dir, "--set", item, "--out", tmp_path / "x.json") == 2
+    assert not measured
+
+
+@pytest.mark.parametrize("value, code", [("0", 2), ("1", 2), ("1.5", 2), ("never", 2), ("2", 0)])
+def test_a_command_resample_below_2_is_refused(run_dir, measured, tmp_path, value, code):
+    # The lane zeroes steps_since_cmd before each step and the step raises
+    # it to 1: below 2 the env would replace the held command every step.
+    out = tmp_path / "x.json"
+    assert _main("--run", run_dir, "--set", f"command.resample_steps={value}", "--out", out) == code
+    assert len(measured) == (code == 0)
+
+
+def test_a_ground_class_other_than_flat_is_refused(run_dir, measured, tmp_path):
+    assert _main("--run", run_dir, "--ground", "terrain", "--out", tmp_path / "x.json") == 2
+    assert not measured
+
+
+def test_run_courses_refuses_before_it_loads_anything(run_dir, monkeypatch):
+    # The request refusals come before the run is read, so a bad run dir is
+    # never reached.
+    with pytest.raises(runner.Refused, match="ground class 'terrain'"):
+        runner.run_courses(run_dir / "absent", ground="terrain")
+    with pytest.raises(runner.Refused, match="seeds"):
+        runner.run_courses(run_dir / "absent", seeds=0)
+    with pytest.raises(runner.Refused, match="sim"):
+        runner.run_courses(run_dir / "absent", extra_env_overrides={"sim": {"backend": "warp"}})
+    # An unknown row is refused after the run is read and before the model
+    # loads: the fixture run has no model to load.
+    with pytest.raises(runner.Refused, match="straight_11m"):
+        runner.run_courses(run_dir, only=["straight_11m"])
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    with pytest.raises(runner.Refused, match="JAX_PLATFORMS=cpu"):
+        runner.run_courses(run_dir / "absent")
+
+
+def test_a_non_cpu_backend_is_refused(run_dir, measured, monkeypatch, capsys):
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    assert _main("--run", run_dir) == 2
+    assert not measured
+    assert "JAX_PLATFORMS=cpu" in capsys.readouterr().err
+
+
+def test_an_incomplete_newest_checkpoint_is_refused(run_dir, measured, capsys):
+    newest = run_dir / "checkpoints" / "000000002048"
+    newest.mkdir()
+    (newest / "manifest.ocdbt").write_bytes(b"partial")
+    assert _main("--run", run_dir) == 2
+    assert not measured
+    assert "ppo_network_config.json" in capsys.readouterr().err
+    (newest / "ppo_network_config.json").write_text("{}")
+    assert _main("--run", run_dir) == 0
+    assert len(measured) == 1
+
+
+def test_skip_if_current_exits_0_without_loading(run_dir, measured):
+    assert _main("--run", run_dir, "--skip-if-current") == 0
+    assert len(measured) == 1
+    assert _main("--run", run_dir, "--skip-if-current") == 0
+    assert len(measured) == 1
+    (run_dir / "courses.json").unlink()
+    assert _main("--run", run_dir, "--skip-if-current") == 0
+    assert len(measured) == 2
+
+
+# Each make_stale changes one thing. It returns the extra request flags and
+# words of the reason that change must print. Asserting the reason shows
+# that its own clause fired, whatever order is_current checks in.
+
+
+def _edit_doc(out, edit):
+    doc = json.loads(out.read_text())
+    edit(doc)
+    out.write_text(json.dumps(doc))
+
+
+def _stale_fingerprint(run_dir, out):
+    _edit_doc(out, lambda d: d["catalogue"].update(fingerprint="0" * 64))
+    return [], "its catalogue fingerprint is"
+
+
+def _stale_catalogue_version(run_dir, out):
+    _edit_doc(out, lambda d: d["catalogue"].update(version=d["catalogue"]["version"] + 1))
+    return [], "its catalogue version is"
+
+
+def _stale_params_source(run_dir, out):
+    _edit_doc(out, lambda d: d["catalogue"].update(params_source="measured"))
+    return [], "its params source is"
+
+
+def _stale_schema(run_dir, out):
+    _edit_doc(out, lambda d: d.update(schema=d["schema"] + 1))
+    return [], "its schema is"
+
+
+def _stale_budget_cap(run_dir, out):
+    # budget_cap has no flag. A file measured with one is never current.
+    _edit_doc(out, lambda d: d.update(budget_cap=40))
+    return [], "its budget_cap is"
+
+
+def _stale_checkpoint(run_dir, out):
+    with open(run_dir / "checkpoints" / _STEP / "d" / "params", "ab") as f:
+        f.write(b"retrained")
+    return [], "files changed"
+
+
+def _stale_newer_checkpoint(run_dir, out):
+    newer = run_dir / "checkpoints" / "000000002048"
+    newer.mkdir()
+    (newer / "ppo_network_config.json").write_text("{}")
+    return [], "its checkpoint is"
+
+
+def _stale_seeds(run_dir, out):
+    return ["--seeds", "4"], "its seeds is"
+
+
+def _stale_seed_base(run_dir, out):
+    return ["--seed-base", "8"], "its seed base is"
+
+
+def _stale_rows(run_dir, out):
+    return ["--only", "straight_10m"], "its row set differs"
+
+
+def _stale_override(run_dir, out):
+    return ["--set", "obs_noise.joint_vel=0.2"], "its env_overrides is"
+
+
+def _stale_missing(run_dir, out):
+    out.unlink()
+    return [], "it does not exist"
+
+
+@pytest.mark.parametrize("make_stale", [
+    _stale_fingerprint, _stale_catalogue_version, _stale_params_source, _stale_schema,
+    _stale_budget_cap, _stale_checkpoint, _stale_newer_checkpoint, _stale_seeds,
+    _stale_seed_base, _stale_rows, _stale_override, _stale_missing,
+])
+def test_check_exits_0_on_a_current_file_and_3_on_a_stale_one(
+        run_dir, measured, tmp_path, capsys, make_stale):
+    out = tmp_path / "variant.json"
+    request = ["--run", run_dir, "--only", "straight_10m", "spin_left", "--out", out]
+    assert _main(*request) == 0
+    assert _main(*request, "--check") == 0
+    printed = capsys.readouterr().out
+    assert printed.splitlines()[-1].startswith(f"current: {out} is current")
+    extra, why = make_stale(run_dir, out)
+    if extra and extra[0] == "--only":
+        request = request[:2] + request[5:]
+    assert _main(*request, *extra, "--check") == 3
+    printed = capsys.readouterr().out
+    assert "not current" in printed and why in printed
+    assert len(measured) == 1
+
+
+def test_check_reads_the_runs_own_file_and_loads_nothing(run_dir, measured, capsys):
+    assert _main("--run", run_dir, "--check") == 3
+    assert capsys.readouterr().out.splitlines()[-1].startswith("not current: ")
+    assert _main("--run", run_dir) == 0
+    assert _main("--run", run_dir, "--check") == 0
+    assert capsys.readouterr().out.splitlines()[-1].startswith("current: ")
+    assert len(measured) == 1
+
+
+def test_the_users_set_reaches_run_courses_parsed(run_dir, measured, tmp_path):
+    out = tmp_path / "noise.json"
+    assert _main("--run", run_dir, "--set", "obs_noise.joint_vel=0.2", "--out", out) == 0
+    assert measured[-1]["extra_env_overrides"] == {"obs_noise": {"joint_vel": 0.2}}
+    # The stub echoes its argument, so this checks that main writes the
+    # document it got to --out.
+    assert json.loads(out.read_text())["env_overrides"] == {"obs_noise": {"joint_vel": 0.2}}
+
+
+def test_the_measurement_env_forces_jax_and_lets_the_users_set_win(run_dir, monkeypatch):
+    class Loaded(Exception):
+        pass
+
+    seen = []
+
+    def stub(path, extra=None):
+        seen.append(extra)
+        raise Loaded
+
+    monkeypatch.setattr(battery, "load_checkpoint_policy", stub)
+    # Independent of the host's jax backend.
+    monkeypatch.setattr(runner, "require_cpu", lambda: None)
+    with pytest.raises(Loaded):
+        runner.run_courses(run_dir, seeds=1, extra_env_overrides={"obs_noise": {"joint_vel": 0.2}})
+    # The forced backend, and the pinned noise under the user's set, which
+    # wins key by key.
+    assert seen == [{"sim": {"backend": "jax"},
+                     "obs_noise": {**ROBOTO.obs_noise, "joint_vel": 0.2}}]
+    assert ROBOTO.obs_noise["joint_vel"] != 0.2
+
+
+@pytest.mark.parametrize("key, value", [
+    ("only", ["straight_10m"]),
+    ("extra_env_overrides", {"obs_noise": {"joint_vel": 0.2}}),
+    ("seeds", 4),
+    ("seed_base", 8),
+    ("budget_cap", 40),
+])
+def test_only_the_full_request_is_canonical(key, value):
+    base = {"seeds": spec.SEEDS, "seed_base": 0, "only": None, "extra_env_overrides": None,
+            "budget_cap": None}
+    assert runner.is_canonical(**base) is True
+    # run_courses passes an empty --set on as None. Empty counts as absent.
+    assert runner.is_canonical(**{**base, "only": [], "extra_env_overrides": {}}) is True
+    assert runner.is_canonical(**{**base, key: value}) is False
+
+
+def test_the_canonical_guard_sees_through_case_while_the_runs_own_file_is_missing(
+        run_dir, measured, tmp_path):
+    own = run_dir / "courses.json"
+    assert not own.exists()
+    assert runner.same_file(run_dir / "Courses.json", own)
+    assert not runner.same_file(run_dir / "other.json", own)
+    assert not runner.same_file(tmp_path / "courses.json", own)
+    upper = run_dir.parent / run_dir.name.upper()
+    if upper.exists():  # a case-insensitive filesystem
+        assert runner.same_file(upper / "courses.json", own)
+    assert _main("--run", run_dir, "--only", "straight_10m", "--out", run_dir / "Courses.json") == 2
+    assert not measured
+    assert not own.exists() and not (run_dir / "Courses.json").exists()
+
+
+def test_a_robot_without_pinned_inputs_reads_its_box_push_and_noise():
+    cfg = default_config()
+    cfg.command.vx = (-0.3, 0.7)
+    cfg.push.vel = 0.45
+    stance = {"stance_halfwidth_m": 0.1, "nominal_height_m": 0.7}
+    lane = SimpleNamespace(measure_robot_inputs=lambda env: stance)
+    # wz_max is the smaller side of the box: either side can be it.
+    for wz, want in (((-1.0, 0.6), 0.6), ((-0.5, 0.6), 0.5)):
+        cfg.command.wz = wz
+        inputs = runner._measured_inputs(SimpleNamespace(_config=cfg), lane)
+        assert (inputs.vx_max, inputs.wz_max, inputs.push_vel) == (0.7, want, 0.45)
+        assert inputs.obs_noise == dict(cfg.obs_noise)
+        assert (inputs.stance_halfwidth_m, inputs.nominal_height_m) == (0.1, 0.7)
+
+
+def test_a_measured_catalogue_is_never_current(run_dir, measured, capsys):
+    record = json.loads((run_dir / "run.json").read_text())
+    record["hydra_config"]["robot"]["name"] = "other"
+    (run_dir / "run.json").write_text(json.dumps(record))
+    # Its rows need the model, so a request names none before it loads.
+    assert runner.requested_rows(run_dir, "flat", None) is None
+    assert _main("--run", run_dir, "--check") == 3
+    assert "does not exist" in capsys.readouterr().out
+    assert _main("--run", run_dir) == 0
+    assert (run_dir / "courses.json").exists()
+    capsys.readouterr()
+    assert _main("--run", run_dir, "--check") == 3
+    assert "never current" in capsys.readouterr().out
+    assert _main("--run", run_dir, "--skip-if-current") == 0
+    assert len(measured) == 2
+
+
+def test_list_prints_both_robots_without_a_run(capsys):
+    assert _main("--list") == 0
+    text = capsys.readouterr().out
+    for robot in ROBOTS:
+        assert f"{robot}: v_nom" in text
+    for name in TWENTY:
+        assert text.count(f"\n{name} ") == 2, name
+    assert _main("--list", "--robot", "asimov_v1") == 0
+    text = capsys.readouterr().out
+    assert "asimov_v1: v_nom 0.400" in text and "roboto_origin" not in text
+    assert _main("--list", "--robot", "nobody") == 2
+    assert _main("--list", "--run", "runs/x") == 2
+
+
+def test_an_unknown_only_name_exits_2_with_the_catalogue(run_dir, measured, tmp_path, capsys):
+    assert _main("--run", run_dir, "--only", "straight_11m", "--out", tmp_path / "x.json") == 2
+    err = capsys.readouterr().err
+    assert "straight_11m" in err
+    for name in TWENTY:
+        assert f"  {name}\n" in err + "\n", name
+    assert not measured
+
+
+@pytest.mark.parametrize("flags", [
+    ["--seeds", "0"], ["--seed-base", "-1"], ["--workers", "0"], ["--overlay-torque"],
+    ["--robot", "roboto_origin"], ["--check", "--skip-if-current"],
+])
+def test_malformed_requests_exit_2(run_dir, measured, tmp_path, flags):
+    assert _main("--run", run_dir, "--out", tmp_path / "x.json", *flags) == 2
+    assert not measured
+
+
+@pytest.mark.parametrize("platform, flags, preset, want", [
+    ("linux", ["--video"], None, "egl"),
+    ("linux", [], None, None),
+    ("linux", ["--video"], "osmesa", "osmesa"),
+    ("darwin", ["--video"], None, None),
+])
+def test_the_entry_point_picks_egl_for_linux_video_only(monkeypatch, platform, flags, preset,
+                                                        want):
+    # A stub runner whose main records MUJOCO_GL as the entry point left it.
+    # The package attribute is patched too: `from package import runner`
+    # reads it before sys.modules.
+    import humanoid_lab.eval.courses as package
+
+    seen = []
+    stub = ModuleType("humanoid_lab.eval.courses.runner")
+    stub.main = lambda: seen.append(os.environ.get("MUJOCO_GL")) or 3
+    monkeypatch.setitem(sys.modules, "humanoid_lab.eval.courses.runner", stub)
+    monkeypatch.setattr(package, "runner", stub)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sys, "argv", ["courses", "--run", "runs/x", *flags])
+    # Recorded first, so the undo also removes whatever the module sets.
+    monkeypatch.setenv("MUJOCO_GL", "unset")
+    monkeypatch.delenv("MUJOCO_GL")
+    if preset is not None:
+        monkeypatch.setenv("MUJOCO_GL", preset)
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("humanoid_lab.eval.courses", run_name="__main__")
+    assert exc.value.code == 3
+    assert seen == [want]
+
+
+def test_python_dash_m_runs_the_cli_and_passes_its_exit_code(run_dir, tmp_path):
+    done = subprocess.run(
+        [sys.executable, "-m", "humanoid_lab.eval.courses", "--check", "--run", str(run_dir),
+         "--out", str(tmp_path / "missing.json")],
+        capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == runner.EXIT_STALE, done.stderr
+    assert "not current" in done.stdout
+
+
+def test_default_workers_works_without_sched_getaffinity(monkeypatch):
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    for cpus, want in ((10, 8), (3, 3), (None, 1)):
+        monkeypatch.setattr(os, "cpu_count", lambda c=cpus: c)
+        assert runner.default_workers() == want
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
+    assert runner.default_workers() == 4
+
+
+def test_an_arm64_cpuinfo_names_its_core_by_implementer_and_part():
+    # arm64 kernels print no model name. The first processor block names
+    # the core; a second core of another part does not change the record.
+    text = (
+        "processor\t: 0\nBogoMIPS\t: 2000.00\nFeatures\t: fp asimd evtstrm aes\n"
+        "CPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x0\n"
+        "CPU part\t: 0xd4f\nCPU revision\t: 0\n\n"
+        "processor\t: 1\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x1\n"
+        "CPU part\t: 0xd40\nCPU revision\t: 1\n"
+    )
+    assert runner._cpuinfo_model(text) == "arm64 implementer 0x41 variant 0x0 part 0xd4f revision 0"
+    assert runner._cpuinfo_model("") is None
+
+
+def test_an_x86_cpuinfo_records_its_model_name():
+    text = (
+        "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 143\n"
+        "model name\t: Intel(R) Xeon(R) Platinum 8480+\nstepping\t: 8\n\n"
+        "processor\t: 1\nmodel name\t: another\n"
+    )
+    assert runner._cpuinfo_model(text) == "Intel(R) Xeon(R) Platinum 8480+"
+
+
+def test_checkpoint_sha256_follows_the_files_not_the_directory(run_dir, tmp_path):
+    ckpt = run_dir / "checkpoints" / _STEP
+    sha = runner.checkpoint_sha256(ckpt)
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    for f in ckpt.rglob("*"):
+        if f.is_file():
+            (copy / f.relative_to(ckpt)).parent.mkdir(parents=True, exist_ok=True)
+            (copy / f.relative_to(ckpt)).write_bytes(f.read_bytes())
+    assert runner.checkpoint_sha256(copy) == sha
+    (copy / "d" / "params").rename(copy / "d" / "params2")
+    assert runner.checkpoint_sha256(copy) != sha
+
+
+def test_box_warnings_name_each_row_and_axis_outside_a_narrower_box():
+    rows = list(_CAT_R.values())
+    assert runner.box_warnings(rows, ROBOTO, _overlay_box()) == []
+    narrow = {"vx": (-0.6, 0.8), "vy": (-0.5, 0.5), "wz": (-1.0, 1.0)}
+    warnings = runner.box_warnings(rows, ROBOTO, narrow)
+    assert "straight_fast: vx 0.90 m/s outside the run's vx box [-0.6, 0.8]" in warnings
+    assert any(w.startswith("speed_steps_straight: vx 0.50-0.90 m/s") for w in warnings)
+    assert any(w.startswith("spin_fast: wz +1.507 rad/s") for w in warnings)
+    # The follower's clip is 1.256 rad/s, so every path row can ask past 1.0.
+    wz_rows = {w.split(":")[0] for w in warnings if ": wz up to" in w}
+    assert wz_rows == {n for n, c in _CAT_R.items() if isinstance(c, PathCourse)}
+    assert not any(": vy " in w for w in warnings)
+
+
+def _overlay_box():
+    command = _overlay("roboto_origin")["task"]["env"]["command"]
+    return {axis: tuple(command[axis]) for axis in ("vx", "vy", "wz")}
+
+
+def test_the_path_plot_draws_the_course_frame_and_labels_the_real_seeds():
+    course = _CAT_R["straight_10m"]
+    anchor = (2.0, -1.0, math.pi / 2)
+    world = np.array([[2.0, -1.0], [2.0, 0.0], [1.0, -1.0]])
+    np.testing.assert_allclose(runner.course_frame(world, anchor),
+                               [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], atol=1e-12)
+    trails = [runner.course_frame(world, anchor), np.empty((0, 2))]
+    fig = runner.path_figure(course, trails, [8, 9])
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert labels == ["course", "seed 8"]
+
+
+def test_videos_stream_their_frames_and_a_failed_one_is_deleted(tmp_path, monkeypatch, capsys):
+    from humanoid_lab.eval import render, video, writer
+
+    rendered = []
+
+    class View:
+        """Renders a frame per call. A negative qpos stands for a GL failure."""
+
+        def __init__(self, env, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def frame(self, qpos, torque=None):
+            if qpos[0] < 0:
+                raise RuntimeError("GL context lost")
+            rendered.append(float(qpos[0]))
+            return np.zeros((2, 2, 3), np.uint8)
+
+    def write(out, frames, fps):
+        # Each frame is rendered only when the writer asks for it.
+        start = len(rendered)
+        with open(out, "wb") as f:
+            for i, frame in enumerate(frames):
+                assert len(rendered) == start + i + 1
+                f.write(frame.tobytes())
+
+    monkeypatch.setattr(render, "SceneView", View)
+    monkeypatch.setattr(video, "_pick_camera", lambda model, camera: None)
+    monkeypatch.setattr(writer, "write_video", write)
+    env = SimpleNamespace(dt=_DT, mj_model=None, robot_spec=SimpleNamespace(eval_camera=None))
+    ten = (np.arange(10.0)[:, None], np.zeros((10, 1)))
+    # The second rendered frame of this clip fails, after its file opened.
+    broken = (np.array([[0.0], [1.0], [-1.0], [2.0]]), np.zeros((4, 1)))
+    runner.write_videos(env, {"first": ten, "broken": broken, "never": ten}, tmp_path,
+                        (2, 2), overlay_torque=False)
+    # Every second step at ctrl_dt 0.02.
+    assert rendered[:5] == [0.0, 2.0, 4.0, 6.0, 8.0]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["first.mp4"]
+    assert "videos stopped" in capsys.readouterr().err
+
+
+def test_write_result_names_a_nonfinite_field_and_keeps_the_previous_file(tmp_path):
+    out = tmp_path / "courses.json"
+    runner.write_result(out, {"courses": {}})
+    doc = {"courses": {"straight_10m": {"per_seed": [{"raw": {"vibration": float("nan")}}]}}}
+    with pytest.raises(ValueError, match=r"courses\.straight_10m\.per_seed\[0\]\.raw\.vibration"):
+        runner.write_result(out, doc)
+    assert json.loads(out.read_text()) == {"courses": {}}
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_the_report_reads_the_flat_class_output():
+    assert eval_report._COURSES_JSON == spec.GROUND_CLASSES["flat"]

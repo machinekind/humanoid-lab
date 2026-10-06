@@ -8,6 +8,12 @@ writes `<run>/eval_report.md`. Pure post-processing of an already-computed
 battery result -- no env, checkpoint or jax needed here, so `report.py`
 imports none of them (unlike battery.py/video.py).
 
+When `<run>/courses.json` exists (written by `./run.sh courses`), the report
+appends its courses section, rendered by eval/courses/report.py, which
+imports no jax either. A run with courses.json and no battery.json gets the
+courses section alone. When the two files measured different checkpoints,
+the section says so.
+
 Torque percentile analysis (p50/p90/p99/max, torque-by-speed binning,
 motor-catalog overlay) is sizing/report.py's job and stays there -- this
 module does not duplicate it. run.sh's `report` verb calls sizing-report
@@ -26,6 +32,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+
+from humanoid_lab.eval.courses import report as courses_report
 
 # Loose PASS/ATTENTION thresholds. `stand` additionally flags ANY fall
 # (falling at zero command is always a problem); the other scenarios only
@@ -47,6 +55,11 @@ _META_KEYS = ("run", "checkpoint", "timestamp", "contacts", "env_overrides")
 # The per-direction spin rows (eval/battery.py's battery_scenarios), listed
 # in the order the section renders them.
 _SPIN_SCENARIOS = ("spin_left", "spin_right")
+
+# The flat course benchmark's output (eval/courses/spec.py's
+# GROUND_CLASSES["flat"]). Named here because spec.py imports jax and this
+# module must not.
+_COURSES_JSON = "courses.json"
 
 
 def _fmt(v, nd: int = 3) -> str:
@@ -271,14 +284,34 @@ def render_markdown(battery: dict) -> str:
     return "\n".join(lines)
 
 
+def _courses_only_header(courses: dict, run_dir: Path) -> str:
+    return "\n".join([
+        f"# Eval report: {courses.get('run', '?')}",
+        "",
+        f"- checkpoint: {courses.get('checkpoint', '?')}",
+        f"- generated: {courses.get('timestamp', '?')}",
+        f"- no battery.json: `./run.sh battery --run {run_dir}` adds the battery sections",
+        "",
+    ])
+
+
 def build_report(run_dir: Path) -> str:
+    """eval_report.md for `run_dir`: the battery sections from battery.json,
+    then the courses section from courses.json, from whichever exist."""
     battery_path = run_dir / "battery.json"
-    if not battery_path.exists():
+    courses_path = run_dir / _COURSES_JSON
+    if not battery_path.exists() and not courses_path.exists():
         raise FileNotFoundError(
-            f"{battery_path} not found -- run `./run.sh battery --run {run_dir}` first"
+            f"neither {battery_path} nor {courses_path} found -- run "
+            f"`./run.sh battery --run {run_dir}` or `./run.sh courses --run {run_dir}` first"
         )
-    battery = json.loads(battery_path.read_text())
-    return render_markdown(battery)
+    battery = json.loads(battery_path.read_text()) if battery_path.exists() else None
+    courses = json.loads(courses_path.read_text()) if courses_path.exists() else None
+    parts = [render_markdown(battery) if battery is not None else _courses_only_header(courses, run_dir)]
+    if courses is not None:
+        battery_checkpoint = None if battery is None else battery.get("checkpoint")
+        parts.append(courses_report.render_markdown(courses, battery_checkpoint=battery_checkpoint))
+    return "\n".join(parts)
 
 
 def main():

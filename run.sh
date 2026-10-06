@@ -80,7 +80,9 @@ case "${1:-}" in
   # Fixed eval battery -> runs/<name>/battery.json.
   # Passthrough args: --run runs/<name> [--out path.json].
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
-  # Renders runs/<name>/eval_report.md from battery.json (run `battery`
+  # Renders runs/<name>/eval_report.md from battery.json, and appends the
+  # course section when courses.json exists. A run with courses.json and no
+  # battery.json gets the course section alone (run `battery` or `courses`
   # first). If runs/<name>/sizing_data.npz also exists, additionally runs
   # sizing-report's report half -- a separate decoupled invocation (not a
   # merged report; eval/report.py never imports sizing/report.py), so
@@ -114,6 +116,14 @@ case "${1:-}" in
   # [--out path.mp4] [--seed N] [--video-size WxH] [--overlay-torque]
   # [--plot-torque] [--plot-joints] [--joint NAME] [--push].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
+  # Path-following course benchmark -> runs/<name>/courses.json. Forced
+  # onto CPU: course lanes reproduce bit for bit there and the seed noise
+  # bands are measured there. Passthrough args: --run runs/<name>
+  # [--ground flat] [--out PATH] [--seeds N] [--seed-base N] [--only NAME ...]
+  # [--set BLOCK.KEY=VALUE ...] [--workers N] [--skip-if-current | --check]
+  # [--video] [--video-size WxH] [--overlay-torque] [--paths],
+  # or --list [--robot NAME].
+  courses) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.courses "$@" ;;
   # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
   # latest checkpoint (see docs/deploy.md). Forced
   # onto CPU like `battery`: the export runs mjx.forward once and no
@@ -122,7 +132,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|courses|export} [args]"
     exit 1
     ;;
 esac

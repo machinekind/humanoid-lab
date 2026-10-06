@@ -314,6 +314,8 @@ def aggregate(seeds: list[dict]) -> dict:
         "raw_median": _median_block([s["raw"] for s in scored], 4),
         "gait_median": _median_block([s["gait"] for s in scored if s.get("gait")], 4),
         "binding": min(live, key=live.get) if live else None,
+        # summary() fills it in. Its slot here keeps per_seed last in a row.
+        "vs_baseline": None,
         "per_seed": seeds,
     }
 

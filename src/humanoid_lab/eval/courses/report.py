@@ -88,7 +88,7 @@ def render_markdown(courses_json: dict, battery_checkpoint: str | None = None) -
             f"{' and '.join(DIAGNOSTIC_AXES).capitalize()} are diagnostics: they stay "
             "in the min but cannot bind while the other axes are healthy. "
             "Compare a row across policies, never across rows. "
-            "A difference below the noise band in docs/configuration.md is noise."
+            "A difference below twice the row's noise band in docs/configuration.md is noise."
         ),
         "",
         (

@@ -645,14 +645,14 @@ logic. They are raw readings.
 
 ### The settle window
 
-`eval/battery.py`'s `SETTLE_STEPS = 50` is the reset transient every new
-metric drops — 1 s at asimov's `ctrl_dt` of 0.02, and a step count rather
-than a duration. `rollout` starts recording on the first step after reset,
-and the opening steps are the robot falling into its pose against a command
-it has not had time to answer. The pre-4.1 metrics (`vel_err_*`,
-`vibration`, `foot_slip`, `height_*`, `torque_sat_frac`, `mech_power_mean`,
-`antiphase_score`) still score the whole record: narrowing their window would
-change what an existing field means.
+`eval/battery.py`'s `SETTLE_SEC = 1.0` is the reset transient every new
+metric drops. It is a duration: `settle_steps(dt)` converts it at the run's
+`ctrl_dt`, 50 steps at 0.02. `rollout` starts recording on the first step
+after reset, and the opening steps are the robot falling into its pose
+against a command it has not had time to answer. The older metrics
+(`vel_err_*`, `vibration`, `foot_slip`, `height_*`, `torque_sat_frac`,
+`mech_power_mean`, `antiphase_score`) still score the whole record:
+narrowing their window would change what an existing field means.
 
 A scenario that ends inside the window therefore reports `null` (or
 `swings: 0`) for every new metric while the older ones still print numbers.
@@ -662,10 +662,11 @@ second, not a broken feature — a 100k-step smoke policy falls at about step
 
 ### Spin probes
 
-Two scenarios, `spin_left` and `spin_right`, hold a pure yaw command —
-`wz = +0.5` and `-0.5` rad/s, no translation — for 6 s. They sit inside the
-`±0.6` yaw box with headroom, so a row that fails cannot be excused as a
-command-envelope corner the policy was never trained near.
+Two scenarios, `spin_left` and `spin_right`, hold a pure yaw command with no
+translation for 6 s. The rate is `0.8 wz_max` of the run's own yaw box:
+1.256 rad/s on Roboto's `±1.57` and 0.48 rad/s on Asimov's `±0.6`. That
+headroom means a row that fails cannot be excused as a command-envelope
+corner the policy was never trained near.
 
 | Field | Meaning |
 |---|---|
@@ -685,8 +686,8 @@ because every scenario that turned at all turned left.
 The frame is the body gyro, not world yaw. Integrating the rate needs no
 unwrapping, so a multi-turn spin cannot alias, and a robot that is not
 upright gets the honest number — it cannot spin about an axis it is not
-standing on. At `ctrl_dt` 0.02 the post-settle window asks for 2.5 rad
-(143 deg), short of a full revolution.
+standing on. The post-settle window is 5 s. It asks for 6.28 rad (360 deg)
+on Roboto and 2.4 rad (138 deg) on Asimov.
 
 **Not built:** a second probe world that replays the DR-patched contact
 physics (feet at `geom_priority = 1`) to tell "the policy unlearned turning"
@@ -815,6 +816,420 @@ there breaks offscreen rendering, so darwin keeps its default (CGL). Only
 the darwin path has been exercised in this repo; treat linux/egl as untested
 until a GPU-box run confirms it.
 
+## Course benchmark (`courses.json`)
+
+`./run.sh courses --run runs/<name>` asks whether a policy can walk a given
+path. The battery drives open-loop commands and reads the gait. Courses close
+the loop. A frozen follower turns the robot's pose into the `[vx, 0, wz]`
+command the policy tracks. Each row scores how faithfully the base followed.
+
+### Method
+
+Each row is a path plus a commanded speed, or a held spin. There are 20
+rows in five families.
+
+| Family | Rows | What varies |
+|---|---|---|
+| geometry | `straight_10m`, `arc_r3_90deg`, `circle_r2`, `circle_tight`, `figure_eight_r15`, `square_3m`, `slalom_05m`, `u_turn` | the shape only |
+| speed | `straight_slow`, `straight_fast`, `circle_r2_fast`, `speed_steps_straight` | the commanded speed |
+| floor | `straight_slippery`, `circle_r2_slippery` | floor and foot friction, mu 0.25 |
+| disturbance | `straight_push`, `straight_push_fast` | one lateral kick at 5 m |
+| spin | `spin_left`, `spin_right`, `spin_slow`, `spin_fast` | spin direction and rate |
+
+The geometry rows and `spin_left` run at the nominal: flat floor, the
+model's friction, `v_nom`, no kick. Every other row names a `baseline` and
+differs from it in one variable. `tests/unit/test_courses.py` checks that.
+
+A lane is one row at one seed. It resets the env from the seed's key and
+settles for 1 s at zero command (`battery.SETTLE_SEC`). The course is laid
+out from the settled pose, with its origin at the base and +x along the
+base's heading. The follower then runs until the goal, a fall, non-finite
+physics or the time budget. The budget is 2.5 times the ideal time plus
+2 s.
+
+The follower is pure pursuit with a 0.40 m lookahead. It never commands
+`vy`, so a robot cannot crab through a turn. Above 60 deg of heading error it
+spins in place. It walks again below 20 deg. Its yaw command is clipped at
+the yaw cap. A path completes inside 0.25 m of its end, once the follower's
+progress is within 0.80 m of the end. A closed course therefore cannot
+complete at its start. The goal is tested on every pose, including the pose
+after the last budget step. A spin completes after one full turn of world
+yaw in its direction.
+
+### Robot inputs and derived parameters
+
+Six numbers per robot drive the whole catalogue. They live in
+`eval/courses/spec.py`'s `ROBOT_INPUTS`. A unit or integration test fails
+when the robot's overlay or model moves under one of them.
+
+| Input | `roboto_origin` | `asimov_v1` | Source |
+|---|---:|---:|---|
+| `vx_max` (m/s) | 1.0 | 0.8 | overlay `task.env.command.vx[1]` |
+| `wz_max` (rad/s) | 1.57 | 0.6 | overlay `min(-wz[0], wz[1])` |
+| `stance_halfwidth_m` | 0.0725 | 0.1075 | half the lateral distance between the foot sites at the home keyframe |
+| `nominal_height_m` | 0.750 | 0.636 | base z at the home keyframe |
+| `push_vel` (m/s) | 0.5 | 0.4 | the planar kick the robot trains against |
+| `obs_noise` (gyro, joint_pos, joint_vel) | 0.01, 0.03, 1.75 | 0.01, 0.01, 0.1 | overlay `task.env.obs_noise` over `configs/task/joystick.yaml` |
+
+The overlay values are used, not a run's resolved ones. Every run of one
+robot therefore shares one catalogue and one sensor model. Asimov's 0.636 m
+is the keyframe height, at which the feet just touch the floor. Its overlay
+says it stands at about 0.72-0.75 m. Height cannot bind (see Scores), so no
+score moves on it.
+
+Speeds and rates are frozen fractions of the command box. They sit below
+1.0 with headroom, as the battery's scenarios do.
+
+| Parameter | Rule | `roboto_origin` | `asimov_v1` |
+|---|---|---:|---:|
+| `v_nom` | 0.5 `vx_max` | 0.50 | 0.40 |
+| `v_slow` | 0.2 `vx_max` | 0.20 | 0.16 |
+| `v_fast` | 0.9 `vx_max` | 0.90 | 0.72 |
+| speed steps, one per 2.5 m | (0.5, 0.9, 0.5, 0.7) `vx_max` | 0.50/0.90/0.50/0.70 | 0.40/0.72/0.40/0.56 |
+| `yaw_cap` | 0.8 `wz_max` | 1.256 | 0.48 |
+| spin rates (nominal, slow, fast) | `max(f yaw_cap, 0.333)`, f = 0.8, 0.4, 1.2 | 1.005, 0.502, 1.507 | 0.384, 0.333, 0.576 |
+| `r_tight` | `max(1.5 v_nom / yaw_cap, 0.75 m)` | 0.75 | 1.25 |
+| slalom wavelength | peak yaw demand at `v_nom` of 0.5 `yaw_cap`, amplitude 0.5 m | 3.964 m | 5.736 m |
+
+The 0.333 rad/s spin floor keeps every spin command at least twice the stand
+threshold. Commanded speed is `norm(vx, vy) + 0.3 |wz|`, and below 0.05 the
+gait clock freezes (`envs/progress.py`). The floor binds on Asimov's
+`spin_slow`. One radius, `r_tight`, serves every tight turn: `circle_tight`,
+the u-turn's half circle and the square's rounded corners. The 0.75 m floor
+binds on Roboto.
+
+No path row asks for the full yaw cap. Pure pursuit cuts curves to the
+inside, and a robot whose yaw lags is pushed back out. Where the follower's
+own error is as large as a policy's, a lagging robot outscores a perfect
+one. This was computed with the follower driving a simulated unicycle on
+Roboto's rows. With the u-turn and the slalom at the full cap and sharp
+square corners, a unicycle that executes the follower's commands exactly
+scored 3.09, 2.95 and 2.45 on tracking. A 0.30 s first-order yaw lag lifted
+its u-turn to 5.44. With `r_tight` and the half-cap slalom, that perfect
+unicycle scores at least 5.8 on every Roboto path row and 16.6 on every
+Asimov one. `tests/unit/test_courses.py` holds every path row at 4.0 or
+more on both robots. The cap is still exercised: `spin_fast` asks for 0.96
+`wz_max`.
+
+### The catalogue
+
+Roboto Origin. The `perfect unicycle` column is what a unicycle that
+executes the follower's `(vx, wz)` exactly earns: cross-track RMS, the
+tracking score that gives, and time over ideal. It goes into the JSON as
+`perfect_unicycle`. It is not a ceiling, because a robot whose yaw lags can
+exceed it.
+
+| Row | Baseline | Path | Speed | Length m | Ideal s | Budget steps | Perfect unicycle: xte cm / tracking / t:ideal |
+|---|---|---|---|---:|---:|---:|---|
+| `straight_10m` | | `line(10)` | 0.50 | 10.000 | 20.00 | 2600 | 0 / 1000 / 0.97 |
+| `arc_r3_90deg` | | 1 m lead-in, a 90 deg arc of radius 3 m | 0.50 | 5.712 | 11.42 | 1528 | 0.22 / 33.7 / 0.96 |
+| `circle_r2` | | lead-in, a full circle of radius 2 m | 0.50 | 13.565 | 27.13 | 3491 | 0.19 / 38.1 / 0.99 |
+| `circle_tight` | | lead-in, a full circle of radius `r_tight` | 0.50 | 5.712 | 11.42 | 1528 | 0.92 / 7.9 / 0.99 |
+| `figure_eight_r15` | | lead-in, two full circles of radius 1.5 m, opposite ways | 0.50 | 19.846 | 39.69 | 5062 | 0.39 / 18.4 / 1.00 |
+| `square_3m` | | lead-in, a 3 m square with corners rounded at `r_tight` | 0.50 | 12.461 | 24.92 | 3215 | 1.26 / 5.8 / 0.99 |
+| `slalom_05m` | | lead-in, three sine wavelengths of amplitude 0.5 m | 0.50 | 14.582 | 29.16 | 3746 | 1.22 / 5.9 / 0.99 |
+| `u_turn` | | lead-in, 3 m, a half circle of radius `r_tight`, 3 m | 0.50 | 9.356 | 18.71 | 2439 | 1.00 / 7.2 / 0.99 |
+| `straight_slow` | `straight_10m` | `line(10)` | 0.20 | 10.000 | 50.00 | 6350 | 0 / 1000 / 0.97 |
+| `straight_fast` | `straight_10m` | `line(10)` | 0.90 | 10.000 | 11.11 | 1489 | 0 / 1000 / 0.98 |
+| `circle_r2_fast` | `circle_r2` | as `circle_r2` | 0.90 | 13.565 | 15.07 | 1984 | 0.24 / 30.4 / 0.99 |
+| `speed_steps_straight` | `straight_10m` | `line(10)` in four 2.5 m blocks | 0.50/0.90/0.50/0.70 | 10.000 | 16.35 | 2144 | 0 / 1000 / 0.98 |
+| `straight_slippery` | `straight_10m` | as `straight_10m`, mu 0.25 | 0.50 | 10.000 | 20.00 | 2600 | as `straight_10m` |
+| `circle_r2_slippery` | `circle_r2` | as `circle_r2`, mu 0.25 | 0.50 | 13.565 | 27.13 | 3491 | as `circle_r2` |
+| `straight_push` | `straight_10m` | as `straight_10m`, kick at 5 m | 0.50 | 10.000 | 20.00 | 2600 | as `straight_10m` |
+| `straight_push_fast` | `straight_fast` | as `straight_10m`, kick at 5 m | 0.90 | 10.000 | 11.11 | 1489 | as `straight_fast` |
+| `spin_left` | | one turn | +1.005 rad/s | | 6.25 | 882 | |
+| `spin_right` | `spin_left` | one turn | -1.005 rad/s | | 6.25 | 882 | |
+| `spin_slow` | `spin_left` | one turn | +0.502 rad/s | | 12.51 | 1663 | |
+| `spin_fast` | `spin_left` | one turn | +1.507 rad/s | | 4.17 | 621 | |
+
+Asimov v1 has the same rows, names and baselines. The values that differ:
+
+| Row | Speed | Path change | Length m | Ideal s | Budget steps | Perfect unicycle |
+|---|---|---|---:|---:|---:|---|
+| `straight_10m`, `straight_slippery`, `straight_push` | 0.40 | | 10.000 | 25.00 | 3225 | 0 / 1000 / 0.97 |
+| `arc_r3_90deg` | 0.40 | | 5.712 | 14.28 | 1885 | 0.21 / 51.2 / 0.96 |
+| `circle_r2`, `circle_r2_slippery` | 0.40 | | 13.565 | 33.91 | 4339 | 0.18 / 59.8 / 0.99 |
+| `circle_tight` | 0.40 | radius 1.25 m | 8.853 | 22.13 | 2867 | 0.32 / 33.7 / 0.98 |
+| `figure_eight_r15` | 0.40 | | 19.846 | 49.62 | 6302 | 0.39 / 27.5 / 1.00 |
+| `square_3m` | 0.40 | corners at 1.25 m | 12.102 | 30.26 | 3882 | 0.65 / 16.6 / 0.98 |
+| `slalom_05m` | 0.40 | wavelength 5.736 m | 19.432 | 48.58 | 6173 | 0.60 / 17.8 / 0.99 |
+| `u_turn` | 0.40 | radius 1.25 m | 10.926 | 27.32 | 3514 | 0.41 / 26.1 / 0.98 |
+| `straight_slow` | 0.16 | | 10.000 | 62.50 | 7912 | 0 / 1000 / 0.97 |
+| `straight_fast`, `straight_push_fast` | 0.72 | | 10.000 | 13.89 | 1836 | 0 / 1000 / 0.98 |
+| `circle_r2_fast` | 0.72 | | 13.565 | 18.84 | 2455 | 0.22 / 49.9 / 0.99 |
+| `speed_steps_straight` | 0.40/0.72/0.40/0.56 | | 10.000 | 20.44 | 2655 | 0 / 1000 / 0.98 |
+| `spin_left`, `spin_right` | ±0.384 rad/s | | | 16.36 | 2145 | |
+| `spin_slow` | 0.333 rad/s | | | 18.85 | 2456 | |
+| `spin_fast` | 0.576 rad/s | | | 10.91 | 1464 | |
+
+`python -m humanoid_lab.eval.courses --list` prints both catalogues.
+
+The floor rows set the sliding friction of the floor and of every foot geom
+to 0.25. MuJoCo combines equal-priority friction by element-wise max, so
+both have to change. Every Roboto experiment preset trains with
+`dr.foot_friction`, which puts its contacts on friction 0.30-1.60. 0.25 sits
+just below that range. Asimov trains without foot friction DR, at 1.0. The
+other rows walk on the model's own friction, 0.9 on Roboto and 1.0 on
+Asimov, and each row records its effective value as `friction`.
+
+The push rows kick the base once, by `push_vel` to the left of its heading.
+The kick lands when the follower's progress first reaches 5.0 m. The policy
+acts on the observation from before the kick.
+
+### Scores
+
+Each axis divides a physical reference by a measured error. 1.0 means the
+error is as large as the reference, and higher is better.
+
+| Axis | Formula | Rows |
+|---|---|---|
+| `tracking` | `stance_halfwidth_m / rms(cross-track error)` | path |
+| `speed` | `mean(cmd vx) / rms(cmd vx - forward speed)`, over steps with `cmd vx` above 0.05 m/s | path |
+| `grip` (diagnostic) | base distance / foot slip distance | path |
+| `rotation` | `abs(wz cmd) / rms(wz cmd - gyro z)`, the spin-up included | spin |
+| `drift` | `stance_halfwidth_m / max(planar distance from the settled pose)` | spin |
+| `height` (diagnostic) | `nominal_height_m / rms(base height - nominal_height_m)` | both |
+| `smoothness` | `1 / vibration_index(joint velocities, 5 Hz)` | both |
+
+A seed's score is its weakest axis when it completed the course, else 0.
+`binding` names that axis. A sub-score is capped at 1000, and a non-finite
+error scores 0. A record shorter than 1 s, or a lane whose physics went
+non-finite, has no sub-scores. A row reports the median and the worst over
+its seeds.
+
+Height and grip are diagnostics. They stay in the min but cannot bind while
+the other axes are healthy. On a record that never fell, height stays above
+`h_nom / (h_nom - fall.min_height)`: 2.5 on Roboto and 3.4 on Asimov. On the
+trained Roboto policy below, over the 601 completed seeds of four seed bases,
+grip read 13-38 and height 63.6 or more. Neither bound.
+
+`raw` holds the measured errors. `speed_ratio` is the delivered forward
+speed over the commanded one. The speed axis divides by the command, so a
+steady 23% shortfall still scores 4.3. Read the ratio beside it. Gait KPIs
+from `eval/gait.py` are reported under `gait` and never scored.
+
+The vibration cutoff is the battery's 5 Hz. A gait faster than 1.67 Hz puts
+its third harmonic above the cutoff, where it counts as vibration.
+
+A score compares across policies on one row of one robot. Rows differ in
+difficulty and in their perfect-unicycle numbers. There is therefore no
+overall score.
+
+`vs_baseline` holds a row's median minus its baseline's. On the floor rows
+it also holds `slip_ratio`, the row's median slip distance over its
+baseline's. Compare a pair by medians, never seed by seed. Every row uses
+the same seeds, so a row and its baseline start from the same reset states.
+Contact chaos still decorrelates the two rollouts within a few hundred
+steps.
+
+### Measurement noise
+
+Every run of a robot is measured under that robot's pinned `obs_noise`,
+whatever noise the run trained with. The runner merges it over the run's own
+`task.env`. The battery instead measures each run under its own training
+noise. Courses pin it because smoothness binds on some rows and moves with
+the noise. On 4 seeds of `straight_10m`, the trained Roboto policy below read
+smoothness 3.45-3.75 under `joint_vel` noise 0.2 and 3.29-3.44 under 1.75.
+`--set obs_noise.joint_vel=0.2` with another `--out` re-scores under another
+noise.
+
+### Flags and output
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--run DIR` | required unless `--list` | The run. Its newest checkpoint is measured. |
+| `--ground CLASS` | `flat` | The catalogue partition and the output name. Only `flat` exists. |
+| `--out FILE` | `<run>/courses.json` | The JSON. Artifacts go to `<out dir>/courses/`. |
+| `--seeds N` | 8 | Rollouts per row. |
+| `--seed-base N` | 0 | The first seed. Seed k of every row uses `PRNGKey(seed_base + k)`. |
+| `--only NAME ...` | every row | A subset. An unknown name exits 2 and prints the catalogue. |
+| `--set BLOCK.KEY=VALUE` | none | A `task.env` override merged one level deep over the measurement env and the pinned noise, recorded as `env_overrides`. A `sim` or `terrain` block exits 2. A `command.resample_steps` below 2 exits 2, because below 2 the env replaces the held command on every step. |
+| `--workers N` | `min(8, CPUs)` | Lane threads. It never changes a number. |
+| `--skip-if-current` | off | Exit 0 without loading a model when `--out` is current. |
+| `--check` | off | Exit 0 when `--out` is current and 3 when it is not, printing why. Loads no model. |
+| `--video`, `--video-size WxH` | off, `640x480` | One MP4 per row from its first seed, rendered after the lanes from the recorded joint positions. A renderer that fails warns and keeps the numbers. |
+| `--overlay-torque` | off | Torque bars in the `--video` frames, from the recorded torques. |
+| `--paths` | off | One overhead PNG per path row, with every seed's base trail in the course frame, labelled by seed number. |
+| `--list [--robot NAME]` | | Prints the derived params and the catalogue, and exits. Loads no model. |
+
+The run's own file holds the full measurement only: every row, 8 seeds from
+seed 0, the pinned noise and no `--set`. `--only`, `--set`, `--seeds` other
+than 8 and a nonzero `--seed-base` each need another `--out`. The report
+reads the run's own file. Any two runs' own files for one robot and
+catalogue therefore compare. `canonical` in the JSON says whether the
+request was the full measurement.
+
+`--out` is current when it holds the same schema, ground class, catalogue
+version and fingerprint, robot, checkpoint name and checkpoint sha256,
+seeds, seed base, row set and user `--set`. The sha256 covers every file of
+the checkpoint dir. A file measured from inputs read off the model is never
+current.
+
+The newest checkpoint is the largest numeric step dir, the battery's pick.
+Brax writes `ppo_network_config.json` last, so a step dir without it is an
+incomplete save, and the runner refuses it. The runner needs the run's
+run.json. train.py writes it when training returns or stops early. A
+training that is still running, or was killed before that, has none, and the
+runner exits 1. A run.json written after a kill, by whatever ran the
+training, makes the run measurable. The newest complete checkpoint is then
+measured. No run status gates the measurement.
+
+Exit codes:
+
+- 0: written, or current under `--skip-if-current` or `--check`.
+- 2: refused. That covers a bad flag, the canonical guard, an unknown row, a
+  refused `--set`, a ground class other than `flat`, a jax backend other
+  than CPU, and an incomplete newest checkpoint.
+- 3: `--check` found the file missing or not current.
+- 1: any other error.
+
+The JSON is written atomically, so a crash leaves the previous file in place.
+A NaN or an infinity anywhere in the result is an error that names its
+field, and nothing is written.
+
+`courses.json` is schema 1 and holds flat-ground rows only.
+
+| Key | Holds |
+|---|---|
+| `run`, `run_status` | run.json's `run_name` and `status`. `run_status` is `null` when run.json has no `status`, and train.py writes none. |
+| `checkpoint`, `checkpoint_step`, `checkpoint_sha256` | the step dir measured, its step, and the sha256 over its files |
+| `robot`, `preset`, `seeds`, `seed_base`, `canonical`, `env_overrides`, `budget_cap` | the request. `budget_cap` is `null` unless a test cut every lane short, and a file with one is never current. |
+| `catalogue` | The version, the fingerprint, `params_source`, the six inputs and the derived params. `follower` holds the follower constants and the yaw cap. `protocol` holds the protocol constants, `ctrl_dt`, the nominal friction and the noise the lanes ran under. `derivation` holds the fractions that turn the inputs into the params. |
+| `engine` | backend, platform, workers, machine, CPU model, `XLA_FLAGS`, and the jax, jaxlib, mujoco and mjx versions |
+| `warnings` | rows that command outside the run's own resolved command box, which run as asked |
+| `summary` | lane counts by outcome, and the rows every seed completed |
+| `courses` | one entry per row, in catalogue order: the row's definition and `spec_hash`, `perfect_unicycle`, the median and worst, the counts of completions, falls, timeouts and non-finite lanes, the median sub-scores, raw metrics and gait KPIs, `binding`, `vs_baseline` and `per_seed` |
+| `contacts`, `messages`, `physics_clean`, `nonfinite_lanes` | `contacts` and `messages` hold warp's counters and are `null` on jax. `physics_clean` is true when no lane went non-finite, and `nonfinite_lanes` counts the lanes that did. |
+| `perf` | workers, lanes, env-steps, and the env build, compile, lane, perfect-unicycle and wall seconds |
+| `provenance` | the git commit and dirty flag, package versions, device, start time and run.json's seed |
+
+A seed's `outcome` is `nonfinite`, `settle_fell`, `fell`, `completed` or
+`timed_out`, decided in that order. Path rows report `progress_m` per seed,
+and spin rows `progress_rad`.
+
+A robot with no entry in `ROBOT_INPUTS` still gets courses. The runner then
+measures the stance and the height on the model, reads the box, the push and
+the noise from the run's resolved config, sets `params_source` to
+`measured` and adds a warning.
+
+`./run.sh report` appends a `## Courses` section to `eval_report.md` when
+`courses.json` exists. It flags a checkpoint that differs from
+`battery.json`'s. It carries no PASS or ATTENTION line, because nothing
+about a course score is calibrated yet.
+
+### Seeds, determinism and the noise band
+
+Lanes are bit-identical across reruns on one CPU model. That holds with the
+same jax, jaxlib, mujoco and mjx versions, the same `XLA_FLAGS` and the same
+catalogue fingerprint. The thread count and the lane order do not matter.
+`--only` compiles the same program as the full catalogue, so a row's numbers
+do not depend on which other rows ran. `tests/integration/test_course_lanes.py`
+pins both. XLA:CPU compiles for the host's instruction set, so two CPU
+models may differ. `engine.cpu` records the model. arm64 Linux kernels print
+no model name, so there it records the core's implementer, variant, part and
+revision. Across hosts the agreement is distributional only.
+
+Re-running the same seeds reproduces the same numbers, so a replicate needs
+a disjoint `--seed-base`. A row's noise band is the sample SD of its
+`score_median` across seed bases 0, 8, 16 and 24, and likewise for
+`score_worst`. A difference between two policies on one row below about
+twice the band is noise.
+
+### A trained Roboto policy
+
+Measured on the `yolo_v4` preset's run, checkpoint 000786432000, with
+`./run.sh courses` at seed bases 0, 8, 16 and 24, 8 seeds each. The table
+holds seed base 0, plus each row's band over the four bases.
+
+| Row | Median | Worst | Binding | Done | Error (median) | Speed ratio | Δ median | Band: median | Band: worst |
+|---|---:|---:|---|---|---|---:|---:|---:|---:|
+| `straight_10m` | 1.92 | 1.53 | tracking | 8/8 | xte 3.8 cm | 1.06 | | 0.23 | 0.17 |
+| `arc_r3_90deg` | 2.27 | 1.39 | tracking | 8/8 | xte 3.2 cm | 1.05 | | 0.40 | 0.50 |
+| `circle_r2` | 2.60 | 1.89 | tracking | 8/8 | xte 2.8 cm | 1.14 | | 0.33 | 0.47 |
+| `circle_tight` | 1.70 | 1.23 | tracking | 8/8 | xte 4.3 cm | 1.06 | | 0.24 | 0.24 |
+| `figure_eight_r15` | 2.45 | 1.91 | tracking | 8/8 | xte 3.0 cm | 1.10 | | 0.05 | 0.07 |
+| `square_3m` | 1.66 | 1.38 | tracking | 8/8 | xte 4.4 cm | 1.09 | | 0.18 | 0.19 |
+| `slalom_05m` | 2.23 | 1.56 | tracking | 8/8 | xte 3.2 cm | 1.08 | | 0.06 | 0.24 |
+| `u_turn` | 1.64 | 1.35 | tracking | 8/8 | xte 4.4 cm | 1.05 | | 0.16 | 0.17 |
+| `straight_slow` | 0.00 | 0.00 | tracking | 0/8 | xte 13.2 cm | 0.15 | -1.92 | 0.00 | 0.00 |
+| `straight_fast` | 3.16 | 2.88 | smoothness | 8/8 | xte 2.0 cm | 0.77 | +1.24 | 0.04 | 0.42 |
+| `circle_r2_fast` | 3.23 | 3.21 | smoothness | 8/8 | xte 1.5 cm | 0.82 | +0.63 | 0.01 | 0.03 |
+| `speed_steps_straight` | 2.52 | 1.70 | tracking | 8/8 | xte 2.9 cm | 0.93 | +0.60 | 0.17 | 0.44 |
+| `straight_slippery` | 2.10 | 0.91 | tracking | 8/8 | xte 3.5 cm | 1.07 | +0.18 | 0.34 | 0.44 |
+| `circle_r2_slippery` | 1.91 | 1.05 | tracking | 8/8 | xte 3.8 cm | 1.14 | -0.70 | 0.09 | 0.28 |
+| `straight_push` | 0.64 | 0.26 | tracking | 8/8 | xte 11.4 cm | 1.03 | -1.28 | 0.06 | 0.25 |
+| `straight_push_fast` | 0.63 | 0.23 | tracking | 8/8 | xte 11.6 cm | 0.74 | -2.53 | 0.02 | 0.18 |
+| `spin_left` | 0.38 | 0.32 | drift | 8/8 | wz 0.277 rad/s | | | 0.03 | 0.03 |
+| `spin_right` | 0.35 | 0.26 | drift | 8/8 | wz 0.165 rad/s | | -0.03 | 0.03 | 0.03 |
+| `spin_slow` | 0.38 | 0.20 | drift | 8/8 | wz 0.170 rad/s | | +0.00 | 0.07 | 0.04 |
+| `spin_fast` | 0.72 | 0.41 | drift | 8/8 | wz 0.456 rad/s | | +0.34 | 0.05 | 0.05 |
+
+What the four bases show:
+
+- Tracking binds on most path rows. Speed and smoothness each bind on a
+  few seeds of the arc and circle rows. Smoothness binds on most seeds of the
+  fast rows. Drift binds on every spin.
+- The policy cannot walk slowly. On `straight_slow` its median delivery is
+  9-17% of the 0.20 m/s command, and it times out on all 32 seeds.
+- At `v_fast` it delivers 75-78% of the command, yet the speed axis reads
+  3.6. `speed_ratio` is the column that shows the shortfall.
+- The kick can tip it over. It fell on 3 of 32 seeds of `straight_push` and
+  on 4 of 32 of `straight_push_fast`, all at seed bases 8 and 24.
+- `straight_slow` timed out on every seed, so its band is 0. That band is a
+  floor, not a noise estimate. The other median bands run from 0.01
+  (`circle_r2_fast`) to 0.40 (`arc_r3_90deg`). Base 0 reads below the other
+  three on six of the eight geometry rows. Every row of one base starts from
+  the same reset states.
+
+`circle_r2_slippery` against `circle_r2` clears twice the band. The two
+bands are 0.09 and 0.33, so twice the larger is 0.67. The median dropped by
+0.70 at base 0, 1.53 at base 8, 1.42 at base 16 and 1.41 at base 24. Base 0
+clears it only just. The straight pair shows no effect. `straight_slippery`
+minus `straight_10m` read +0.18, -0.16, -0.72 and +0.32, and its sign flips
+between bases. The feet slide about twice as far at mu 0.25 on both pairs:
+`slip_ratio` read 2.0-2.2 on the straight pair and 2.3-2.4 on the circle
+pair.
+
+### Cost
+
+One full measurement is 160 lanes. For the Roboto policy above it took
+186-188k env-steps, 51k of them on the 8 timeouts of `straight_slow`. A
+Roboto policy that timed out on every row would take 406k env-steps.
+
+The numbers below cover six runs on a 10-core Apple M2 Pro with 8 threads:
+the four seed bases and two reruns of base 0.
+
+| Part | Roboto |
+|---|---:|
+| env build and checkpoint load (s) | 1.8-2.4 |
+| compile, one lane program per friction group, two groups (s) | 21-29 |
+| lanes (s) | 43-57 |
+| perfect-unicycle numbers (s) | 0.1 |
+| wall (s) | 67-84 |
+| env-steps | 186-188k |
+| ms per env-step | 0.23-0.30 |
+
+Asimov's cost is not measured here. `perf` in the JSON records these numbers
+for every run.
+
+### Changing the catalogue
+
+The catalogue is frozen. A change to a row, a shared constant, a normalizer
+or a follower constant invalidates every recorded score.
+`families.catalogue_fingerprint` hashes every row of a ground class with
+every frozen constant and derived parameter. `tests/unit/test_courses.py`
+pins the hash per robot, so any change fails that test. Whoever changes it
+decides whether `CATALOGUE_VERSION` moves. Bump it when an existing row's
+meaning changes. A new row changes the fingerprint and not the version. A
+row's name plus its `spec_hash` is its identity.
+
+To add a row, append it to its family's `courses(p)` in
+`eval/courses/families/`, or add a family module and list it in
+`FAMILY_MODULES`. Name its `baseline` when it differs from another row in
+one variable. Then update the documented rows and the pinned fingerprints in
+`tests/unit/test_courses.py`. Old `courses.json` files then fail `--check`,
+and a re-run recomputes them.
+
 ## Early stopping (`early_stop`)
 
 Off by default. When on, the trainer ends a run whose eval reward has stopped
@@ -865,8 +1280,9 @@ Read from `run.sh` as it stands today:
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
 | `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--set BLOCK.KEY=VALUE ...]`. Writes `<run>/battery.json` unless `--out` says otherwise. `--set` re-scores the checkpoint under a changed `task.env` value (e.g. `obs_noise.joint_vel=1.75`), merged one level deep over the measurement env; VALUE is read as YAML. It requires an `--out` other than `<run>/battery.json`, so a re-scored variant never overwrites the run's own table, and the variant records the overrides under `env_overrides`. |
-| `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
+| `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`, and appends the course section when `<run>/courses.json` exists. A run with `courses.json` and no `battery.json` gets the course section alone. |
 | `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
+| `courses` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.courses` | `--run runs/<name> [--ground flat] [--out PATH] [--seeds N] [--seed-base N] [--only NAME ...] [--set BLOCK.KEY=VALUE ...] [--workers N] [--skip-if-current \| --check] [--video] [--video-size WxH] [--overlay-torque] [--paths]`, or `--list [--robot NAME]`. Runs the path-following course benchmark on the run's newest checkpoint and writes `<run>/courses.json` unless `--out` says otherwise. See [Course benchmark](#course-benchmark-coursesjson). |
 | `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
 
 ## Configs compose only from the editable install
