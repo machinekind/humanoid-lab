@@ -6,6 +6,8 @@ rollout, no env needed. Mirrors test_sizing_report.py's pattern.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -292,3 +294,74 @@ def test_a_scenario_that_never_settled_renders_a_dash():
 def test_a_battery_without_a_tracking_error_renders_no_servo_section():
     """battery.json files written before the tracking error existed."""
     assert "## Servo tracking" not in render_markdown(BATTERY)
+
+
+# -- the courses section -----------------------------------------------------
+
+# A courses.json, schema 1, cut to the fields the section reads. Same run and
+# checkpoint as BATTERY.
+COURSES = {
+    "schema": 1,
+    "ground_class": "flat",
+    "run": "smoke_test_run",
+    "checkpoint": "000000102400",
+    "checkpoint_step": 102400,
+    "robot": "roboto_origin",
+    "seeds": 8,
+    "seed_base": 0,
+    "canonical": True,
+    "env_overrides": None,
+    "catalogue": {"version": 1, "fingerprint": "ab" * 32, "params_source": "pinned"},
+    "warnings": [],
+    "timestamp": "2026-07-15T00:00:00+02:00",
+    "courses": {
+        "straight_10m": {
+            "kind": "path", "score_median": 1.919, "score_worst": 1.53, "binding": "tracking",
+            "seeds": 8, "completed": 8, "falls": 0,
+            "raw_median": {"xte_rms_m": 0.0362, "speed_ratio": 1.041},
+            "perfect_unicycle": {"tracking": 1000.0}, "vs_baseline": None, "per_seed": [],
+        },
+    },
+}
+
+
+def _run_with(tmp_path, *, battery=None, courses=None):
+    run_dir = tmp_path / "runs" / "fake_run"
+    run_dir.mkdir(parents=True)
+    if battery is not None:
+        (run_dir / "battery.json").write_text(json.dumps(battery))
+    if courses is not None:
+        (run_dir / "courses.json").write_text(json.dumps(courses))
+    return run_dir
+
+
+def test_the_report_appends_the_courses_section_when_courses_json_exists(tmp_path):
+    md = build_report(_run_with(tmp_path, battery=BATTERY, courses=COURSES))
+    assert md.index("## Battery") < md.index("## Attention") < md.index("## Courses")
+    assert "| straight_10m | 1.919 | 1.530 | tracking |" in md
+    assert "checkpoint mismatch" not in md
+    assert build_report(_run_with(tmp_path / "b", battery=BATTERY)) == render_markdown(BATTERY)
+
+
+def test_the_report_renders_courses_alone_without_battery_json(tmp_path):
+    md = build_report(_run_with(tmp_path, courses=COURSES))
+    assert md.startswith("# Eval report: smoke_test_run")
+    assert "- checkpoint: 000000102400" in md
+    assert "no battery.json" in md
+    assert "## Courses" in md and "## Battery" not in md and "## Attention" not in md
+
+
+def test_the_report_warns_when_the_two_checkpoints_differ(tmp_path):
+    older = {**BATTERY, "checkpoint": "000000051200"}
+    md = build_report(_run_with(tmp_path, battery=older, courses=COURSES))
+    assert "checkpoint mismatch" in md
+    assert "courses measured 000000102400, battery.json measured 000000051200" in md
+
+
+def test_eval_report_imports_no_jax():
+    code = (
+        "import sys, humanoid_lab.eval.report\n"
+        "print(sorted(m for m in sys.modules if m == 'jax' or m.startswith('jax.')))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"

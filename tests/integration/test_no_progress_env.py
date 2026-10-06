@@ -313,5 +313,9 @@ def test_the_cut_costs_the_episode_and_nothing_else(env):
 
         assert "no_progress" not in scales
         assert set(env._config.reward.scales) == scales
+        # reset() seeds no reward/* key for a style term at scale 0, so the
+        # step is held to the keys reset() seeded, all of them scales keys.
+        seeded = {k[len("reward/") :] for k in state.metrics if k.startswith("reward/")}
         reward_keys = {k[len("reward/") :] for k in stepped.metrics if k.startswith("reward/")}
-        assert reward_keys == scales
+        assert reward_keys == seeded
+        assert reward_keys <= scales

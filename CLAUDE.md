@@ -18,6 +18,7 @@ network and experiment groups.
 | `test` | `pytest tests/unit -q` — model-free, seconds, the edit loop |
 | `test-slow` / `test-all` | `tests/integration` (builds and steps MJX) / both, before a merge |
 | `battery` / `report` / `eval` | eval battery, report, video |
+| `courses` | path-following benchmark -> `courses.json` |
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts (`policy.npz`, `policy_meta.json`) from a checkpoint |
 
@@ -31,6 +32,12 @@ lists every flag each verb takes.
 Remote training execution lives in a private ops repo; see CLAUDE.local.md
 (gitignored) for where it is. `jobs/` holds the payloads that repo calls, and
 `jobs/README.md` states the contract between the two.
+
+Every trained run gets `courses.json`. `jobs/train.sh` measures the run it
+trains unless `EVAL=false`. After a training ends any other way (a killed
+payload, `./run.sh train`), run `RUNS=<run> ./jobs/eval_runs.sh` with the venv
+active, for each run it trained (both phases of a chain).
+`RUNS=all CHECK=true ./jobs/eval_runs.sh` lists the runs that lack one.
 
 Remote job submission is a human-authorized action. Agents never submit on
 their own.

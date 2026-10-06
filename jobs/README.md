@@ -39,3 +39,38 @@ A payload promises:
   fine, and `train.sh` does it.
 - It exits nonzero on failure, and its header states its partial-failure
   policy.
+
+## Measuring every model
+
+Every trained run gets the standard evals: `courses.json`, `battery.json`
+and `eval_report.md`. `eval_runs.sh` runs them on CPU for the runs named in
+`RUNS`. It needs no GPU.
+
+`train.sh` measures the run it trains whenever the training call returns,
+whatever its exit code. `EVAL=false` turns that off. When the training
+exits 0 and its evals then fail or time out, `train.sh` exits 75.
+`train_chain.sh` exits 75 when phase B succeeds after a phase A that exited
+75.
+
+A payload killed with its process group cannot measure its own run. A
+deadline stop kills it that way. The caller therefore has one more duty.
+After every training payload ends, by any path, it runs
+`RUNS=<runs> ./jobs/eval_runs.sh` for every run dir the payload trained.
+For `train_chain.sh` those are `<RUN_NAME>_a` and `<RUN_NAME>`. A phase B
+that never started has no `run.json`. It is SKIPPED, and a SKIPPED run makes
+the call exit 1. So the caller names only the run dirs that exist. A kill
+during `train.sh`'s eval stage ends the stage too, so no eval of the payload
+outlives it to race that call. The call also completes a run after a 75.
+The run needs a `run.json` first. When the trainer died before writing one,
+the caller writes it. When `train.sh` already measured the run, the call
+finds every file current and exits in seconds.
+
+`RUNS=all CHECK=true ./jobs/eval_runs.sh` is the audit. It runs no eval. It
+lists every run whose `courses.json` is missing or not current, and every
+`battery.json` that is not for its run's newest checkpoint. It also lists
+every run dir with checkpoints but no `run.json`. It exits 1 when it lists
+anything. `RUNS=all ./jobs/eval_runs.sh` measures every run that lacks
+current results.
+
+`eval_runs.sh` and the eval stage in `train.sh` write only under `runs/`.
+Neither submits a job.
