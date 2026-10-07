@@ -33,7 +33,10 @@ _OPTIONAL_PARAM_KEYS = ("kp", "kd", "velocity_limit", "armature", "frictionloss"
 _TOP_LEVEL_KEYS = frozenset(
     {"model", "soft_limit_factor", "action_scale_factor", "action_scale_rad", "groups"}
 )
-_GROUP_PARAM_KEYS = frozenset({"effort_limit", *_OPTIONAL_PARAM_KEYS})
+# A group's own action_scale_rad replaces the preset-wide value for that
+# group's joints (pd model only). It is an RL action-window setting, not an
+# actuator parameter, so resolve() leaves it out of JointActuatorParams.
+_GROUP_PARAM_KEYS = frozenset({"effort_limit", "action_scale_rad", *_OPTIONAL_PARAM_KEYS})
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -174,8 +177,19 @@ def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, flo
     scale fields. See ActuatorModel.action_scale.
     """
     params_by_joint = resolve(preset, robot_spec)
-    if preset.action_scale_rad is not None and preset.model == "pd":
-        return {joint_name: preset.action_scale_rad for joint_name in params_by_joint}
+    if preset.model == "pd":
+        group_rad = {
+            joint_name: preset.groups[robot_spec.group_of(joint_name)].get("action_scale_rad")
+            for joint_name in params_by_joint
+        }
+        if preset.action_scale_rad is not None or any(v is not None for v in group_rad.values()):
+            model = ACTUATOR_MODELS[preset.model]
+            return {
+                joint_name: float(group_rad[joint_name]) if group_rad[joint_name] is not None
+                else preset.action_scale_rad if preset.action_scale_rad is not None
+                else model.action_scale(params, preset.action_scale_factor)
+                for joint_name, params in params_by_joint.items()
+            }
     model = ACTUATOR_MODELS[preset.model]
     return {
         joint_name: model.action_scale(params, preset.action_scale_factor)

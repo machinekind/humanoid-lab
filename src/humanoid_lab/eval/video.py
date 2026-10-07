@@ -156,6 +156,7 @@ def render_video(
     joint: str | None = None,
     push: bool = False,
     overlay_torque: bool = False,
+    heading_gain: float = 0.0,
 ) -> Path:
     run, env, _ckpt, inf = load_checkpoint_policy(run_dir, push_override(push))
 
@@ -205,8 +206,20 @@ def render_video(
         frames.append(view.frame(state.data.qpos, torque=overlay_force()))
         frame_times.append(0.0)
 
+        yaw_target = None
         for i in range(n_steps):
             cmd = cmd_at(i)
+            if heading_gain:
+                # Outer heading loop, as a deployment's joystick or planner
+                # closes it: the policy observes yaw RATE only, so an unbidden
+                # turn accumulates unseen; this adds wz = k * heading error
+                # (clipped to 0.5 rad/s) on top of the scenario's command.
+                q = np.asarray(state.data.qpos)[3:7]
+                yaw = float(np.arctan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] ** 2 + q[3] ** 2)))
+                yaw_target = yaw if yaw_target is None else yaw_target + float(cmd[2]) * env.dt
+                err = (yaw_target - yaw + np.pi) % (2 * np.pi) - np.pi
+                cmd = np.array(cmd, dtype=np.float32)
+                cmd[2] += float(np.clip(heading_gain * err, -0.5, 0.5))
             state.info["command"] = cmd
             rng, act_rng = jax.random.split(rng)
             act, _ = inf(state.obs, act_rng)
@@ -268,13 +281,18 @@ def main():
         "is push-free, matching the battery's measurement convention (a "
         "mid-video kick reads as a policy failure)",
     )
+    ap.add_argument(
+        "--heading-gain", type=float, default=0.0,
+        help="close an outer heading loop: add wz = gain * heading error (rad/s, clipped to 0.5) "
+        "to the scenario command; 0 (default) renders the policy open-loop",
+    )
     args = ap.parse_args()
 
     render_video(
         args.run, args.scenario, args.steps, args.out, args.seed,
         video_size=args.video_size,
         plot_torque=args.plot_torque, plot_joints=args.plot_joints, joint=args.joint,
-        push=args.push, overlay_torque=args.overlay_torque,
+        push=args.push, overlay_torque=args.overlay_torque, heading_gain=args.heading_gain,
     )
 
 
