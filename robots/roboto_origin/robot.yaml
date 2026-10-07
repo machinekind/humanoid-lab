@@ -127,6 +127,26 @@ keyframes:
       right_arm_roll_joint: -0.06
       left_elbow_pitch_joint: 0.78
       right_elbow_pitch_joint: 0.78
+  # home's legs with the arms hanging straight along the torso: upper arm
+  # vertical at arm_pitch 0, forearm collinear at elbow_pitch 1.5 (measured
+  # with wtrain/arm_pose.py: elbow 0 is a right angle, home's 0.78 is ~50
+  # degrees of flex). The ctrl/obs anchor for the arms-down gait runs
+  # (task.env.reset_keyframe=home_arms_down).
+  home_arms_down:
+    base_pos: [0.0, 0.0, 0.75]
+    joints:
+      left_thigh_pitch_joint: -0.1
+      right_thigh_pitch_joint: -0.1
+      left_knee_joint: 0.3
+      right_knee_joint: 0.3
+      left_ankle_pitch_joint: -0.2
+      right_ankle_pitch_joint: -0.2
+      left_arm_pitch_joint: 0.0
+      right_arm_pitch_joint: 0.0
+      left_arm_roll_joint: 0.06
+      right_arm_roll_joint: -0.06
+      left_elbow_pitch_joint: 1.5
+      right_elbow_pitch_joint: 1.5
 
 # base_link is the free-floating root body; torso_link carries most of the
 # upper-body mass (7.58 kg, per source/mjcf/rpo.xml's torso_link inertial).

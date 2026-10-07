@@ -147,6 +147,9 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity zeroes with this prob (stand training). An untuned
             # starting value for a biped.
             zero_prob=0.15,
+            # Speed below which a command is a stand command (clock frozen,
+            # stepping rewards off); progress.SPEED_DEADBAND is the original.
+            deadband=0.05,
             # Pure command draws (see _sample_command). Each redraws the
             # base uniform sample into a CLEAN single-axis command with the
             # given probability, all off by default.
@@ -602,6 +605,21 @@ class Joystick(HumanoidEnv):
             jp.zeros(self.action_size), self._default_pose, self._action_scale
         )
 
+        # Heading-error observation: the policy sees yaw RATE only, so an
+        # unbidden turn accumulates unseen. With "heading_err" on an obs list,
+        # info carries yaw_ref -- the heading to hold. It follows the actual yaw
+        # while a turn is commanded (|wz| above the deadband) and freezes the
+        # moment the command is straight; the observation is the clipped
+        # wrapped difference yaw_ref - yaw, in radians.
+        # command.deadband: below this planar+yaw speed a command is a stand
+        # command (clock frozen, stand_still pays, the stepping rewards are
+        # off). Default progress.SPEED_DEADBAND; a larger value stops the
+        # step-in-place at the start of a walk, where the command is still ~0.
+        self._deadband = float(self._config.command.get("deadband", progress.SPEED_DEADBAND))
+        self._heading_obs = "heading_err" in (
+            list(self._config.obs.state) + list(self._config.obs.privileged)
+        )
+
         if self._config.symmetry.enable:
             self._init_mirror_maps()
 
@@ -796,6 +814,14 @@ class Joystick(HumanoidEnv):
         zero = jax.random.bernoulli(r4, c.zero_prob)
         return jp.where(zero, jp.zeros(3), vel)
 
+    def _yaw(self, data):
+        q = self._quat(data)
+        return jp.arctan2(2.0 * (q[0] * q[3] + q[1] * q[2]), 1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2))
+
+    def _heading_err(self, data, info):
+        err = info["yaw_ref"] - self._yaw(data)
+        return jp.clip(jp.arctan2(jp.sin(err), jp.cos(err)), -1.0, 1.0)
+
     def _cmd_speed(self, command):
         """Planar speed the gait clock should serve; turning counts too."""
         return jp.linalg.norm(command[:2]) + progress.YAW_SPEED_WEIGHT * jp.abs(command[2])
@@ -820,7 +846,7 @@ class Joystick(HumanoidEnv):
         speed = self._cmd_speed(command)
         frac = jp.clip(speed / self._cmd_vmax, 0.0, 1.0)
         freq = g.freq[0] + (g.freq[1] - g.freq[0]) * frac
-        return jp.where(speed > progress.SPEED_DEADBAND, 2 * jp.pi * self.dt * freq, 0.0)
+        return jp.where(speed > self._deadband, 2 * jp.pi * self.dt * freq, 0.0)
 
     # -- reset / step -------------------------------------------------------
     def reset(self, rng: jax.Array) -> mjx_env.State:
@@ -869,6 +895,7 @@ class Joystick(HumanoidEnv):
             "phase": jp.array(0.0),
             "step_count": jp.array(0),
             "steps_since_cmd": jp.array(0),
+            **({"yaw_ref": self._yaw(data)} if self._heading_obs else {}),
         }
         if self._gait_dur_ema_on:
             # Per-foot EMAs of completed swing/stance durations, for
@@ -986,6 +1013,8 @@ class Joystick(HumanoidEnv):
             data = data.replace(qvel=qvel)
 
         data = mjx_env.step(self._mjx_model, data, motor_targets, self.n_substeps)
+        if self._heading_obs:
+            info["yaw_ref"] = jp.where(jp.abs(info["command"][2]) > 0.05, self._yaw(data), info["yaw_ref"])
 
         contact = self._foot_contact(data)
         contact_filt = contact | info["last_contact"]
@@ -1114,6 +1143,16 @@ class Joystick(HumanoidEnv):
     def _obs_catalog(self, data, info):
         catalog = super()._obs_catalog(data, info)
         catalog["command"] = info["command"]
+        catalog["heading_err"] = (
+            self._heading_err(data, info)[None] if "yaw_ref" in info else jp.zeros(1)
+        )
+        if not any(float(f) for f in self._config.gait.freq):
+            # A frozen clock (gait.freq [0, 0]) carries no timing, but its
+            # (0, pi) leg offsets would still hand the actor a constant
+            # [1, -1, 0, 0]: a permanent left/right marker that lets the policy
+            # specialize one leg and that no mirrored state ever matches.
+            catalog["phase"] = jp.zeros(2 * self._n_feet)
+            return catalog
         leg_phase = self._leg_phases(info)
         catalog["phase"] = jp.concatenate([jp.cos(leg_phase), jp.sin(leg_phase)])
         return catalog
@@ -1130,7 +1169,7 @@ class Joystick(HumanoidEnv):
         gyro = self._gyro(data)
         gravity = self._gravity_body(data)
         cfg = self._config.reward
-        moving = self._cmd_speed(cmd) > progress.SPEED_DEADBAND
+        moving = self._cmd_speed(cmd) > self._deadband
 
         qpos_act = data.qpos[self._qadr]
         qvel_act = data.qvel[self._vadr]
