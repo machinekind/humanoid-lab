@@ -39,10 +39,11 @@ STUB_STEP = "000000000001"
 
 # Records one call per block: the allocator variable, then each argument.
 # STUB_RCS lists exit codes, one per call in order. Calls past the list
-# exit 0. With STUB_WRITE_RUN set, a training resolve prints the run_name
-# its overrides set (else null), and a training writes runs/<run_name>/
-# with a full-budget run.json and one complete checkpoint. Without a
-# run_name it writes runs/stub_run/.
+# exit 0. A training resolve prints the run_name its overrides set (else
+# null), as the real resolve does, so jobs/train.sh's eval stage sees the
+# name. With STUB_WRITE_RUN set, a training writes runs/<run_name>/ with a
+# full-budget run.json and one complete checkpoint. Without a run_name it
+# writes runs/stub_run/.
 STUB_PYTHON = """#!/bin/sh
 n=$(cat "$STUB_DIR/count" 2>/dev/null || echo 0)
 echo $((n + 1)) > "$STUB_DIR/count"
@@ -52,14 +53,14 @@ echo $((n + 1)) > "$STUB_DIR/count"
   printf 'END\\n'
 } >> "$STUB_DIR/calls"
 if [ "${1-}" = "-" ]; then exec "$STUB_REAL_PYTHON" "$@"; fi
-if [ -n "${STUB_WRITE_RUN-}" ] && [ "${1-}" = "-m" ] && [ "${2-}" = "humanoid_lab.train" ]; then
+if [ "${1-}" = "-m" ] && [ "${2-}" = "humanoid_lab.train" ]; then
   name=null
   for a in "$@"; do
     case "$a" in run_name=*) name="${a#run_name=}" ;; esac
   done
   if [ "${3-}" = "--cfg" ]; then
     printf 'run_name: %s\\n' "$name"
-  else
+  elif [ -n "${STUB_WRITE_RUN-}" ]; then
     [ "$name" = null ] && name=stub_run
     mkdir -p "runs/$name/checkpoints/$STUB_STEP"
     printf '{}\\n' > "runs/$name/checkpoints/$STUB_STEP/ppo_network_config.json"
@@ -345,10 +346,11 @@ def test_train_passes_the_group_variables_that_are_set(workdir):
 
 def test_train_passes_the_sizes_seed_and_run_name(workdir):
     """The header's terrain launch, with a seed and a run name. Every value
-    differs from its default, so a dropped variable shows."""
+    differs from its default, so a dropped variable shows. The eval stage is
+    off: this checks the training call alone."""
     code, calls = _run(
         workdir, "train.sh", EXPERIMENT="roboto_terrain_v1", ACTUATORS="deploy_pd", NUM_ENVS="8192",
-        BATCH="256", SEED="1", RUN_NAME="r",
+        BATCH="256", SEED="1", RUN_NAME="r", EVAL="false",
     )
     assert (code, len(calls)) == (0, 2)
     resolve, train = calls

@@ -32,7 +32,8 @@
 #   EXTRA_ARGS          extra hydra overrides for both phases, space
 #                       separated, applied after the budget and restore keys
 #                       so they win
-#   TASK                task config, both phases    (default joystick)
+#   TASK                task config, both phases    (default unset: each
+#                       experiment's own task, else joystick)
 #   EVAL                jobs/train.sh's eval stage, both phases; each
 #                       phase reads it from the environment (default true)
 #   EVAL_TIMEOUT        the stage's bound in seconds, both phases, read the
@@ -75,13 +76,13 @@
 # started, with early_stopped false, or with stopped_at_steps at or past
 # num_timesteps. Whatever phase A's exit code, the chain decides on that
 # file:
-#   - No fresh run.json, or one whose early_stopped and stopped_at_steps
-#     are still null (a signal, OOM, a crash before training returned):
-#     phase B does not run; the chain exits with phase A's code, or 1 if
-#     that code was 0 or 75. train.py writes run.json before training
-#     starts and fills those fields when training returns. It installs no
-#     signal handler, so a SIGTERM aimed at the trainer alone ends it with
-#     the fields null, and phase B never starts.
+#   - No fresh run.json, or one whose early_stopped is still null: phase B
+#     does not run; the chain exits with phase A's code, or 1 if that code
+#     was 0 or 75. train.py writes run.json before training starts and
+#     fills early_stopped when training returns. A training killed by a
+#     signal leaves status running, since train.py installs no signal
+#     handler. One that raised (an OOM, an error inside brax) leaves status
+#     failed, with the last eval's stopped_at_steps. Neither starts phase B.
 #   - A fresh run.json cut short of its budget: phase B does not run; the
 #     chain exits with phase A's code, or 143 if that code was 0 or 75.
 #     train.py writes such a run.json only after a plateau stop, which
@@ -114,7 +115,7 @@ fi
 : "${WANDB:=true}"
 : "${EXTRA_ARGS:=}"
 
-: "${TASK:=joystick}"
+TASK="${TASK:-}"
 
 # jobs/train.sh refuses a run_name jobs/eval_runs.sh cannot address. Phase
 # A's name can pass where phase B's fails (all_a and all), so RUN_NAME is
@@ -160,7 +161,11 @@ latest_checkpoint() {
 }
 
 # Prints "<early_stopped 0|1> <stopped_at_steps> <num_timesteps>" from the
-# run.json at $1.
+# run.json at $1. Exits 2, with the record's status and error on stderr,
+# when early_stopped is still null: training never returned. That is status
+# running after a signal, or failed after an exception such as an OOM. A
+# failed record carries the last eval's stopped_at_steps, so the budget test
+# alone would read it as a finished run.
 run_json_budget() {
     python3 - "$1" <<'PY'
 import json
@@ -168,6 +173,9 @@ import sys
 
 with open(sys.argv[1]) as f:
     d = json.load(f)
+if d.get("early_stopped") is None:
+    print(f"run.json status={d.get('status')} error={d.get('error')}", file=sys.stderr)
+    sys.exit(2)
 print(int(bool(d["early_stopped"])), int(d["stopped_at_steps"]), int(d["num_timesteps"]))
 PY
 }
@@ -188,7 +196,7 @@ resolve_phase() {
     [ "$WANDB" = "true" ] && wandb_flag=wandb.enable=true
     # shellcheck disable=SC2206
     local overrides=(
-        robot="$ROBOT" task="$TASK" actuators="$ACTUATORS"
+        robot="$ROBOT" ${TASK:+task="$TASK"} actuators="$ACTUATORS"
         seed="$SEED"
         "++ppo.num_envs=$NUM_ENVS"
         "++ppo.batch_size=$BATCH"
@@ -230,7 +238,11 @@ fail_a() {
 if ! [ -f "$RUN_JSON_A" ] || [ "$RUN_JSON_A" -ot "$START_MARKER" ]; then
     fail_a 1 "without writing $RUN_JSON_A"
 fi
-if ! budget="$(run_json_budget "$RUN_JSON_A")"; then
+budget_rc=0
+budget="$(run_json_budget "$RUN_JSON_A")" || budget_rc=$?
+if [ "$budget_rc" -eq 2 ]; then
+    fail_a 1 "and $RUN_JSON_A records a training that did not return (early_stopped is null)"
+elif [ "$budget_rc" -ne 0 ]; then
     fail_a 1 "and $RUN_JSON_A has no readable early_stopped, stopped_at_steps and num_timesteps"
 fi
 read -r early_stopped stopped_at budget_steps <<<"$budget"
