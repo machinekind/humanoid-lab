@@ -18,6 +18,8 @@ from humanoid_lab.dr import randomize
 from humanoid_lab.envs.joystick import Joystick, default_config
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.spec import load_robot_spec
+from humanoid_lab.terrain import scene
+from humanoid_lab.terrain.config import CPU_ARENA, arena_for, params_from_config
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 
@@ -181,6 +183,41 @@ def test_in_axes_is_usable_as_vmap_in_axes(mj_model, mjx_model, robot_spec, dr_c
     assert per_env.shape == (len(rng),)
     # The batched model really is per-env, not one model broadcast 8 times.
     assert len(np.unique(np.asarray(per_env))) > 1
+
+
+def test_floor_friction_draw_covers_every_ground_geom(mj_model, mjx_model, robot_spec):
+    """On a terrain model the floor is every ground geom: the heightfield,
+    the arena boxes and the aprons. Each world's one floor draw lands on all
+    of them, and it is the draw the same key gives the flat floor plane."""
+    spec = build_spec(ROBOT_DIR, "sizing_ideal")
+    scene.attach_terrain(spec, arena_for(params_from_config(CPU_ARENA)))
+    terrain_model = compile_spec(spec)
+    dr_cfg = {"foot_friction": {"enable": True}}
+    keys = jax.random.split(jax.random.PRNGKey(6), 4)
+    model_v, in_axes = randomize.make_domain_randomize(terrain_model, robot_spec, dr_cfg)(
+        mjx.put_model(terrain_model, impl="jax"), keys
+    )
+    flat_v, _ = randomize.make_domain_randomize(mj_model, robot_spec, dr_cfg)(mjx_model, keys)
+
+    ground = scene.ground_geom_ids(terrain_model)
+    assert len(ground) > 1
+    friction = np.asarray(model_v.geom_friction)[:, :, 0]
+    draws = friction[:, ground]
+    assert np.all(draws == draws[:, :1])
+    assert len(np.unique(draws[:, 0])) == len(keys)
+    floor = randomize._find_floor_geom_id(mj_model, None)
+    np.testing.assert_array_equal(draws[:, 0], np.asarray(flat_v.geom_friction)[:, floor, 0])
+    assert in_axes.geom_friction == 0
+
+    # Robot geoms other than the feet keep their own friction.
+    foot_ids = np.array([terrain_model.geom(n).id for n in robot_spec.foot_geoms])
+    rest = np.setdiff1d(np.arange(terrain_model.ngeom), np.concatenate([ground, foot_ids]))
+    np.testing.assert_array_equal(
+        friction[:, rest], np.broadcast_to(terrain_model.geom_friction[rest, 0], (len(keys), len(rest)))
+    )
+    priority = np.asarray(model_v.geom_priority)
+    assert np.all(priority[foot_ids] == 1)
+    assert np.all(priority[ground] == 0)
 
 
 def test_find_floor_geom_id_finds_asimovs_own_floor(mj_model):

@@ -8,11 +8,11 @@
 # Brax PPO shards envs across every visible device and psums the gradients,
 # so one process uses the whole machine.
 #
-# Parameters, all optional:
-#   ROBOT       robot config             (REQUIRED, e.g. roboto_origin)
-#   TASK        task config              (default joystick)
-#   ACTUATORS   actuator preset          (default sizing_ideal)
-#   EXPERIMENT  hydra experiment preset  (default unset, no experiment override)
+# Parameters, all optional unless marked:
+#   ROBOT       robot config             (REQUIRED unless EXPERIMENT is set)
+#   TASK        task config              (default unset, config.yaml's joystick)
+#   ACTUATORS   actuator preset          (default unset, config.yaml's sizing_ideal)
+#   EXPERIMENT  hydra experiment preset  (default unset, no experiment)
 #   RUN_NAME    run dir under runs/      (default train.py's <task>_<timestamp>)
 #               The resolved run_name, from any source, must be one dir
 #               name: no '/', no whitespace, not all, '.' or '..'. Any
@@ -31,6 +31,12 @@
 #   EVAL_WORKERS  course lanes the stage runs at once; never changes a
 #               number (default the courses CLI's: min(8, CPUs))
 #
+# ROBOT, TASK and ACTUATORS reach Hydra only when set. An experiment pins
+# its own robot and task, and sometimes its actuators. A set variable wins
+# over the experiment's pin, because Hydra applies command-line group
+# choices after the experiment's defaults. An unset one leaves the
+# experiment's pin, or config.yaml's default, in place.
+#
 # The NUM_ENVS/BATCH defaults are an untested starting point for a
 # multi-GPU box: measure with jobs/preflight_sizing.sh on the real node
 # class and scale the two together.
@@ -38,6 +44,15 @@
 # A full run:
 #   ROBOT=roboto_origin SEED=0 NUM_ENVS=32768 BATCH=1024 \
 #     RUN_ARGS="++ppo.num_timesteps=3e8" ./jobs/train.sh
+#
+# A terrain run. A terrain recipe on warp refuses to build until its
+# task.env.sim budgets are set. jobs/check_terrain.sh measures them
+# (docs/terrain.md). A terrain training run holds MJWarp's CCD scratch
+# outside the XLA pool. The scratch is naccdmax_per_env x NUM_ENVS slots.
+# Roboto Origin's slot is 5,480 bytes. 128 slots per env hold 23 GB at
+# 32768 envs and 5.7 GB at the 8192 below.
+#   EXPERIMENT=roboto_terrain_v1 ACTUATORS=deploy_pd NUM_ENVS=8192 BATCH=256 \
+#     ./jobs/train.sh
 #
 # WANDB=true turns the trainer's logging on and nothing else. Where the run
 # files land is the environment's business. On a host with no route out,
@@ -62,9 +77,10 @@
 #
 # Partial-failure policy:
 #   - A training that exits nonzero ends the script with its exit code.
-#     When it left a fresh run.json first (a crash at teardown), the stage
-#     measures the run's newest checkpoint before the script exits. Without
-#     a run name, that run.json must carry this config.
+#     When it left a fresh run.json (train.py writes one before training
+#     starts), the stage measures the run's newest checkpoint before the
+#     script exits. Without a run name, that run.json must carry this
+#     config.
 #   - A training that exits 0 followed by successful evals exits 0. The run
 #     dir then holds courses.json, battery.json and eval_report.md.
 #   - A training that exits 0 followed by a failed or timed-out eval exits
@@ -76,8 +92,8 @@
 #     or several fresh run.json files that this config cannot tell apart,
 #     exits 75 with nothing measured.
 #   - With no run name and no fresh run.json, the script warns and exits
-#     with the training's code. train.py writes run.json before it returns,
-#     so only a training that died early leaves none.
+#     with the training's code. train.py writes run.json before training
+#     starts, so only a training that died before that leaves none.
 #   - A SIGTERM or SIGKILL to this script's process group ends it before
 #     the stage. The caller measures that run (jobs/README.md).
 #   - The same kill during the stage ends the stage too. No eval outlives
@@ -96,10 +112,14 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
     exit 1
 fi
 
-: "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
-TASK="${TASK:-joystick}"
-ACTUATORS="${ACTUATORS:-sizing_ideal}"
+ROBOT="${ROBOT:-}"
+TASK="${TASK:-}"
+ACTUATORS="${ACTUATORS:-}"
 EXPERIMENT="${EXPERIMENT:-}"
+if [ -z "$ROBOT" ] && [ -z "$EXPERIMENT" ]; then
+    echo "ERROR: set ROBOT to a configs/robot/ name, e.g. roboto_origin, or set EXPERIMENT" >&2
+    exit 1
+fi
 RUN_NAME="${RUN_NAME:-}"
 NUM_ENVS="${NUM_ENVS:-32768}"
 BATCH="${BATCH:-1024}"
@@ -127,9 +147,14 @@ else
 fi
 
 # Expanded below as ${hydra_args[@]:+...}. Under set -u, bash before 4.4
-# calls an empty array's [@] an unbound variable, and both defaults leave
-# this array empty.
+# calls an empty array's [@] an unbound variable, and the defaults can
+# leave this array empty. `experiment=` takes no `+`: config.yaml's
+# defaults list already holds `experiment: null`, and `+experiment=` fails
+# to compose.
 hydra_args=()
+[ -n "$ROBOT" ] && hydra_args+=("robot=$ROBOT")
+[ -n "$TASK" ] && hydra_args+=("task=$TASK")
+[ -n "$ACTUATORS" ] && hydra_args+=("actuators=$ACTUATORS")
 [ -n "$EXPERIMENT" ] && hydra_args+=("experiment=$EXPERIMENT")
 [ -n "$RUN_NAME" ] && hydra_args+=("run_name=$RUN_NAME")
 
@@ -137,7 +162,6 @@ hydra_args=()
 # and in every task preset, so plain `ppo.foo=` fails hydra's struct check for
 # keys the preset did not already set.
 overrides=(
-    robot="$ROBOT" task="$TASK" actuators="$ACTUATORS"
     seed="$SEED"
     "++ppo.num_envs=$NUM_ENVS"
     "++ppo.batch_size=$BATCH"

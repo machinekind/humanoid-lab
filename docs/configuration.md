@@ -27,8 +27,8 @@ below. Override any of them with `group=name`.
 
 | Axis | Group dir | Default | Selects |
 |---|---|---|---|
-| `robot` | `configs/robot/` | `asimov_v1` | Which `robots/<name>/` directory supplies `robot.yaml`, `actuators/`, and the vendored MJCF. Also an `@package _global_` overlay that patches robot-specific `task`/`dr` tuning. See "Robot configs own robot-specific tuning" below. |
-| `task` | `configs/task/` | `joystick` | Selects the task's env class and its reward and observation overlay. `joystick` tracks commanded velocity. `sizing` is `joystick` with sharpened torque and energy penalties, plus per-step tau/omega/power telemetry. |
+| `robot` | `configs/robot/` | `roboto_origin` | Which `robots/<name>/` directory supplies `robot.yaml`, `actuators/`, and the vendored MJCF. Also an `@package _global_` overlay that patches robot-specific `task`/`dr` tuning. See "Robot configs own robot-specific tuning" below. |
+| `task` | `configs/task/` | `joystick` | Selects the task's env class and its reward and observation overlay. `joystick` tracks commanded velocity. `sizing` is `joystick` with sharpened torque and energy penalties, plus per-step tau/omega/power telemetry. `terrain` is `joystick` on a procedural arena, with the height scan added to the critic. See [Terrain task](#terrain-task-taskenvterrain) and [terrain.md](terrain.md). |
 | `actuators` | `configs/actuators/` | `sizing_ideal` | Which named actuator preset to inject. Also available: `encos_datasheet`, `deploy_pd`. |
 | `network` | `configs/network/` | `default` | Policy/value MLP layer sizes, merged into the PPO network factory. |
 | `dr` | `configs/dr/` | `default` | The domain-randomization switch block described below. Only one group, `default`, exists today. |
@@ -136,6 +136,10 @@ overlay, `config.yaml`'s own keys, experiment overlay, CLI. `+experiment=<name>`
 errors. Hydra's `+` prefix only adds a key that isn't already in the
 defaults list, and `experiment` already carries a `null` entry there.
 
+Terrain recipes are experiments too. `roboto_terrain_v1` is Roboto Origin's
+first terrain recipe, and `terrain_cpu` runs the terrain pipeline on a CPU.
+[terrain.md](terrain.md) describes both.
+
 An experiment PR only adds files: its own yaml under `configs/experiment/`,
 optionally a new actuator preset, optionally a new reward term. It never
 edits `configs/task/`, `configs/dr/`, `configs/robot/`, or an env's
@@ -166,7 +170,8 @@ CI before it costs GPU time.
 | `run_name` | `null` | Output goes to `runs/<run_name>`. Unset resolves to `<task>_<timestamp>`, prefixed `smoke_` under `smoke=true`. |
 | `seed` | `0` | PPO random seed. |
 | `smoke` | `false` | Shrinks PPO to a tiny CPU-sized budget (100k steps, 64 envs) and caps episode length at 200 steps. `run.sh smoke` also forces `JAX_PLATFORMS=cpu` and `wandb.enable=false`. |
-| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. |
+| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. A checkpoint whose critic list differs from the env's restores through `restore.py`. Shared critic columns keep their statistics and weights. Added columns get zero weights and their component's prior in the normalizer. The height scan's prior is mean 0.014 m and std 0.066 m, measured on the default arena (`envs/height_scan.py`). A component without one starts at mean 0 and std 1. The prior carries the weight of the source's whole sample count, so it holds long into the run. Removed columns are dropped. The actor list must match. The source's `network.policy_obs_key` must match this run's, and so must its `value_obs_key` unless `restore_value=false`. A `ppo.normalize_observations_mode` other than `welford`, in this run or the source's, refuses: brax's checkpoint load always rebuilds a Welford normalizer. `run.json`'s `restore` block records the plan and the priors. |
+| `restore_value` | `true` | Restore the checkpoint's value network with its policy. `false` starts a fresh critic and keeps the restored normalizer. |
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
 | `contact_preflight` | `true` | Measure the warp contact/constraint peaks on a short probe before training and record them in `run.json`. Skipped automatically under `smoke=true`. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
@@ -435,19 +440,22 @@ and `progress_ratio_per_step` (per-step mean of the ratio, clipped to
 | `p_max` | `0.02` | Per-step hazard at zero progress. Expected survival at a dead stop is `1/p_max` control steps — 50 steps, 1 s at `ctrl_dt=0.02`. |
 
 The meter is also reseeded on every **respawn**, by a wrapper rather than by
-the env. `wrap_for_brax_training`, the trainer's own wrapping, ends in
-`BraxAutoResetWrapper(full_reset=False)`: on done it restores `data` and
-`obs` from the cached first state and returns `state.info` untouched. So
-`info` survives every termination, and a cut env would come back carrying the
-dying episode's shortfall and a `steps_since_cmd` well past `grace_sec` —
-armed on its first step, and dead again within a second. `envs/wrappers.py`'s
-`ProgressReseedWrapper` puts `progress_ema` back at the command's demand and
-`steps_since_cmd` back to 0 on done, and `train.py` layers it on exactly when
-`no_progress.enable` is set. With the cut off, the trainer's `wrap_env_fn` is
-`wrap_for_brax_training` itself, unchanged. Reseeding only the EMA and
-carrying the counter over would re-arm the cut on the respawn's first step,
-so the counter is zeroed too. Any other wrapper that restarts an episode in
-place owns the same reseed.
+the env. On a flat config the trainer's wrapping is `wrap_for_brax_training`.
+It ends in `BraxAutoResetWrapper(full_reset=False)`. On done it restores
+`data` and `obs` from the cached first state and returns `state.info`
+untouched. A terrain config gets `envs/terrain_wrapper.py`'s stack. Its
+auto-reset rewrites only the curriculum's info keys. `progress_ema` and
+`steps_since_cmd` survive a respawn on both stacks. A cut env would
+therefore come back carrying the dying episode's shortfall and a
+`steps_since_cmd` well past `grace_sec`. It would be armed on its first step
+and dead again within a second. `envs/wrappers.py`'s `ProgressReseedWrapper`
+puts `progress_ema` back at the command's demand and `steps_since_cmd` back
+to 0 on done. `train.py` layers `ProgressReseedWrapper` on whichever stack
+applies, exactly when `no_progress.enable` is set. A flat config with the
+cut off gets `wrap_for_brax_training` itself, unchanged. Reseeding only the
+EMA and carrying the counter over would re-arm the cut on the respawn's first
+step, so the counter is zeroed too. Any other wrapper that restarts an
+episode in place owns the same reseed.
 
 ## Mirror augmentation (`task.env.symmetry`)
 
@@ -557,6 +565,12 @@ backend: it compares the friction inside each settled foot-floor contact
 against that env's draw and exits nonzero on any mismatch. Run it on a GPU
 host before trusting a slip-randomized training run to warp.
 
+On a terrain model the floor is every ground geom: the heightfield, the
+arena boxes and the aprons. Each world draws one `floor_friction` value and
+writes it to all of them. The ground geoms copy the floor plane's priority
+0, so `foot_friction`'s priority 1 still wins. `--task terrain` runs the
+same probe on the CPU terrain arena.
+
 "Independent" is a property of the RNG plumbing, not a wish. The fixed
 distribution draws from `r1..r5 = jax.random.split(rng, 5)`; each switch
 above draws from `jax.random.fold_in(rng, 0x100 + idx)` with an index of its
@@ -576,26 +590,137 @@ DR is training-only, and the goldens roll out with DR off.
 `tests/integration/test_randomize.py` pins both the index domain and the
 decorrelation.
 
+## Terrain task (`task.env.terrain`)
+
+`task=terrain` builds `TerrainJoystick`, the joystick task on a procedural
+arena. The env's config is Joystick's `default_config()` plus one block,
+`terrain`. The defaults below live in `envs/terrain_joystick.py`'s
+`default_config()`. None of them was tuned by training.
+[terrain.md](terrain.md) is the guide to the terrain path.
+
+`configs/task/terrain.yaml` composes `joystick.yaml` and changes three
+things:
+
+- The critic list gains `height_scan_clean` at its end. The actor list stays
+  joystick's.
+- `ppo.num_resets_per_eval` is 0. `train.py` refuses any other value on a
+  terrain task, because a periodic reset redraws every env's level.
+- Training metrics log every 10,000,000 env steps. The curriculum level
+  shows only there.
+
+Override the terrain keys under `task.env.terrain` in an experiment. A
+partial block changes only the keys it names. An unknown key raises. A robot
+overlay carries no terrain key, because `task=joystick` would refuse the
+overlay.
+
+`height_scan_clean` is the critic's height scan. It holds 98 ground heights
+on a 14 × 7 grid with a 0.1 m pitch, from 0.4 m behind the base to 0.9 m
+ahead and 0.3 m to each side. The grid turns with the base's heading and
+stays level. Each value is the exact ground height relative to the lowest
+sole, clipped to ±0.5 m. The env refuses it on `obs.state`. A joystick env
+that lists it serves the flat floor's scan.
+
+A terrain run on warp also needs `task.env.sim.naconmax_per_env` and
+`task.env.sim.njmax`. See [Terrain budgets](#terrain-budgets-check-terrain).
+
+### `terrain.arena`
+
+These keys are the arena generator's params, `ArenaParams` in
+`src/humanoid_lab/terrain/params.py`. A ramp is `base + gain * difficulty`.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `seed` | `0` | Drives every random draw of the arena. |
+| `n_rows` | `10` | Terrain rows, with difficulty ramped from 0 to 1. |
+| `difficulties` | `null` | Explicit row difficulties. They set `n_rows`. Explicit rows get no jitter and no clamp at 1. |
+| `ordered` | `false` | `true` keeps the terrain types in a fixed column order on the exact ramp. `false` shuffles each row's columns. |
+| `flat_row` | `false` | Adds a flat row as level 0. Its ground is exactly 0. |
+| `row_jitter` | `0.4` | An unordered arena's interior rows jitter their difficulty by up to this fraction of a row gap. It lies in [0, 0.5). |
+| `type_caps` | `1.0` per type | Scales a terrain type's difficulty, so its column spans [0, cap]. 1.0 is uncapped. |
+| `tile_size` | `4.0` | Tile edge, m. A whole multiple of `cell_size`. |
+| `border` | `2.0` | Flat border around the tiles, m. A whole multiple of `cell_size`. |
+| `cell_size` | `0.04` | Heightfield node spacing, m. |
+| `pad_radius` | `0.4` | Radius of the flat spawn pad at each tile centre, m. |
+| `pad_taper` | `0.25` | Noise ramps in over this distance past the pad, m. |
+| `edge_taper` | `0.25` | Noise ramps out over this distance inside the tile edge, m. |
+| `rough_amplitude` | `{base: 0.005, gain: 0.035}` | Rough ground noise amplitude, m. |
+| `slope_angle` | `{base: 0.0, gain: 0.35}` | Slope angle, rad. |
+| `stair_riser` | `{base: 0.02, gain: 0.13}` | Stair riser height, m. |
+| `obstacle_height` | `{base: 0.01, gain: 0.10}` | Obstacle and rubble height, m. |
+| `wave_amplitude` | `{base: 0.01, gain: 0.05}` | Wave amplitude, m. |
+| `coarse_step` | `0.15` | Lattice pitch of the rough noise, m. |
+| `overlay_fraction` | `0.3` | Slope and box tiles carry rough noise at this fraction of the rough amplitude. |
+| `slope_platform_half` | `0.6` | Half-width of a slope tile's flat plateau, m. |
+| `stair_tread` | `0.3` | Tread depth, m, or a `[lo, hi]` range drawn per tile. |
+| `summit_floor` | `0.3` | Smallest half-width of a stair summit, m. |
+| `rim_margin` | `0.25` | Flat ground between a flight's outermost riser and the tile edge, m. |
+| `stair_min_steps`, `stair_max_steps` | `3`, `6` | Bounds on a flight's riser count. |
+| `discrete_count` | `12` | Obstacle boxes per discrete-obstacle tile. |
+| `discrete_half_range` | `[0.10, 0.25]` | Obstacle half-sizes, m. |
+| `discrete_height_fraction` | `[0.5, 1.0]` | Obstacle height as a fraction of the ramp. |
+| `edge_margin` | `0.1` | Obstacles and rubble stay this far inside the tile edge, m. |
+| `pad_clearance` | `0.05` | Obstacles clear the pad by this much beyond their corner radius, m. |
+| `grid_pitch` | `0.25` | Pitch of the rubble cell grid, m. |
+| `grid_fill_prob` | `0.7` | Chance that a rubble cell raises a box. |
+| `grid_half_range` | `[0.04, 0.11]` | Rubble box half-sizes, m. |
+| `grid_height_fraction` | `[0.3, 1.0]` | Rubble height as a fraction of the ramp. |
+| `wave_half_periods` | `[2, 3]` | Whole half-periods per axis, drawn per tile. |
+
+### The other terrain blocks
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `spawn.mode` | `pad` | `pad` spawns on the tile's pad. `feature` spawns at a level-footed point among the tile's features, and falls back to the pad. |
+| `spawn.yaw` | `true` | Draws the heading uniformly at every spawn. |
+| `spawn.pad_jitter` | `0.15` | Uniform pad offset per axis, m. The env refuses a jitter whose diagonal puts a foot past the pad. |
+| `spawn.feature_candidates` | `16` | Feature candidates per spawn before the pad fallback. |
+| `spawn.feature_max_spread` | `0.02` | Largest spread of the ground under the soles that a feature spawn accepts, m. |
+| `spawn.level` | `-1` | 0 or more pins each env's first spawn to that level. Respawns follow the curriculum. |
+| `spawn.init_level_frac` | `0.5` | The first level is drawn from [0, max(1, round(levels × frac))). |
+| `spawn.grace_sec` | `0.0` | A fall within this time of a spawn pays no termination penalty and leaves the curriculum unchanged. The episode still ends. 0 is off. |
+| `curriculum.demote_fraction` | `0.5` | An episode fails when it served less than this fraction of its commanded distance, projected onto a full episode. |
+| `curriculum.demote_strikes` | `1` | Failures, with no clean episode between them, that drop one level. |
+| `curriculum.pinned_frac` | `0.0` | Fraction of the envs that hold one row each, round robin, for the whole run. |
+| `curriculum.pinned_flat_frac` | `0.0` | Fraction of the envs that hold level 0 for the whole run. |
+| `base_contact.terminate` | `true` | Ends the episode when a termination body's collider touches the ground. |
+| `base_contact.tol` | `0.01` | Distance from the ground at which a termination collider counts as touching, m. |
+| `no_progress.grace_sec` | `0.0` | Off the flat row, replaces `task.env.no_progress.grace_sec`. 0 keeps Joystick's. It acts only while the no-progress cut is on. |
+| `no_progress.p_max_scale` | `1.0` | Off the flat row, scales `task.env.no_progress.p_max`. |
+| `command_bias.enable` | `false` | Off the flat row, replaces six of Joystick's command probabilities with the values below. The flat row keeps Joystick's. |
+| `command_bias.zero_prob` | `0.10` | Replaces `command.zero_prob`. |
+| `command_bias.pure_wz_prob` | `0.10` | Replaces `command.pure_wz_prob`. |
+| `command_bias.pure_vy_prob` | `0.05` | Replaces `command.pure_vy_prob`. |
+| `command_bias.pure_slow_prob` | `0.30` | Replaces `command.pure_slow_prob`. |
+| `command_bias.pure_fast_prob` | `0.0` | Replaces `command.pure_fast_prob`. |
+| `command_bias.pure_back_prob` | `0.0` | Replaces `command.pure_back_prob`. It stays 0, because the default `command.back_vx` reaches -0.8 m/s and Roboto Origin's `vx` box stops at -0.6 m/s. |
+| `jax_contacts.max_contact_points` | `null` | jax only. Keeps the deepest n contacts. `null` sets 4 per ground-pairing collider plus the robot-robot slots, 116 for Roboto Origin. The C engine and MJWarp ignore it. |
+
 ## Warp contact budgets (`task.env.sim`)
 
 Only the warp backend reads these. `envs/backend.py`'s `make_data_fn` passes
 them to `mjx.make_data` on the warp branch and calls `make_data(mjx_model)`
-with no kwargs on the jax branch, so changing either one cannot move a jax
-rollout by a bit.
+with no kwargs on the jax branch, so changing any of the three budgets
+cannot move a jax rollout by a bit.
 
 | Key | Default | Meaning |
 |---|---:|---|
 | `sim.backend` | `auto` | `auto` picks warp on a CUDA host and jax elsewhere. `jax` and `warp` pass through. |
 | `sim.naconmax_per_env` | `None` | Contact budget per world. `None` defers to the robot's `sim_budget` block in its robot.yaml. Warp allocates ONE pool for the batch, sized `naconmax_per_env * num_envs`. |
 | `sim.njmax` | `None` | Constraint-row budget per world, same `None` fallback. Never multiplied by the env count. |
-| `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. |
+| `sim.naccdmax_per_env` | `None` | CCD scratch slots per world for convex pairs. Heightfield pairs and box-box pairs are convex. Warp allocates ONE pool for the batch, sized `naccdmax_per_env * num_envs`. It allocates it on every collision call, outside the XLA pool. `sim_budget.ccd_slot_bytes` gives the bytes per slot. `None` sizes it to the naconmax pool. It has no robot.yaml fallback. It must not exceed `naconmax_per_env`. MJWarp refuses a larger value in `make_data`, and the terrain task refuses it at construction. A pair past the pool is dropped, and MJWarp prints `CCD overflow`. Neither robot's flat model has a convex pair, so a flat run allocates no CCD scratch. |
+| `sim.num_envs` | `1` | Batch size the pool is sized for. `train.py` overwrites it with the larger of `ppo.num_envs` and `ppo.num_eval_envs`. A config that sets no `ppo.num_eval_envs` counts 0 there. brax then evaluates its default of 128 worlds, so a warp run with `ppo.num_envs` below 128 sizes its pool for fewer worlds than its evals step. |
 
-Both overflows are silent. Contacts past `naconmax` are dropped; rows past
-`njmax` apply no force, and nothing warns anywhere — no counter reports it and
-no exception is raised, so a run just trains against a robot whose feet half
-pass through the floor. That is why the budgets are fail-closed: a warp env
-whose robot records no `sim_budget` (and whose sim config sets none) refuses
-to construct.
+Neither overflow raises. Contacts and broadphase candidate pairs past the
+`naconmax` pool are dropped. Rows past `njmax` apply no force, so a run trains
+against a robot whose feet half pass through the floor. MJWarp checks both
+budgets when a step advances time. A counter past its buffer then prints
+`narrowphase overflow`, `broadphase overflow` or `nefc overflow` from the
+device to file descriptor 1. Python's `sys.stdout` never sees that text, so a
+run log shows it only when fd 1 is captured. `fd_capture.py` captures it, and
+`check-terrain` counts it. A bare `mjx.forward` checks neither budget. The
+counters keep counting past their buffers. Because no overflow raises, the
+budgets are fail-closed: a warp env whose robot records no `sim_budget` (and
+whose sim config sets none) refuses to construct.
 
 The budgets are measurements OF a robot's collision geometry, so they live
 with the robot: each `robots/<name>/robot.yaml` records the
@@ -613,6 +738,156 @@ never floats.
 
 `tests/integration/test_check_contacts.py` discovers every robot directory
 and fails if new collision geometry outgrows the recorded budgets.
+
+### Terrain budgets (`check-terrain`)
+
+A robot's `sim_budget` is a flat-floor measurement. A terrain scene adds
+heightfield and box contacts. A terrain run on warp therefore refuses to
+start unless the recipe sets `task.env.sim.naconmax_per_env` and
+`task.env.sim.njmax`. `./run.sh check-terrain` measures those budgets and
+gates a recipe against them. No yaml file declares a `sim` block, so Hydra
+refuses the plain `task.env.sim.njmax=N` override. Set a budget with
+`++task.env.sim.<key>=N`.
+
+The verb puts `task=terrain` on the command line ahead of the caller's
+overrides. It replaces an experiment's task pin. The experiment's other keys
+still apply. A later `task=` override still wins. A composed task other than
+terrain exits 2. The
+env is the training env, built by `registry.env_args_from_config` and
+`make_env`. Push, the no-progress cut, command resampling and spawn grace
+are off. The gate budgets are the recipe's `task.env.sim` values. Where the
+recipe sets none, `--naconmax-per-env` (512), `--njmax` (4096) and
+`--naccdmax-per-env` (default: the naconmax pool) apply. The report's
+`budgets.source` names which. The contact and row counters count past
+their buffers. A CCD, broadphase or narrowphase overflow still drops work
+before a counter sees it. A contact or CCD default below the recipe's
+demand therefore gives a `lower_bound` recommendation and a failed gate.
+Rerun at the recommended budgets until `lower_bound` clears. For Roboto
+Origin at 512 per env and the default 1024 warp worlds, the gate's own CCD
+scratch is 2.9 GB. A robot without box colliders has a 4,996-byte slot,
+which gives 2.6 GB. `--arena eval` swaps in the terrain scan's arena.
+
+The worlds spread over the arena's tiles, hardest first. Each base sits on
+its tile's feature band, between the spawn pad and the tile edge, along one
+of 8 headings. Placement reads the dilated spawn grid, so no collider starts
+inside a box. Flat-row tiles use the pad. Three regimes each roll `--steps`
+control steps (default 200):
+
+- `stand`: zero action. Neither robot stays up under it.
+- `walk`: `check-contacts`' full-amplitude sinusoid.
+- `fallen`: `check-contacts`' three attitudes, dropped 0.25 m. World `i`
+  takes attitude `(i mod n_tiles + i // n_tiles) mod 3`. Each lap of the
+  tiles moves a tile on to its next attitude. A tile sees all three only
+  when `num_envs` is at least 3 × the tile count. The proxy's default of
+  one world per tile gives each tile one attitude.
+
+One warm-up rollout pays the compile. Each regime then runs once, and that
+run is the measurement. At every physics step, `n_substeps` per control
+step, it records warp's pool-wide `nacon` and `ncollision`, the largest
+per-world `nefc`, and whether every `qpos` is finite. On jax it records the
+penetrating contacts per world instead. Each control step keeps its worst
+physics step. Training telemetry and `check-contacts` sample once per
+control step, at its last physics step, so their peaks can read below the
+gate's. Each regime runs under a capture of fd 1 that counts MJWarp's
+messages:
+
+| Message | Gates | Meaning |
+|---|---|---|
+| `height field collision overflow` | yes | A heightfield pair collected 50 prism hits. Its later prisms go untested. |
+| `CCD overflow` | yes | A convex pair past the `naccdmax` pool is dropped. |
+| `narrowphase overflow`, `broadphase overflow` | yes | Contacts or candidate pairs past the naconmax pool are dropped. |
+| `nefc overflow`, `njmax_nnz overflow` | yes | Rows past the budget apply no force. |
+| `EPA horizon` | no | EPA's 24-entry horizon ran out for one pair. No budget enlarges it. |
+
+| Engine | Condition | Status | Exit |
+|---|---|---|---|
+| mjx on warp | a gating message, pool or row fill at `--max-fill` (0.9), or a non-finite `qpos` | `fail` | 1 |
+| mjx on warp | otherwise | `pass` | 0 |
+| mjx on jax | `--require-warp` | `unverified` | 2 |
+| mjx on jax | a non-finite `qpos` | `fail` | 1 |
+| mjx on jax | otherwise | `unverified` | 0 |
+| mujoco | a C reset (bad qpos, qvel or qacc) | `fail` | 1 |
+| mujoco | a collider at the per-pair cap | `proxy_at_risk` | 1 with `--strict`, else 0 |
+| mujoco | otherwise | `proxy_clear` | 0 |
+| any | a refused request: an unknown flag or regime, an empty `--regimes`, `--steps` below 1, a task other than terrain, a missing eval arena, an arena of more than 128 boxes on jax, `--require-warp` with `--engine mujoco`, or `--require-warp` with warp where jax has no GPU | `error` | 2 |
+| any | an exception | `error`, with the traceback | 1 |
+
+The recommendations divide pool peaks by the world count. The pool is
+shared, so a per-env budget covers the batch's total demand, not the worst
+world.
+
+- `naconmax_per_env`: the larger pool peak of `nacon` and `ncollision`, per
+  world, times 2.0, rounded up to 8.
+- `naccdmax_per_env`: the `ncollision` pool peak per world, times 2.0,
+  rounded up to 8, and never above `naconmax_per_env`. `ncollision` counts
+  every candidate pair, so it bounds each pair type's CCD slots.
+- `njmax`: the per-world `nefc` peak times 2.0, rounded up to 32.
+- `floor_4x_colliders`: 4 contacts per ground-pairing collider. MJWarp
+  writes at most 4 per heightfield pair. It is reported for comparison.
+- A CCD, broadphase or narrowphase overflow drops work before a counter sees
+  it. The recommendation is then marked `lower_bound`.
+
+The three headrooms and `--max-fill` are untuned. `ccd_scratch` projects the
+CCD scratch a training run of the recipe holds outside the XLA pool. It is
+the recommended `naccdmax_per_env` (else the gate's budget) times the
+training batch times `sim_budget.ccd_slot_bytes`. The training batch is the
+larger of `ppo.num_envs` and `ppo.num_eval_envs`. Roboto Origin's slot is
+5,480 bytes.
+
+| Check | Where |
+|---|---|
+| Composition, env build, spawn table, regimes, fd capture, report schema, exit rules, budget arithmetic | any host, through the tests |
+| jax run on the CPU arena (`experiment=terrain_cpu`) | any host. Status `unverified`. |
+| MJWarp on the CPU device | a host without CUDA, `--backend warp` without `--require-warp`. Its `pass` is not the gate. |
+| C per-pair cap proxy, any arena | any host, `--engine mujoco` |
+| The gate: messages, pool and row fill, recommendations, CCD demand, throughput | a CUDA host only, `--backend warp --require-warp`, launched by a human |
+
+jax has no per-pair cap, prints no message and has no live counters. Its
+`hfield_convex` misses the prisms under a yawed or rolled box's low-side
+corners, so box colliders get partial heightfield contact there. The terrain
+env's `max_contact_points` caps the contacts jax keeps. The jax counts are
+therefore lower bounds, and the report says so under `jax_lower_bound`. The
+jax backend refuses an arena of more than 128 ground boxes, so the default
+arena runs on warp or on the C proxy.
+
+The C proxy steps plain MuJoCo over the same spawns, regimes and ctrl, one
+world at a time. The default is one world per tile. It counts each robot
+collider's contacts with the heightfield at every physics step. C stops at
+50 contacts per pair, so 50 is a cap hit. C writes a contact for every prism
+hit, and MJWarp writes at most 4 per pair. A clear proxy is early warning,
+never a pass. On a 4 cm heightfield a resting 9.3 × 9.0 cm box cell gets 17
+to 30 contacts in C, depending on where it sits on the grid. Centred on a
+node it gets 30. The whole 18.6 × 27.0 cm base box reaches 50 at any
+placement. On the default arena, 80 worlds and 200 steps per regime,
+Roboto Origin under `deploy_pd` reaches no cap. Its highest counts are 44,
+on a thigh and a shin capsule while fallen. C resets a diverging world to
+`qpos0` inside `mj_step`. The proxy stops counting that world at the reset
+and lists it under `diverged`.
+
+The report goes to `--out`, by default
+`runs/check_terrain/<robot>_<preset>_<arena>_<fingerprint[:12]>_<engine>.json`.
+`<engine>` is `mujoco`, `mjx-warp` or `mjx-jax`.
+
+| Key | Meaning |
+|---|---|
+| `schema`, `status`, `reasons` | Report version 1 and the verdict. |
+| `engine`, `backend` | `mjx` on the env's backend, or `mujoco` with a null backend. |
+| `provenance` | Git commit and dirty flag, package versions, device. |
+| `robot`, `preset`, `actuator_overrides` | What was built. |
+| `action_window` | Each joint's reachable target range for a position-servo preset, inside the env's clip. Null for any other actuator model. |
+| `arena` | Kind, generator version, fingerprint, params, grid size, cell size, box count. |
+| `model` | `ngeom`, ground geoms, robot colliders, rows per contact, the jax contact cap. |
+| `num_envs`, `steps`, `seed` | The run's size. |
+| `compile_s` | On mjx, the seconds of the warm-up rollout that pays the compile. Null on mujoco. |
+| `budgets` | The gate budgets, the pool and each budget's source. |
+| `regimes` | On mjx: `nacon_pool_max`, `ncollision_pool_max`, `nefc_max`, `active_max`, `peak_step`, `finite`, `messages`, `steady_s`, `env_steps_per_s`. On mujoco: `at_cap`, `max_pair_count`, `finite`, `diverged`, `steady_s`. On mujoco `finite` means no world had a C reset, and `diverged` lists `[world, control step]` for each reset. |
+| `jax_lower_bound` | On jax: whether the robot has box colliders, and the contact cap. |
+| `fill` | Pool and row demand over capacity. |
+| `messages` | MJWarp's messages, summed over the regimes. |
+| `recommend` | Budgets that clear the peaks, their headrooms, `floor_4x_colliders` and `lower_bound`. |
+| `ccd_scratch` | The training run's CCD scratch projection. |
+| `proxy` | The C cap, cap hits and peak pair counts per collider. |
+| `error`, `timestamp` | The refusal or traceback, and when the report was written. |
 
 ### The `contacts` block
 
@@ -777,6 +1052,118 @@ There are no runtime `pd_kp` / `pd_kd` override knobs. The actuator-preset
 axis already covers that: a different stiffness is a different preset, or an
 `actuators.overrides` entry on the group that needs it, and both land in this
 block.
+
+## Terrain scan (`terrain_scan.json`)
+
+`./run.sh terrain-scan --run runs/<name>` scores a checkpoint on its robot's
+terrain scan suite. `eval/terrain_suite.py` defines the suite. Roboto Origin
+has one. A run of any other robot is refused before anything is built. A run
+of a task other than joystick or terrain is refused.
+
+The suite's arena has six rows, at difficulties 0.2 to 1.2, and one tile of
+every terrain type per row. Each tile is a cell. A cell is named by its
+realized dimension, for example `pyramid_stairs_9.8cm`. `--list-cells`
+prints the 48 cells with their rows, values and bars, and builds nothing.
+
+A run is one forward crossing from the tile's pad:
+
+- The robot starts on the pad in the reset pose, offset along its heading
+  and facing it. The base sits at the pad height plus the reset height.
+- It stands at zero command for the settle, `protocol.settle_steps` = 50
+  control steps, 1 s.
+- It then walks at the constant command `[v, 0, 0]`. The policy first sees
+  that command one control step after the settle ends.
+- It passes when its base reaches Chebyshev `r_out` from the tile centre
+  after the settle, without a fall, before its deadline.
+
+`r_out` is 1.75 m on stair tiles and 1.85 m on every other tile. Each cell
+gets 64 runs per speed: 8 headings, 4 offsets and 2 draws. Two draws of one
+start differ only in the observation noise. The policy acts
+deterministically. The speeds are 0.3 and 0.6 m/s. A run's deadline is the
+settle plus 1.6 times its distance over the commanded speed.
+
+The env is the run rebuilt on the terrain task with the suite's arena, so a
+joystick run scans too. Pushes, command resampling, the no-progress cut and
+the command bias are off. Base contact is on at 1 cm. A fall is the env's
+`done`: base height, tilt or base contact. The scan refuses an arena whose
+params or fingerprint differ from the suite's. Scores compare only within
+one suite version.
+
+Every selected cell rolls in one batch per speed. The full suite is 3072
+worlds. The jax backend refuses an arena of more than 128 ground boxes. The
+suite's arena has 1139: its 1135 boxes and the 4 aprons. The full suite
+therefore runs on warp on a CUDA host. A human launches it. The tests scan a
+tiny suite on the CPU arena on jax. A world that has stopped is parked every
+step: rewritten in the reset pose with its soles 2 m above the arena's
+highest point, at rest. It makes no contact, so a fallen robot cannot fill
+the contact pool.
+
+`--cells` and `--speeds` scan a subset, and the warnings then say the scan
+is partial. `--eval-seed N` folds N into every cell's key. It redraws the
+observation noise on the same course. Seed 0 is the default stream. Run r of
+a cell gets the same key in any batch.
+
+Each cell entry carries its type, row, difficulty, value, unit, `r_out`,
+`bar`, `threshold` (runs of 64) and `provenance`, and one result per
+scanned speed:
+
+| Field | Meaning |
+|---|---|
+| `passed`, `of`, `rate`, `ci95` | Runs that finished without a fall, out of 64, their rate and its Wilson 95% interval. |
+| `falls`, `falls_in_settle` | Runs that fell, and those of them that fell during the settle. |
+| `timeouts` | Runs that neither finished nor fell before their deadline. |
+| `progress_mean` | The largest `(d - d0) / (r_out - d0)` a run reached after the settle, clipped to [0, 1]. `d` is the base's Chebyshev distance from the tile centre and `d0` the start's. |
+| `track_err` | Mean `\|v - body vx\|`, m/s. |
+| `saturation` | The fraction of actuator samples whose force exceeds 0.95 of that actuator's cap, as the battery counts it. |
+| `clearance` | Mean terrain-relative foot clearance, m. |
+| `measured` | Runs with a step after the settle. The four metrics above average over them, and read 0 when there are none. |
+| `steps_max` | The longest run's control steps. |
+
+The absolute gate reads every gated cell at every scanned speed:
+
+| Verdict | When |
+|---|---|
+| `invalid` | The scan is not physics-clean. |
+| `fail` | A gated cell passed fewer runs than its threshold. |
+| `incomplete` | Fewer (cell, speed) pairs were checked than the full suite gates. |
+| `pass` | Otherwise. |
+
+Twelve cells carry bars: rough ground, both slopes and waves on the three
+easiest rows. Their thresholds are 61, 52 and 39 of 64. Every bar is
+provisional. Stairs, obstacles and rubble are tracked and never gated. A
+finished scan exits 0 whatever its verdict. A refused request exits 2.
+
+On warp each dispatch runs under a capture of fd 1. The scan is
+physics-clean when no gating MJWarp message printed, no pool or row fill
+reached 1, and no running world's `qpos` went non-finite. The counters are
+sampled at each control step's last physics step. A scan that is not
+physics-clean keeps its numbers. jax prints no message and has no live
+counters, so there physics-clean covers non-finite states only.
+
+The suite's warp budgets are 256 contacts and 2048 rows per world, and the
+naconmax pool for CCD. All three are untuned. `--naconmax-per-env`,
+`--njmax` and `--naccdmax-per-env` override them. `check-terrain --arena
+eval` measures what the eval arena needs. At 3072 worlds and 256 slots per
+world, Roboto Origin's CCD scratch is 4.3 GB outside the XLA pool.
+
+| Key | Meaning |
+|---|---|
+| `schema` | Report version 1. |
+| `suite` | Robot, suite version, arena fingerprint and generator version. |
+| `run`, `checkpoint`, `trained_task` | What was scanned. |
+| `robot`, `preset`, `actuator_overrides`, `action_window` | What was built. `action_window` is `check-terrain`'s. |
+| `engine` | The backend and the jax, mujoco, mujoco_mjx and warp_lang versions. |
+| `protocol` | The suite's course and protocol constants, and the control step. |
+| `eval_seed` | The observation noise draw. |
+| `cells` | Per cell and speed, above. |
+| `contacts` | Per speed, the pool and row peaks against the budgets, their fills and the overflow flags. The peaks are null on jax. |
+| `nonfinite_runs` | Per speed, the running worlds whose `qpos` went non-finite. |
+| `messages` | MJWarp's messages, summed over the speeds. Null on jax. |
+| `physics_clean`, `gate`, `warnings` | The verdicts and what the scan flags. |
+| `perf` | Wall seconds with the compile, env steps, env steps per second, loop iterations per speed and the world count. |
+| `ccd_scratch` | Bytes per slot, slots and bytes of the scan's CCD scratch. |
+| `provenance` | Git commit and dirty flag, package versions, device, and when the scan started. `wandb_run_id` is null. |
+| `timestamp` | When the scan finished. |
 
 ## Eval videos
 
@@ -1068,11 +1455,11 @@ current.
 The newest checkpoint is the largest numeric step dir, the battery's pick.
 Brax writes `ppo_network_config.json` last, so a step dir without it is an
 incomplete save, and the runner refuses it. The runner needs the run's
-run.json. train.py writes it when training returns or stops early. A
-training that is still running, or was killed before that, has none, and the
-runner exits 1. A run.json written after a kill, by whatever ran the
-training, makes the run measurable. Its newest checkpoint is then measured.
-No run status gates the measurement.
+run.json. train.py writes it before training starts, so a training that is
+still running, or was killed, is measured on its newest checkpoint so far. A
+training killed before train.py wrote run.json has none, and the runner
+exits 1. A run.json written after such a kill, by whatever ran the training,
+makes the run measurable. No run status gates the measurement.
 
 Exit codes:
 
@@ -1091,8 +1478,10 @@ field, and nothing is written.
 
 | Key | Holds |
 |---|---|
-| `run`, `run_status` | run.json's `run_name` and `status`. `run_status` is `null` when run.json has no `status`, and train.py writes none. |
+| `schema`, `ground_class` | the schema version, 1, and the ground class measured, `flat` |
+| `run`, `run_status` | run.json's `run_name` and `status`. `run_status` is `null` when run.json has no `status`. train.py writes `running` before training, then `finished`, `early_stopped` or `failed`. |
 | `checkpoint`, `checkpoint_step`, `checkpoint_sha256` | the step dir measured, its step, and the sha256 over its files |
+| `trained_task`, `measured_task` | run.json's task, and the task the measurement env was built as. A terrain run is measured on its flat rebuild, so it records `terrain` and `joystick`. Every other task records itself twice. See [terrain.md](terrain.md). |
 | `robot`, `preset`, `seeds`, `seed_base`, `canonical`, `env_overrides`, `budget_cap` | the request. `budget_cap` is `null` unless a test cut every lane short, and a file with one is never current. |
 | `catalogue` | The version, the fingerprint, `params_source`, the six inputs and the derived params. `follower` holds the follower constants and the yaw cap. `protocol` holds the protocol constants, `ctrl_dt`, the nominal friction and the noise the lanes ran under. `derivation` holds the fractions that turn the inputs into the params. |
 | `engine` | backend, platform, workers, machine, CPU model, `XLA_FLAGS`, and the jax, jaxlib, mujoco and mjx versions |
@@ -1102,6 +1491,7 @@ field, and nothing is written.
 | `contacts`, `messages`, `physics_clean`, `nonfinite_lanes` | `contacts` and `messages` hold warp's counters and are `null` on jax. `physics_clean` is true when no lane went non-finite, and `nonfinite_lanes` counts the lanes that did. |
 | `perf` | workers, lanes, env-steps, and the env build, compile, lane, perfect-unicycle and wall seconds |
 | `provenance` | the git commit and dirty flag, package versions, device, start time and run.json's seed |
+| `timestamp` | when the file was written, local time with its UTC offset |
 
 A seed's `outcome` is `nonfinite`, `settle_fell`, `fell`, `completed` or
 `timed_out`, decided in that order. Path rows report `progress_m` per seed,
@@ -1227,7 +1617,9 @@ model is missed.
 
 A deadline stop kills the payload with its process group. Only the caller
 can measure that run. `train.py` installs no signal handler, so a SIGTERM
-ends the trainer without a run.json. The caller then writes one, and the run
+ends the trainer with its run.json still `running`. train.py wrote that
+run.json before training started, so the run is measurable. A trainer killed
+before that write leaves none. The caller then writes one, and the run
 becomes measurable.
 
 **The stage.** With `EVAL=true`, the default, `jobs/train.sh` measures its
@@ -1254,11 +1646,12 @@ the chain exits 75 and names phase A's run.
 
 **What is measurable.** A run is measurable when it has a run.json and its
 newest numeric step dir holds `ppo_network_config.json`. train.py writes
-run.json only when training returns or stops early. A training that is still
-running therefore has none and is SKIPPED. A killed training becomes
-measurable once the caller writes its run.json. It is then measured on its
-newest checkpoint. No run status gates the measurement. A run whose newest
-checkpoint is incomplete is SKIPPED, and the pass exits 1.
+run.json before training starts. A killed training, and one that is still
+running, is therefore measured on its newest checkpoint so far. A later pass
+measures it again once a newer checkpoint makes its files not current. A
+training killed before train.py wrote run.json becomes measurable once the
+caller writes its run.json. No run status gates the measurement. A run whose
+newest checkpoint is incomplete is SKIPPED, and the pass exits 1.
 
 **The audit and backfill.** `RUNS=all CHECK=true` runs no eval. It lists
 every run whose `courses.json` is missing or not current, every
@@ -1331,9 +1724,15 @@ call. Brax writes a checkpoint at every eval, so the newest checkpoint in
 `runs/<name>/checkpoints` is the early-stopped policy, and the reported
 metrics come from the last completed eval.
 
-`run.json` carries two fields whether or not the feature is on:
-`early_stopped` (bool) and `stopped_at_steps` (the last eval's step count,
-which on a completed run is the final eval's).
+train.py writes `run.json` before training starts. Its `status` is then
+`running`. `early_stopped`, `stopped_at_steps` and `final_reward` are null at
+that point. The `progress` block is rewritten after every eval. At the end
+the whole record is rewritten. `status` becomes `finished`, `early_stopped`
+or `failed`. On a finished or early-stopped run, `early_stopped` is a bool.
+`stopped_at_steps` is the last eval's step count. On a completed run that is
+the final eval's step count. On a failed run, `early_stopped` and
+`final_reward` stay null. Its `error` field holds the exception. A run that
+dies without a Python exception, as on SIGKILL, keeps `status: running`.
 
 Patience counts evals, not steps, so `ppo.num_evals` sets how much training
 each unit of patience buys. At the default 100M-step budget with brax's
@@ -1356,7 +1755,9 @@ Read from `run.sh` as it stands today:
 | `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
 | `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
-| `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
+| `check-friction` | `python -m humanoid_lab.check_friction` | `--robot NAME --preset NAME [--task joystick\|terrain] [--backend auto\|warp\|jax] [--num-envs N] [--range LO HI]`. Verifies end to end, on the box's own backend, that a `dr.foot_friction` draw is the friction inside each foot-floor contact. `--task terrain` replaces the floor plane with the CPU terrain arena and stands each world on a flat-row pad. A foot contact with any ground geom counts. Exits nonzero on any mismatch. See [Domain randomization](#domain-randomization-dr). |
+| `check-terrain` | `python -m humanoid_lab.check_terrain` | `[--engine mjx\|mujoco] [--backend auto\|warp\|jax] [--arena train\|eval] [--num-envs N] [--steps N] [--regimes stand,walk,fallen] [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N] [--max-fill F] [--require-warp] [--strict] [--seed N] [--out PATH] [hydra overrides...]`. Gates a terrain recipe against MJWarp's contact, CCD and row buffers and recommends its `task.env.sim` budgets. Not forced onto CPU. The gate itself is `--backend warp --require-warp` on a CUDA host. A host without CUDA runs the jax check (status `unverified`) and the C proxy (`--engine mujoco`). There `--backend warp` runs MJWarp on the CPU device and reports `pass` or `fail`. That `pass` is not the gate. `--require-warp` refuses that host with exit 2. `--num-envs` defaults to 1024 on warp, 16 on jax and one world per tile on the proxy. See [Terrain budgets](#terrain-budgets-check-terrain). |
+| `terrain-scan` | `python -m humanoid_lab.eval.terrain_scan` | `--run runs/<name> [--cells a,b] [--speeds 0.3,0.6] [--backend auto\|warp\|jax] [--naconmax-per-env N] [--naccdmax-per-env N] [--njmax N] [--eval-seed N] [--out PATH] [--list-cells]`. Scores the checkpoint on its robot's terrain scan suite. Writes `<run>/terrain_scan.json` unless `--out` says otherwise. Not forced onto CPU. The full suite runs on warp on a CUDA host. `--list-cells` prints the cells and builds nothing. A refused request exits 2. See [Terrain scan](#terrain-scan-terrain_scanjson). |
 | `test` | `python -m pytest tests/unit -q` | The fast suite: model-free, runs in seconds. `tests/unit/test_suite_split.py` fails if a test here builds or steps a model. |
 | `test-slow` | `python -m pytest tests/integration -q` | The slow suite: builds models, steps MJX. Exports `JAX_COMPILATION_CACHE_DIR` (default `.jax_cache`) so re-runs skip XLA compilation. |
 | `test-all` | `python -m pytest tests/unit tests/integration -q` | Both suites. Same compile cache as `test-slow`. Use before merging. |
@@ -1390,8 +1791,8 @@ task:
   name: joystick
   env:
     ...
-    command: {vx: [-0.8, 0.8], vy: [-0.6, 0.6], wz: [-0.6, 0.6]}
-    obs_noise: {gyro: 0.01, joint_pos: 0.01, joint_vel: 0.1}
+    command: {vx: [-0.6, 1.0], vy: [-0.5, 0.5], wz: [-1.57, 1.57]}
+    obs_noise: {gyro: 0.01, joint_pos: 0.03, joint_vel: 1.75}
     ...
   ppo: {}
 actuators:
@@ -1399,20 +1800,21 @@ actuators:
   overrides: {}
 network: {}
 dr:
-  com_offset: {enable: false, xy: 0.02, z: 0.01}
+  ...
+  com_offset: {enable: false, xy: 0.025, z: 0.05}
   ...
 robot:
-  name: asimov_v1
-  dir: robots/asimov_v1
+  name: roboto_origin
+  dir: robots/roboto_origin
 domain_rand: false
 wandb: {enable: true, project: humanoid-lab, group: null}
 ```
 
 `task`, `actuators`, `network`, `dr`, and `robot` appear in that order
 because that is the defaults-list order in `configs/config.yaml`. `command`
-and `obs_noise` show up under `task.env` because `robot: asimov_v1`'s
-overlay patches them in. That overlay composes after `task` and `dr` in the
-same defaults list.
+and `obs_noise` show up under `task.env` because `robot: roboto_origin`'s
+overlay patches them in. The same overlay sets `dr.com_offset`. That overlay
+composes after `task` and `dr` in the same defaults list.
 
 Switch task and actuator preset:
 

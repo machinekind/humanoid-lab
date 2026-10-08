@@ -1,8 +1,9 @@
 """configs/experiment/novel_pure_cmd.yaml: yolo_v4 plus three pure command
 draws. Pins the composed values, that every armed draw redraws inside
 roboto_origin's command box, and the command mix the sampler produces from
-them. Model-free: `_sample_command` reads only `self._config.command`, so it
-runs against a stub holding the composed config, no env built.
+them. Model-free: `_sample_command` and the `_draw_command` it delegates to
+read only `self._config.command`, so they run against a stub holding the
+composed config, no env built.
 """
 
 from __future__ import annotations
@@ -70,6 +71,7 @@ def test_novel_pure_cmd_command_mix_matches_the_draw_order():
     env_cfg = _env_cfg(_compose())
     c = env_cfg.command
     stub = types.SimpleNamespace(_config=env_cfg)
+    stub._draw_command = lambda rng, cmd_cfg: Joystick._draw_command(stub, rng, cmd_cfg)
     n = 40_000
     keys = jax.random.split(jax.random.PRNGKey(0), n)
     cmds = np.asarray(jax.jit(jax.vmap(lambda k: Joystick._sample_command(stub, k)))(keys))

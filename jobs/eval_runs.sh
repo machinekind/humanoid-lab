@@ -16,10 +16,11 @@
 # A run is measurable when runs/<run>/run.json exists and the largest
 # numeric step dir under runs/<run>/checkpoints/ holds
 # ppo_network_config.json, which brax writes last in a save. train.py
-# writes run.json only when training returns or stops early, so a
-# still-running training is SKIPPED. A killed run is measured on its newest
-# checkpoint once its caller has written a run.json. A status field in
-# run.json, when present, is not read.
+# writes run.json before training starts, so a killed run, and a training
+# still running, is measured on its newest checkpoint so far. A later pass
+# measures it again once a newer checkpoint makes its files not current. A
+# run killed before train.py wrote run.json is measured once its caller has
+# written one. run.json's status field is not read.
 #
 # Parameters:
 #   RUNS       run dir names under runs/, space separated, or all for every

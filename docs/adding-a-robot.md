@@ -56,7 +56,7 @@ Optional keys:
 | `obs_layout` | Free-form dict. No code consumes this yet. Leave it `{}` unless a downstream consumer needs it. |
 | `sensors` | A dict with recognized keys `gyro`, `quat`, `linvel`, `acc`, mapping each to an MJCF `<sensor>` name. Envs read the named sensor directly for any key present here, and fall back to a qpos/qvel-derived computation for any key left out. |
 | `model_patches` | Build-time patches for a source XML that isn't MJX-ready as vendored: `<option>` overrides, injected sites, injected collision geoms, and mesh-collision handling. Every sub-key is optional. See "model_patches" below. |
-| `sim_budget` | The robot's measured warp contact budgets (`naconmax_per_env`, `njmax`), from `./run.sh check-contacts` times the headroom rule. Omit until measured; a warp run refuses to construct without one. |
+| `sim_budget` | The robot's measured warp contact budgets (`naconmax_per_env`, `njmax`): the maximum over every preset of `./run.sh check-contacts`, times the headroom rule. Omit until measured; a warp run refuses to construct without one. |
 | `eval_camera` | An MJCF camera name eval videos render from, validated to exist against the compiled model. Omit for a free camera tracking the floating base. |
 
 ### model_patches
@@ -82,6 +82,39 @@ does not support PGS. Pick `newton` or `cg` for a source XML that ships
 semantics. `quat` is optional and defaults to identity. An injected geom
 gets no explicit `contype`/`conaffinity`; it inherits whatever default
 class applies to its body in the source XML.
+
+`split: [nx, ny, nz]` is optional and box-only. It injects the box as a 3D
+chessboard of smaller boxes instead of one geom. The box is cut into an
+`nx` × `ny` × `nz` grid in its own frame, and cell `(i, j, k)` is kept when
+`i + j + k` is even. Each kept cell is its grid cell with every face moved
+in by 0.5 mm. Any two kept cells are then at least 1 mm apart. A cell
+keeps the box's `quat` and is named `<name>_<i><j><k>`. Every cell
+inherits the same contact attributes the whole box would. Each of `nx`,
+`ny`, `nz` is an integer from 1 to 10. At least two of them must be above
+1, unless all three are 1. A cut along one axis alone keeps only every
+other layer of the box. `split` needs a 3-element `size` and cannot be
+combined with `fromto`. The body must carry an explicit `<inertial>`.
+`build_spec` refuses a split on a body whose mass and inertia come from its
+geoms. The cells would change that body's mass and inertia.
+
+Reach for `split` when a box's faces are large compared with a heightfield
+cell. MJWarp collects at most 50 prism hits per geom-heightfield pair
+(`mjMAXCONPAIR`), scanning the heightfield row by row. Once it holds 50, it
+skips every remaining prism of the pair untested and prints a device
+warning for each one, every step. It then writes at most 4 of the hits as
+contacts: the deepest one and up to three spread around it. Past the cap
+the deepest point can sit in a skipped prism, so those 4 can miss it. A
+face at most 10 cm across overlaps at most 4 × 4 cells of a 4 cm
+heightfield, which is 32 prisms. `robots/roboto_origin/robot.yaml` splits
+its base and torso boxes this way.
+
+A split costs contacts on both paths. A box lying on a plane touches it at
+up to 4 corners, and a split face touches it at up to 4 corners per cell.
+On a heightfield every cell is its own pair with up to 4 contacts, where
+the whole box had 4. Roboto Origin's 15 cells can write up to 60 where its
+two boxes wrote at most 8. Re-measure `sim_budget` under every preset
+after adding a split, and size a heightfield contact budget per cell, not
+per box.
 
 `mesh_collisions: visual` is the only recognized value. It zeroes
 `contype` and `conaffinity` on every mesh geom in the source XML. Use it
@@ -141,13 +174,18 @@ MuJoCo, plus a short MJX rollout unless `--skip-mjx` is set. It fails on
 NaN, or if `|qvel|` exceeds `--max-qvel` (default 100 rad/s). Both gates
 must pass before the robot is usable for training.
 
-`check-contacts` measures the per-world contact and constraint-row peaks a
-new robot reaches and prints the warp budgets they need. Record them as the
-robot.yaml `sim_budget` block (warp drops overflow silently — see
-`docs/configuration.md`'s warp contact budgets section; a warp run without
-a recorded budget refuses to construct).
-`tests/integration/test_check_contacts.py` discovers every robot directory
-and guards the recorded numbers.
+`check-contacts` measures the per-world contact and constraint-row peaks
+for one preset and prints the warp budgets they need. Run it once for every
+preset in `robots/<name>/actuators/`, because presets can peak differently
+(Roboto Origin: 38 contacts under `sizing_ideal`, 32 under `deploy_pd`).
+Record the largest `naconmax_per_env` and the largest `njmax` across those
+runs as the robot.yaml `sim_budget` block (warp drops overflow without
+raising; see `docs/configuration.md`'s warp contact budgets section; a warp run
+without a recorded budget refuses to construct). The two can come from
+different presets. Re-measure when you add a preset or change collision
+geometry. `tests/integration/test_check_contacts.py` discovers every robot
+directory, measures every preset, and checks the recorded numbers against
+the maximum over presets at the 7× headroom rule.
 
 ## 5. Write no test
 
@@ -173,7 +211,8 @@ What it checks, for the robot and for each of its presets:
   actuator model is supposed to inject.
 - Every passive joint gets the spring `robot.yaml` gives it.
 - Every `model_patches` entry lands: the `<option>` overrides, the injected
-  sites and geoms, the mesh-collision zeroing.
+  sites and geoms (a split box as its cells and never whole), the
+  mesh-collision zeroing.
 - Every keyframe is baked in as written, and every keyframe's lowest
   foot-geom bottom sits in the `0.0`-`0.02` m band (the measurement rule
   above).

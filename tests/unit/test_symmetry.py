@@ -2,8 +2,8 @@
 
 The XML checks parse robots/roboto_origin/source/mjcf/rpo.xml as text: the
 sign table is derived from it, so it is checked against it here, without
-compiling a model. tests/integration/test_symmetry.py checks the same signs
-against the compiled model's kinematics.
+compiling a model. tests/integration/test_symmetry_env.py checks the same
+signs against the compiled model's kinematics.
 """
 
 import xml.etree.ElementTree as ET

@@ -531,9 +531,9 @@ def test_two_fresh_run_jsons_with_this_config_are_not_measured_and_exit_75_or_th
 
 
 def test_a_failed_unnamed_training_does_not_take_another_jobs_lone_run_json(jobs):
-    """train.py writes run.json only when training returns. A training that
-    died before that leaves none of its own, and the only fresh run.json can
-    be another job's, at another config."""
+    """A training that died before train.py wrote its run.json leaves none
+    of its own, and the only fresh run.json can be another job's, at
+    another config."""
     res = _fresh_runs(jobs, seeds=(1,), STUB_FAIL="train=3")
     assert res.code == 3, res.out
     assert _evals(res.calls) == []
@@ -719,6 +719,56 @@ def test_chain_phase_a_75_without_a_fresh_run_json_exits_1(jobs):
     assert "phase A (c_a) exited rc=75 without writing runs/c_a/run.json" in res.out
 
 
+@pytest.mark.parametrize(
+    ("record", "rc"),
+    [
+        # Killed by a signal: train.py installs no handler, so the record
+        # stays as written before training.
+        ({"status": "running", "early_stopped": None, "stopped_at_steps": None}, 137),
+        # Raised (an OOM): train.py records the failure with the last eval's
+        # step count, which alone would read as a finished budget.
+        (
+            {"status": "failed", "early_stopped": None, "stopped_at_steps": 1000,
+             "error": "XlaRuntimeError('RESOURCE_EXHAUSTED')"},
+            1,
+        ),
+    ],
+)
+def test_chain_phase_a_that_did_not_return_does_not_start_phase_b(jobs, record, rc):
+    """train.py writes run.json before training and fills early_stopped when
+    training returns. A phase A that never returned leaves it null. Its
+    stage measures it, and phase B does not start."""
+    (jobs.stub / "run_c_a.json").write_text(json.dumps(record))
+    res = jobs.run("train_chain.sh", STUB_FAIL=f"train:c_a={rc}", **CHAIN)
+    assert res.code == rc, res.out
+    assert (
+        f"phase A (c_a) exited rc={rc} and runs/c_a/run.json records a training that did not return"
+        in res.out
+    )
+    assert f"status={record['status']}" in res.out
+    assert "continuing to phase B" not in res.out
+    trained = [
+        a for c in res.calls if _module(c) == "humanoid_lab.train" and "--cfg" not in c["args"]
+        for a in c["args"] if a.startswith("run_name=")
+    ]
+    assert trained == ["run_name=c_a"]
+    assert [run for what, run in _evals(res.calls) if what == "courses"] == ["c_a"]
+
+
+def test_chain_leaves_the_task_to_each_experiment_unless_task_is_set(jobs):
+    """A group passed on the command line overrides an experiment's own
+    choice, so the chain passes task= only when TASK is set."""
+    res = jobs.run("train_chain.sh", **CHAIN)
+    assert res.code == 0, res.out
+    trains = [c for c in res.calls if _module(c) == "humanoid_lab.train"]
+    assert trains
+    assert not [a for c in trains for a in c["args"] if a.startswith("task=")]
+    res = jobs.run("train_chain.sh", TASK="joystick", **CHAIN)
+    assert res.code == 0, res.out
+    trains = [c for c in res.calls if _module(c) == "humanoid_lab.train"]
+    assert all("task=joystick" in c["args"] for c in trains)
+
+
 def test_chain_measures_both_phases(jobs):
     """Each phase's stage takes the caller's EVAL_TIMEOUT and EVAL_WORKERS."""
     res = jobs.run("train_chain.sh", EVAL_TIMEOUT="60", EVAL_WORKERS="3", **CHAIN)
@@ -772,8 +822,9 @@ def test_a_run_whose_newest_step_dir_is_incomplete_is_skipped(jobs):
 
 
 def test_run_status_does_not_gate_the_measurement(jobs):
-    """train.py writes no status. A run.json its caller wrote may carry one,
-    and the run is measured on its newest checkpoint whatever it says."""
+    """train.py writes run.json with status running before training, so a
+    killed run's says running. The run is measured on its newest checkpoint
+    whatever the status says."""
     _make_run(jobs.root, "a", steps=(OLDER, STEP), run={"status": "running"})
     res = jobs.run("eval_runs.sh", RUNS="a")
     assert res.code == 0, res.out

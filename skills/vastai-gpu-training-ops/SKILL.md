@@ -44,7 +44,10 @@ Do not upgrade major JAX, CUDA, MuJoCo, or Brax versions while debugging provisi
 ## Launch
 
 Pass the CPU-smoke and GPU-probe gates (`training-mjx-locomotion`) first. Save the resolved
-Hydra config before launching — `run.json` is written only after success:
+Hydra config before launching. A run that dies before train.py has built the env and run the
+contact preflight leaves no `run.json`. Once written, `run.json`'s `status` is `running` until
+training ends, then `finished`, `early_stopped` or `failed`. A run killed by a signal stays
+`running`, so the presence of `run.json` does not mean the run succeeded:
 
 ```bash
 sshc "cd '$WORK' && .venv/bin/python -m humanoid_lab.train task=joystick \

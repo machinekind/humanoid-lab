@@ -1,0 +1,42 @@
+# Joystick on a procedural terrain arena: configs/task/joystick.yaml plus
+# what follows. The arena, spawn, curriculum and the other terrain knobs
+# default in code (envs/terrain_joystick.py's default_config). Override
+# them under task.env.terrain. Robot overlays carry no terrain keys: such a
+# key would make task=joystick refuse the overlay. Another robot's terrain
+# values go in an experiment.
+defaults:
+  - joystick
+  - _self_
+
+name: terrain
+
+env:
+  obs:
+    # joystick.yaml's critic list plus the height scan, last: the ground
+    # around the base relative to the lowest sole (envs/height_scan.py).
+    # The actor list stays joystick.yaml's.
+    # symmetry.enable needs a mirror map for the scan, which does not exist
+    # yet (docs/terrain.md).
+    privileged:
+      - gyro
+      - gravity
+      - joint_pos
+      - joint_vel
+      - last_action
+      - command
+      - phase
+      - linvel
+      - height
+      - contacts
+      - actuator_force
+      - height_scan_clean
+
+# train.py refuses a terrain run whose num_resets_per_eval is not 0. It
+# also refuses early_stop.enable=true.
+ppo:
+  # A periodic reset redraws every env's curriculum level.
+  num_resets_per_eval: 0
+  # The curriculum level shows in training metrics only. Eval episodes
+  # start from reset's initial levels.
+  log_training_metrics: true
+  training_metrics_steps: 10000000
