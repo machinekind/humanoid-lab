@@ -68,6 +68,13 @@ ahead and 0.3 m to each side. Each value is the ground height relative to
 the lowest sole, clipped to ±0.5 m. The env refuses the scan on `obs.state`,
 so the actor never sees it.
 
+The mirror augmentation (`symmetry.enable`) has no map for the scan yet. With
+symmetry on, the shipped terrain task stops at env construction with a
+`KeyError` naming `height_scan_clean`. A terrain env whose critic does not
+list the scan runs mirrored. The map needs the scan's left-right flip in
+`envs/symmetry.py`, and the curriculum wrapper must flip the scan it
+splices in after a respawn.
+
 A checkpoint warm-starts across the two critic layouts, in either direction:
 
 ```bash
@@ -377,6 +384,7 @@ Whether it should gate or warn in the training preflight is open.
 - Rim-start stair cells.
 - A terrain section in `report`, with per-cell output.
 - The height scan in the actor.
+- A mirror map for the height scan, so terrain runs can train with symmetry.
 - Feature spawns for Roboto Origin, after its settle time is measured.
 - A terrain video and terrain torque demand for sizing.
 - TODO: Asimov v1 on terrain. It has no scan suite and no recipe. On the C

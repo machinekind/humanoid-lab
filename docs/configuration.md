@@ -1478,8 +1478,10 @@ field, and nothing is written.
 
 | Key | Holds |
 |---|---|
+| `schema`, `ground_class` | the schema version, 1, and the ground class measured, `flat` |
 | `run`, `run_status` | run.json's `run_name` and `status`. `run_status` is `null` when run.json has no `status`. train.py writes `running` before training, then `finished`, `early_stopped` or `failed`. |
 | `checkpoint`, `checkpoint_step`, `checkpoint_sha256` | the step dir measured, its step, and the sha256 over its files |
+| `trained_task`, `measured_task` | run.json's task, and the task the measurement env was built as. A terrain run is measured on its flat rebuild, so it records `terrain` and `joystick`. Every other task records itself twice. See [terrain.md](terrain.md). |
 | `robot`, `preset`, `seeds`, `seed_base`, `canonical`, `env_overrides`, `budget_cap` | the request. `budget_cap` is `null` unless a test cut every lane short, and a file with one is never current. |
 | `catalogue` | The version, the fingerprint, `params_source`, the six inputs and the derived params. `follower` holds the follower constants and the yaw cap. `protocol` holds the protocol constants, `ctrl_dt`, the nominal friction and the noise the lanes ran under. `derivation` holds the fractions that turn the inputs into the params. |
 | `engine` | backend, platform, workers, machine, CPU model, `XLA_FLAGS`, and the jax, jaxlib, mujoco and mjx versions |
@@ -1489,6 +1491,7 @@ field, and nothing is written.
 | `contacts`, `messages`, `physics_clean`, `nonfinite_lanes` | `contacts` and `messages` hold warp's counters and are `null` on jax. `physics_clean` is true when no lane went non-finite, and `nonfinite_lanes` counts the lanes that did. |
 | `perf` | workers, lanes, env-steps, and the env build, compile, lane, perfect-unicycle and wall seconds |
 | `provenance` | the git commit and dirty flag, package versions, device, start time and run.json's seed |
+| `timestamp` | when the file was written, local time with its UTC offset |
 
 A seed's `outcome` is `nonfinite`, `settle_fell`, `fell`, `completed` or
 `timed_out`, decided in that order. Path rows report `progress_m` per seed,
