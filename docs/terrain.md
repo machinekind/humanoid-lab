@@ -385,6 +385,9 @@ Whether it should gate or warn in the training preflight is open.
 - A terrain section in `report`, with per-cell output.
 - The height scan in the actor.
 - A mirror map for the height scan, so terrain runs can train with symmetry.
+- Terrain courses: the course benchmark on terrain arenas, for every flat
+  and terrain model. [terrain-courses.md](terrain-courses.md) holds the
+  design. None of it is implemented yet.
 - Feature spawns for Roboto Origin, after its settle time is measured.
 - A terrain video and terrain torque demand for sizing.
 - TODO: Asimov v1 on terrain. It has no scan suite and no recipe. On the C
