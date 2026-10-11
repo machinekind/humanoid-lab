@@ -9,9 +9,12 @@ work on its output unchanged. The JAX env (CPU) is the parity oracle.
     python wtrain/train.py --src runs/<src> --src-ckpt <step dir> --name <run> \
         --steps 3e8 --ckpt-minutes 10 --sym-coef 1.0 --warp-reward '<json>'
 
-Other tools: `measure.py` (gait + stability metrics), `video_watch.sh`
-(clip per checkpoint), `long_video.py` (scripted 40 s command sequence),
-`compare_video.py`, `parity.py`, `bench_warp.py`.
+The gait and stability metrics are battery rows (`eval/gait.py`).
+`jobs/video_watch.sh` renders a clip per checkpoint.
+`./run.sh eval --scenario long` renders the scripted 40 s command sequence.
+`./run.sh eval --compare` renders the open-loop clip next to the
+heading-closed one. `parity.py` and `bench_warp.py` are the tools left in
+`wtrain/`.
 
 ## Roboto Origin gait, v1-v40 (about 3.1 G env steps, chained warm starts)
 

@@ -846,16 +846,65 @@ items 4.1 to 4.3 is **additive**: no pre-existing field changed meaning, and
 none of the new numbers folds into a score, a gate, or the `fell` / `steps`
 logic. They are raw readings.
 
+### The rollout record
+
+`rollout` in `eval/battery.py` returns one record per scenario: a dict of
+numpy arrays with one row per control step. `RECORD_FIELDS` in the same file
+is the one schema for it. In the shapes below, `F` is the foot count, `nu` is
+the actuator count and `n_act` is the actuated-joint count.
+
+| Key | Per-step shape | dtype | Frame | Quaternion source | What it holds |
+|---|---|---|---|---|---|
+| `cmd` | `(3,)` | float32 | command | - | The scripted `[vx, vy, wz]` command for the step. |
+| `vx` | `()` | float64 | body | IMU | Forward base velocity, m/s. |
+| `vy` | `()` | float64 | body | IMU | Lateral base velocity, m/s. |
+| `wz` | `()` | float64 | body | - | Body gyro z channel, rad/s. |
+| `height` | `()` | float64 | world | - | Base height from the free joint's qpos, m. |
+| `qvel` | `(n_act,)` | float32 | joint | - | Actuated joint velocities. |
+| `contact` | `(F,)` | bool | foot | - | Each foot touches the floor. |
+| `foot_speed` | `(F,)` | float32 | world | - | Horizontal foot speed, m/s. |
+| `tau` | `(nu,)` | float32 | actuator | - | Actuator force. |
+| `foot_clear` | `(F,)` | float32 | world | - | Sole height above the floor, m. |
+| `foot_vz` | `(F,)` | float32 | world | - | Vertical foot velocity, m/s. |
+| `ctrl` | `(nu,)` | float32 | actuator | - | The servo setpoint. |
+| `qpos` | `(n_act,)` | float32 | joint | - | Actuated joint angles. |
+| `base_pos` | `(3,)` | float32 | world | - | Position of the free-joint body, from its `xpos`. |
+| `base_quat` | `(4,)` | float32 | world | IMU | Base orientation, wxyz. |
+| `foot_pos` | `(F, 3)` | float32 | world | - | Foot site positions, from `site_xpos`. |
+| `knee_q` | `(F,)` | float32 | joint | - | Each foot's knee angle, in foot order. Optional. |
+
+Row `i` is the state after control step `i`. When a step trips `done`, the
+record keeps that step's row and the rollout stops. A metric that needs a
+standing robot therefore scores `rec[settle:fell_at]`.
+
+The IMU quaternion is the robot's quat sensor, read through the env's
+`_quat`. A robot that declares no quat sensor uses the free joint's qpos
+instead. `base_pos`, `base_quat` and `foot_pos` come from the same
+forward-kinematics stage.
+
+`knee_q` is the only optional key. It is absent on a robot with no knee group
+or with foot sites that carry no side token. Its sign is robot-specific, so
+metrics read its magnitude. Per-run constants travel in `rollout`'s second
+return value, `meta`. It carries `dt` and `foot_sides`.
+
+`rollout` checks the record against `RECORD_FIELDS` before it returns.
+`scenario_result` checks it again and names every missing required key.
+`tests/integration/test_battery_record.py` runs the real rollout and checks
+each key's shape and dtype. The evals read only the record. They do not
+depend on which trainer produced the checkpoint.
+
 ### The settle window
 
-`eval/battery.py`'s `SETTLE_STEPS = 50` is the reset transient every new
-metric drops — 1 s at asimov's `ctrl_dt` of 0.02, and a step count rather
-than a duration. `rollout` starts recording on the first step after reset,
-and the opening steps are the robot falling into its pose against a command
-it has not had time to answer. The pre-4.1 metrics (`vel_err_*`,
-`vibration`, `foot_slip`, `height_*`, `torque_sat_frac`, `mech_power_mean`,
-`antiphase_score`) still score the whole record: narrowing their window would
-change what an existing field means.
+`eval/battery.py`'s `SETTLE_SEC = 1.0` is the reset transient every new
+metric drops. `settle_steps(dt)` converts it to control steps, which is 50
+steps at a `ctrl_dt` of 0.02. `rollout` starts recording on the first step
+after reset, and the opening steps are the robot falling into its pose
+against a command it has not had time to answer. The gait-shape metrics also
+stop before the fall row: they score `rec[settle:fell_at]`. The pre-4.1
+metrics (`vel_err_*`, `vibration`, `foot_slip`, `height_*`,
+`torque_sat_frac`, `mech_power_mean`, `antiphase_score`) still score the
+whole record: narrowing their window would change what an existing field
+means.
 
 A scenario that ends inside the window therefore reports `null` (or
 `swings: 0`) for every new metric while the older ones still print numbers.
@@ -926,6 +975,60 @@ Apexes and the 5 mm airborne band are physical heights above the floor
 (`_foot_clearance` reads sole height; see
 `docs/lessons/foot-clearance.md`).
 
+### Gait shape
+
+`eval/gait.py`'s `gait_shape`, pure numpy over the record's base pose,
+command, foot contacts, foot positions and knee angles. Every key below is on
+every scenario row with at least 10 steps. A key reads `null` when nothing
+was measured. `<side>` is the foot's side token, described below.
+
+| Field | Meaning |
+|---|---|
+| `speed_frac` | Displacement along the start heading over the commanded distance. 1.0 is a robot that covered exactly the commanded distance. `null` below 0.1 m of commanded travel. |
+| `heading_drift_deg` | Yaw change minus the commanded yaw change, degrees. The yaw is unwrapped over the window, so a missed spin keeps its full size and sign. |
+| `lateral_drift_m` | Displacement across the start heading, metres. Positive is left. |
+| `support_frac_0`, `support_frac_1`, `support_frac_2` | Share of rows with exactly 0, 1 or 2 feet in contact. |
+| `roll_std_deg` | Standard deviation of the roll angle, degrees, read from the body-frame gravity vector. |
+| `pelvis_sway_cm` | Standard deviation of the base's lateral position, centimetres, after its fitted straight line is removed. The line takes out a steady drift. `null` with fewer than 3 rows. |
+| `step_length_m` | Mean of the landing foot's x minus the other foot's x, metres, over every scored landing. It needs exactly two feet. `null` without a scored landing. |
+| `landing_x_m_<side>` | Mean forward position of the foot at its scored landings, metres, in the base frame. `null` without a scored landing. |
+| `landing_y_m_<side>` | Mean lateral position of the foot at its scored landings, metres, in the base frame. Signed, with left as positive. A sign change shows a foot crossing the midline. `null` without a scored landing. |
+| `knee_td_rad_<side>` | Mean knee angle magnitude at the foot's scored landings, radians. `null` without a knee group or without a scored landing. |
+
+The window is `rec[settle:fell_at]`: it starts after the settle window and
+ends at the step before a fall. The travel numbers measure from the first
+scored row to the last one. The travel and heading metrics are `null` with
+fewer than 2 scored rows. The support and roll metrics are `null` for an
+empty window.
+
+The heading comes from the IMU quaternion. The base position is the
+free-joint body's `xpos`. Foot positions are read relative to the base
+position and rotated into the base frame by the same quaternion.
+
+A landing is a contact rising edge: a row where a foot is in contact and was
+not on the row before. Each foot's first landing in the window is dropped,
+because it lands from the reset pose. The rest are its scored landings. This
+detector is separate from the Gait KPIs' clearance detector, and the two
+counts can differ.
+
+The side tokens come from the `foot_sites` names in `robot.yaml`. A foot is
+`left` or `right` when exactly one of the two words occurs in its site name.
+The match is case-sensitive. If any name has neither or both, or two feet
+share a side, the feet are named `foot0`, `foot1`, and so on.
+
+`knee_td_rad_<side>` takes the magnitude because knee signs differ by robot.
+Asimov's right knee flexes negative, for example.
+
+These metrics fold into nothing. No score, gate or PASS/ATTENTION line reads
+them.
+
+Speed fraction, drift and sway read cleanest on straight commands. On a turn
+the path curves away from the start heading, and the curve dominates the
+sway. On strafe the lateral drift is the commanded sideways travel, and the
+speed fraction is null because no forward distance is commanded. The
+battery's scenarios are scripted, with ramps and stops, so their numbers
+differ from those of a probe that holds one constant speed.
+
 ### Servo tracking error
 
 | Field | Meaning |
@@ -982,13 +1085,31 @@ block.
 
 ## Eval videos
 
-`./run.sh eval --run runs/<name>` renders one battery scenario to MP4 —
-the same scripted command trajectories `battery.json` measures, so a clip
-and its battery row describe the same trajectory.
+`./run.sh eval --run runs/<name>` renders one scenario to MP4. A battery
+scenario uses the same scripted command trajectory `battery.json` measures.
+Its clip and its battery row describe the same trajectory.
+
+`long` is a video-only scenario. It runs for 40 s: a stand, speed-ups to 0.6
+and then 0.9 of the vx maximum, a slow-down, a left turn and a right turn at
+0.5 rad/s, a walk and a stop. Its vx values scale with the robot's
+`command.vx` maximum. Its wz stays 0.5 rad/s, clipped to the robot's
+`command.wz` range. It has no battery row.
+
+`--compare` renders the open-loop rollout next to the heading-closed one in
+one clip. It loads the checkpoint once and runs two rollouts at the same
+seed, scenario and checkpoint. The left half runs open-loop. The right half
+runs the outer heading loop at `--heading-gain`, which defaults to 1.5 here.
+The labels in the top-left corners read "open loop" and "heading loop, gain
+G". The shorter half repeats its last frame, so the side that keeps walking
+stays visible after the other one falls. The default output is
+`runs/<name>/<scenario>_compare.mp4`. The loop's added wz is a turn command.
+A policy trained with `heading_err` observed re-anchors its `yaw_ref` to the
+measured yaw while the command's wz exceeds 0.05 rad/s. So in the right half
+that policy's own `heading_err` observation reads near zero.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--scenario NAME` | `walk_ramp` | Any `eval/battery.py::battery_scenarios` name. |
+| `--scenario NAME` | `walk_ramp` | Any `eval/battery.py::battery_scenarios` name, or `long`. |
 | `--steps N` | the scenario's own length | Truncates the rollout. |
 | `--video-size WxH` | `640x480` | Rendered frame size. When the model's offscreen buffer is smaller, `eval/render.py`'s SceneView widens a private model copy, so any size works without touching the robot XML. The stacked `--plot-*` panels follow the frame width. |
 | `--overlay-torque` | off | A signed bar per actuator drawn into the frame itself (`eval/overlays.py`), normalized by that joint's own cap, one colour per joint group, red lines at ±1. The instantaneous view of the same signal `--plot-torque` traces over the episode: saturation is visible at the moment it happens. |
@@ -996,6 +1117,9 @@ and its battery row describe the same trajectory.
 | `--plot-joints` | off | A per-joint target-vs-state grid: one row per joint group, one column per side, achieved position solid and the policy's target dashed. |
 | `--joint NAME` | — | Swaps the grid for a single-joint zoom panel. Implies `--plot-joints`. |
 | `--push` | off | Restores the run's own random pushes. |
+| `--heading-gain G` | `0`, or `1.5` with `--compare` | The default 0 renders open-loop. Otherwise an outer heading loop adds gain times the wrapped heading error to the scenario's wz, clipped to 0.5 rad/s. Yaw comes from the IMU quaternion through `signals.base_yaw`. The loop's added wz is a turn command, so a heading-trained policy re-anchors its `yaw_ref` to the measured yaw while the command's wz exceeds 0.05 rad/s. |
+| `--compare` | off | Renders the open-loop rollout and the heading-closed one side by side in one clip. The gain comes from `--heading-gain`, default 1.5. `--compare --heading-gain 0` is a usage error. |
+| `--checkpoint STEP` | the latest checkpoint | Renders the checkpoint saved at this step. Pass the step a battery measured to render that same policy. The final print line names the checkpoint that loaded. |
 
 **Rows of the joint grid share a y-range** (`sharey="row"`). That is what
 makes left/right asymmetry readable: per-axes autoscaling would rescale each
@@ -1068,9 +1192,9 @@ Read from `run.sh` as it stands today:
 | `test-all` | `python -m pytest tests/unit tests/integration -q`, then `JAX_PLATFORMS=cpu python -m pytest tests/parity -q` | All three suites. Parity runs as a second process, because `JAX_PLATFORMS` must be set before the first jax import. Arguments go to the first process only. Same compile cache as `test-slow`. Use before merging. |
 | `sizing-collect` | `JAX_PLATFORMS=cpu python -m humanoid_lab.sizing.collect` | `--run runs/<name> [--episodes N] [--steps N] [--seed N]`. Rolls the checkpoint out on CPU and writes `<run>/sizing_data.npz`. |
 | `sizing-report` | `sizing.collect` then `python -m humanoid_lab.sizing.report` | `--run runs/<name> [--episodes N] [--steps N] [--seed N] [--motors NAME] [--recollect]`. Skips the collect step if `<run>/sizing_data.npz` already exists, unless `--recollect` is passed. Writes `<run>/sizing_report.md` and `<run>/sizing_scatter.png`. |
-| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--set BLOCK.KEY=VALUE ...]`. Writes `<run>/battery.json` unless `--out` says otherwise. `--set` re-scores the checkpoint under a changed `task.env` value (e.g. `obs_noise.joint_vel=1.75`), merged one level deep over the measurement env; VALUE is read as YAML. It requires an `--out` other than `<run>/battery.json`, so a re-scored variant never overwrites the run's own table, and the variant records the overrides under `env_overrides`. |
+| `battery` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.battery` | `--run runs/<name> [--out PATH] [--set BLOCK.KEY=VALUE ...] [--checkpoint STEP]`. Writes `<run>/battery.json` unless `--out` says otherwise. `--set` re-scores the checkpoint under a changed `task.env` value (e.g. `obs_noise.joint_vel=1.75`), merged one level deep over the measurement env; VALUE is read as YAML. It requires an `--out` other than `<run>/battery.json`, so a re-scored variant never overwrites the run's own table, and the variant records the overrides under `env_overrides`. `--checkpoint STEP` measures the checkpoint saved at that step instead of the latest, and `battery.json`'s `checkpoint` field names the one measured. |
 | `report` | `python -m humanoid_lab.eval.report`, then `sizing.report` if `<run>/sizing_data.npz` exists | `--run runs/<name> [--out PATH]`. Renders `<run>/eval_report.md` from `battery.json`. |
-| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push]`. Renders one battery scenario to MP4. See [Eval videos](#eval-videos). |
+| `eval` | `JAX_PLATFORMS=cpu python -m humanoid_lab.eval.video` | `--run runs/<name> [--scenario NAME] [--steps N] [--out PATH] [--seed N] [--video-size WxH] [--overlay-torque] [--plot-torque] [--plot-joints] [--joint NAME] [--push] [--heading-gain G] [--compare] [--checkpoint STEP]`. Renders one battery scenario, or the video-only `long`, to MP4. `--compare` puts the open-loop and heading-closed rollouts side by side. `--checkpoint STEP` renders the checkpoint saved at that step instead of the latest. See [Eval videos](#eval-videos). |
 | `export` | `JAX_PLATFORMS=cpu python -m humanoid_lab.export.policy` | `--run runs/<name> [--out DIR]`. Writes `policy.npz` and `policy_meta.json` into `<run>/deploy` unless `--out` says otherwise. Both round-trip validations run before either file is placed. See [deploy.md](deploy.md). |
 
 ## Configs compose only from the editable install

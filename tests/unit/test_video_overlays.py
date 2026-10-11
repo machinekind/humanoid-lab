@@ -93,3 +93,24 @@ def test_panels_scale_with_the_frame():
     assert overlays.scale_of((480, 360)) < 1.0 < overlays.scale_of((1920, 1440))
     assert overlays.scale_of((overlays.REF_W, overlays.REF_H)) == 1.0
     assert overlays.font_px((320, 240)) < overlays.font_px((1920, 1440))
+
+
+def test_a_label_is_drawn_in_the_top_left_corner():
+    frame = blank()
+    out = overlays.draw_label(frame, "open loop")
+    assert out.shape == frame.shape
+    assert not frame.any()  # the input frame is not modified
+    changed = np.any(out != frame, axis=-1)
+    assert changed.any()
+    h, w = changed.shape
+    assert not changed[h // 2:].any()
+    assert not changed[:, w // 2:].any()
+
+
+def test_a_longer_label_draws_a_wider_box():
+    def width(text):
+        changed = np.any(overlays.draw_label(blank(), text) != 0, axis=-1)
+        cols = np.flatnonzero(changed.any(axis=0))
+        return cols[-1] - cols[0]
+
+    assert width("heading loop, gain 1.5") > width("open loop")

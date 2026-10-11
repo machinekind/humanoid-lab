@@ -90,7 +90,7 @@ case "${1:-}" in
     "$PY" -m humanoid_lab.sizing.report "${report_args[@]}"
     ;;
   # Fixed eval battery -> runs/<name>/battery.json.
-  # Passthrough args: --run runs/<name> [--out path.json].
+  # Passthrough args: --run runs/<name> [--out path.json] [--set BLOCK.KEY=VALUE ...] [--checkpoint STEP].
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
   # first). If runs/<name>/sizing_data.npz also exists, additionally runs
@@ -115,16 +115,17 @@ case "${1:-}" in
       "$PY" -m humanoid_lab.sizing.report --run "$run"
     fi
     ;;
-  # Renders one battery scenario rollout to MP4 (mujoco Renderer,
+  # Renders one battery scenario (or the video-only long) rollout to MP4 (mujoco Renderer,
   # offscreen). darwin: uses the default GL backend (CGL); linux:
   # eval/video.py sets MUJOCO_GL=egl unless already exported -- see its
   # module docstring. Only exercised on darwin so far in this repo; treat
   # the linux/egl path as untested until a GPU-box run confirms it.
   # Rollouts are push-free by default (the battery's measurement
   # convention); --push restores the run's own random pushes.
-  # Passthrough args: --run runs/<name> [--scenario name] [--steps N]
+  # Passthrough args: --run runs/<name> [--scenario name|long] [--steps N]
   # [--out path.mp4] [--seed N] [--video-size WxH] [--overlay-torque]
-  # [--plot-torque] [--plot-joints] [--joint NAME] [--push].
+  # [--plot-torque] [--plot-joints] [--joint NAME] [--push]
+  # [--heading-gain G] [--compare] [--checkpoint STEP].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
   # latest checkpoint (see docs/deploy.md). Forced

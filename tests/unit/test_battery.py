@@ -304,25 +304,101 @@ def test_yaw_progress_is_none_when_nothing_outlived_the_settle_window():
 # -- scenario_result's spin fields -------------------------------------------
 
 
+# The sizes behind RECORD_FIELDS' shape symbols in the synthetic record.
+_DIMS = {"F": 2, "nu": 4, "n_act": 4}
+
+
 def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
-    """A synthetic rollout record of `n` steps, shaped like rollout()'s."""
-    cmd = np.zeros((n, 3))
-    cmd[:, 2] = cmd_wz
-    return {
-        "cmd": cmd,
-        "vx": np.zeros(n),
-        "vy": np.zeros(n),
-        "wz": np.full(n, wz),
-        "height": np.full(n, 0.7),
-        "qvel": np.zeros((n, 4)),
-        "contact": np.ones((n, 2), dtype=bool),
-        "foot_speed": np.zeros((n, 2)),
-        "foot_clear": np.zeros((n, 2)),
-        "foot_vz": np.zeros((n, 2)),
-        "tau": np.zeros((n, 4)),
-        "ctrl": np.zeros((n, 4)),
-        "qpos": np.zeros((n, 4)),
+    """A synthetic rollout record of `n` steps, built from RECORD_FIELDS.
+
+    Every required field starts at zero. Both feet are in contact, the base
+    stands at 0.7 m with the identity orientation, and the yaw rate and its
+    command are set from the arguments."""
+    rec = {
+        key: np.zeros((n, *battery.field_shape(f, _DIMS)), dtype=f.dtype)
+        for key, f in battery.RECORD_FIELDS.items()
+        if not f.optional
     }
+    rec["contact"][:] = True
+    rec["height"][:] = 0.7
+    rec["base_pos"][:, 2] = 0.7
+    rec["base_quat"][:, 0] = 1.0
+    rec["wz"][:] = wz
+    rec["cmd"][:, 2] = cmd_wz
+    return rec
+
+
+def test_the_unit_record_is_built_from_record_fields():
+    rec = _rec(12)
+
+    required = {k for k, f in battery.RECORD_FIELDS.items() if not f.optional}
+    assert set(rec) == required
+    battery.check_record(rec, _DIMS)
+
+
+def test_record_fields_declares_the_new_fields():
+    fields = battery.RECORD_FIELDS
+
+    assert fields["base_pos"].shape == (3,)
+    assert fields["base_quat"].shape == (4,)
+    assert fields["base_quat"].quat == "imu"
+    assert fields["foot_pos"].shape == ("F", 3)
+    assert fields["knee_q"].shape == ("F",)
+    assert [k for k, f in fields.items() if f.optional] == ["knee_q"]
+    assert all(f.done_row == "kept" for f in fields.values())
+
+
+def test_check_record_names_a_missing_field():
+    rec = _rec(12)
+    del rec["foot_pos"]
+
+    with pytest.raises(ValueError, match="foot_pos: missing"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_names_an_unknown_field():
+    rec = _rec(12)
+    rec["mystery"] = np.zeros(12)
+
+    with pytest.raises(ValueError, match="mystery: not in RECORD_FIELDS"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_catches_a_wrong_shape():
+    rec = _rec(12)
+    rec["foot_pos"] = np.zeros((12, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="foot_pos: shape"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_catches_a_wrong_dtype():
+    rec = _rec(12)
+    rec["contact"] = rec["contact"].astype(np.float32)
+
+    with pytest.raises(ValueError, match="contact: dtype"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_accepts_a_record_without_knee_q_and_checks_one_that_has_it():
+    rec = _rec(12)
+    battery.check_record(rec, _DIMS)
+
+    rec["knee_q"] = np.zeros((12, 2), dtype=np.float32)
+    battery.check_record(rec, _DIMS)
+
+    rec["knee_q"] = np.zeros((12, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="knee_q: shape"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_scenario_result_refuses_a_record_missing_a_field():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    del rec["base_quat"]
+
+    with pytest.raises(ValueError, match="base_quat"):
+        scenario_result("stand", rec, None, _DT, np.zeros(4), n)
 
 
 def test_scenario_result_reports_yaw_progress_per_direction():
@@ -417,6 +493,39 @@ def test_a_scenario_that_never_lifted_a_foot_reports_zero_swings():
 
     assert r["swings"] == 0
     assert r["touchdown_softness_med"] is None
+
+
+def test_scenario_result_carries_the_gait_shape_metrics():
+    n = SETTLE_STEPS + 100
+    r = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert r["speed_frac"] is None
+    assert r["heading_drift_deg"] == 0.0
+    assert r["support_frac_2"] == 1.0
+    assert r["roll_std_deg"] == 0.0
+
+
+def test_scenario_result_scores_gait_shape_up_to_the_fall():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    rec["contact"][-1] = False  # the fallen row the record keeps
+
+    r = scenario_result("stand", rec, n - 1, _DT, np.zeros(4), n)
+
+    assert r["support_frac_0"] == 0.0
+
+
+def test_scenario_result_names_per_foot_keys_from_meta():
+    n = SETTLE_STEPS + 100
+    meta = {"dt": _DT, "foot_sides": ("left", "right")}
+
+    named = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n, meta=meta)
+    plain = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert "landing_x_m_left" in named
+    assert "knee_td_rad_right" in named
+    assert "landing_x_m_foot0" not in named
+    assert "landing_x_m_foot0" in plain
 
 
 # -- tracking_error ----------------------------------------------------------
@@ -650,6 +759,61 @@ def test_without_out_the_battery_writes_the_canonical_file(
     _main(["--run", str(run_dir)], monkeypatch)
 
     assert (run_dir / "battery.json").exists()
+
+
+def test_the_checkpoint_flag_reaches_run_battery(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir), "--checkpoint", "200"], monkeypatch)
+
+    assert stub_battery["step"] == 200
+
+
+def test_without_the_flag_the_latest_is_measured(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir)], monkeypatch)
+
+    assert stub_battery["step"] is None
+
+
+# -- checkpoint selection ----------------------------------------------------
+#
+# Step dirs are zero-padded. A non-numeric dir (an orbax temp dir) is never
+# a candidate.
+
+
+def _ckpt_run(tmp_path) -> dict:
+    ckpts = tmp_path / "checkpoints"
+    for name in ("000000000100", "000000000200", "tmp"):
+        (ckpts / name).mkdir(parents=True)
+    return {"checkpoint_dir": str(ckpts)}
+
+
+def test_find_checkpoint_takes_the_latest_by_default(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    assert battery._find_checkpoint(run, tmp_path) == tmp_path / "checkpoints" / "000000000200"
+    assert battery._find_latest_checkpoint(run, tmp_path) == tmp_path / "checkpoints" / "000000000200"
+
+
+def test_find_checkpoint_selects_the_requested_step(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    assert battery._find_checkpoint(run, tmp_path, step=100) == tmp_path / "checkpoints" / "000000000100"
+
+
+def test_a_missing_step_lists_the_available_ones(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    with pytest.raises(FileNotFoundError) as exc:
+        battery._find_checkpoint(run, tmp_path, step=150)
+
+    msg = str(exc.value)
+    assert "150" in msg
+    assert "[100, 200]" in msg
 
 
 # -- contact budget peaks ----------------------------------------------------

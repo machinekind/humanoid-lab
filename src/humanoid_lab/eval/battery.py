@@ -7,7 +7,11 @@ a policy under a different observation noise than it trained with. Each item
 is merged one level deep over the measurement env (merged_env_overrides) and
 recorded in the written json under `env_overrides`.
 
+--checkpoint STEP measures the checkpoint saved at that step instead of the
+latest. battery.json's `checkpoint` field names the one measured.
+
 Shape: load_checkpoint_policy -> rollout -> scenario_result -> run_battery.
+rollout's record follows RECORD_FIELDS.
 The env is rebuilt through this repo's env contract (registry.make_env with
 robot_dir/preset_name/task.env read back from run.json's hydra_config,
 the same reconstruction as sizing/collect.py's make_env_for_run). run.json
@@ -44,6 +48,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jp
@@ -52,7 +57,118 @@ import yaml
 from ml_collections import config_dict
 
 from humanoid_lab import sim_budget
-from humanoid_lab.eval.gait import gait_metrics
+from humanoid_lab.eval.gait import foot_sides, gait_metrics, gait_shape
+
+# -- the rollout record schema ---------------------------------------------
+
+
+class RecordField(NamedTuple):
+    """One rollout record key. `shape` is the per-step shape. Its entries
+    are ints or the symbols "F" (feet), "nu" (actuators) and "n_act"
+    (actuated joints)."""
+
+    shape: tuple
+    dtype: str
+    frame: str
+    quat: str | None
+    done_row: str
+    optional: bool = False
+
+
+# Row i of every field is the state after control step i.
+#
+# done_row "kept": the record includes the row of the step that tripped done.
+# A metric that needs a standing robot scores rec[settle:fell_at].
+#
+# quat "imu": the value is read through env._quat. That is the robot's quat
+# sensor, or the free joint's qpos when the robot declares none. In MJX the
+# sensor lags qpos by one physics substep (up to 1.5e-3 rad measured on
+# roboto). The env's own yaw and gravity read the same sensor.
+#
+# base_pos is xpos of the free-joint body. That is the same forward-kinematics
+# stage as the sensor quaternion and site_xpos. qpos runs one substep ahead.
+#
+# foot_pos is site_xpos of the foot sites, in the world frame.
+#
+# knee_q is each foot's knee angle, foot-ordered. It is absent on a robot with
+# no knee group or no side tokens. Its sign is robot-specific (asimov's right
+# knee flexes negative), so metrics take abs.
+#
+# Per-run constants travel in rollout's meta dict. A nested dict cannot go
+# through the per-key np.asarray.
+RECORD_FIELDS: dict[str, RecordField] = {
+    "cmd": RecordField((3,), "float32", "command", None, "kept"),
+    "vx": RecordField((), "float64", "body", "imu", "kept"),
+    "vy": RecordField((), "float64", "body", "imu", "kept"),
+    "wz": RecordField((), "float64", "body", None, "kept"),
+    "height": RecordField((), "float64", "world", None, "kept"),
+    "qvel": RecordField(("n_act",), "float32", "joint", None, "kept"),
+    "contact": RecordField(("F",), "bool", "foot", None, "kept"),
+    "foot_speed": RecordField(("F",), "float32", "world", None, "kept"),
+    "tau": RecordField(("nu",), "float32", "actuator", None, "kept"),
+    "foot_clear": RecordField(("F",), "float32", "world", None, "kept"),
+    "foot_vz": RecordField(("F",), "float32", "world", None, "kept"),
+    "ctrl": RecordField(("nu",), "float32", "actuator", None, "kept"),
+    "qpos": RecordField(("n_act",), "float32", "joint", None, "kept"),
+    "base_pos": RecordField((3,), "float32", "world", None, "kept"),
+    "base_quat": RecordField((4,), "float32", "world", "imu", "kept"),
+    "foot_pos": RecordField(("F", 3), "float32", "world", None, "kept"),
+    "knee_q": RecordField(("F",), "float32", "joint", None, "kept", optional=True),
+}
+
+
+def field_shape(field: RecordField, dims: dict) -> tuple[int, ...]:
+    """`field.shape` with the symbols "F", "nu" and "n_act" read from `dims`."""
+    return tuple(dims[s] if isinstance(s, str) else int(s) for s in field.shape)
+
+
+def record_dims(env) -> dict:
+    """The sizes behind RECORD_FIELDS' shape symbols, read from `env`."""
+    return {
+        "F": int(env._n_feet),
+        "nu": int(env.mj_model.nu),
+        "n_act": len(np.asarray(env._qadr)),
+    }
+
+
+def check_record(rec: dict, dims: dict) -> None:
+    """Check `rec` against RECORD_FIELDS.
+
+    T is the length of rec["cmd"]. Every problem is collected: a missing
+    required key, a key RECORD_FIELDS does not know, a wrong shape and a
+    wrong dtype. Raises one ValueError that names each problem and its key.
+    """
+    problems = []
+    for key, field in RECORD_FIELDS.items():
+        if key not in rec and not field.optional:
+            problems.append(f"{key}: missing")
+    for key in rec:
+        if key not in RECORD_FIELDS:
+            problems.append(f"{key}: not in RECORD_FIELDS")
+    t = len(rec["cmd"]) if "cmd" in rec else None
+    for key, value in rec.items():
+        field = RECORD_FIELDS.get(key)
+        if field is None:
+            continue
+        value = np.asarray(value)
+        if t is not None:
+            want = (t, *field_shape(field, dims))
+            if value.shape != want:
+                problems.append(f"{key}: shape {value.shape}, expected {want}")
+        if value.dtype != np.dtype(field.dtype):
+            problems.append(f"{key}: dtype {value.dtype}, expected {field.dtype}")
+    if problems:
+        raise ValueError("rollout record does not match RECORD_FIELDS: " + "; ".join(problems))
+
+
+def _knee_index(env):
+    """Each foot's knee column in the actuated-joint arrays, foot-ordered.
+    None when the robot has no knee group or its names carry no side token."""
+    try:
+        return np.asarray(env._foot_ordered_group_qidx("knee"))
+    except (ValueError, KeyError):
+        return None
+
 
 # -- pure metric functions -------------------------------------------------
 # numpy arrays in, float/dict out -- no env, jax rollout or checkpoint
@@ -235,9 +351,22 @@ def peak_over(values) -> int | None:
 
 
 def scenario_result(
-    name: str, rec: dict, fell_at: int | None, dt: float, torque_cap, n_steps: int
+    name: str,
+    rec: dict,
+    fell_at: int | None,
+    dt: float,
+    torque_cap,
+    n_steps: int,
+    meta: dict | None = None,
 ) -> dict:
-    """One scenario's battery.json entry, computed from its rollout()."""
+    """One scenario's battery.json entry, computed from its rollout().
+
+    `meta` is rollout's meta dict. Its foot_sides name the per-foot keys.
+    Without it the feet are named foot0, foot1, and so on.
+    """
+    missing = [k for k, f in RECORD_FIELDS.items() if not f.optional and k not in rec]
+    if missing:
+        raise ValueError(f"rollout record lacks RECORD_FIELDS keys: {', '.join(missing)}")
     steps = len(rec["vx"])
     r = {
         "fell": fell_at is not None,
@@ -291,6 +420,16 @@ def scenario_result(
     # here because velocity tracking error scores a skimming gait and a
     # stand-and-lift farm as healthy.
     r.update(gait_metrics(rec, settle_steps=settle_steps(dt)))
+    # Gait shape, scored up to the fall row. Every key is always present.
+    r.update(
+        gait_shape(
+            rec,
+            dt=dt,
+            settle_steps=settle_steps(dt),
+            fell_at=fell_at,
+            sides=(meta or {}).get("foot_sides"),
+        )
+    )
 
     # Servo error, also raw.
     track = tracking_error(rec["ctrl"], rec["qpos"], settle_steps(dt))
@@ -386,7 +525,13 @@ def battery_scenarios(dt: float, command) -> dict:
 # -- checkpoint rollout (needs env + jax + a trained policy) ---------------
 
 
-def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
+def _find_checkpoint(run: dict, run_dir: Path, step: int | None = None) -> Path:
+    """Return the run's checkpoint dir saved at `step`.
+
+    Step dirs are zero-padded numbers, e.g. 000000102400. With step None
+    this returns the largest step. A step with no matching dir raises
+    FileNotFoundError, which lists the steps that exist.
+    """
     ckpt_dir = Path(run["checkpoint_dir"])
     if not ckpt_dir.exists():
         ckpt_dir = (run_dir / "checkpoints").resolve()
@@ -395,7 +540,18 @@ def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
     steps = [p for p in ckpt_dir.iterdir() if p.is_dir() and p.name.isdigit()]
     if not steps:
         raise FileNotFoundError(f"{ckpt_dir} has no <step> checkpoint subdirectories")
-    return max(steps, key=lambda p: int(p.name))
+    if step is None:
+        return max(steps, key=lambda p: int(p.name))
+    for p in steps:
+        if int(p.name) == step:
+            return p
+    have = sorted(int(p.name) for p in steps)
+    raise FileNotFoundError(f"{ckpt_dir} has no checkpoint at step {step}; available steps: {have}")
+
+
+def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
+    # wtrain/parity.py still imports this name.
+    return _find_checkpoint(run, run_dir)
 
 
 def _measurement_env_overrides(run: dict) -> dict:
@@ -464,8 +620,13 @@ def merged_env_overrides(run: dict, extra: dict | None = None) -> dict:
     return overrides
 
 
-def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = None):
-    """Load a run's measurement env + latest-checkpoint policy.
+def load_checkpoint_policy(
+    run_dir: Path, extra_env_overrides: dict | None = None, step: int | None = None
+):
+    """Load a run's measurement env + checkpoint policy.
+
+    It loads the checkpoint saved at `step`, or the latest when step is
+    None. The returned ckpt_path's name says which checkpoint loaded.
 
     Rebuilds the env exactly as train.py did: registry.make_env with the
     run's own robot/preset/task from run.json's hydra_config (the same
@@ -494,7 +655,7 @@ def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = Non
     env_overrides = merged_env_overrides(run, extra_env_overrides)
     env = make_env(run["task"], robot_dir, preset_name, env_overrides, actuator_overrides)
 
-    ckpt = _find_latest_checkpoint(run, run_dir)
+    ckpt = _find_checkpoint(run, run_dir, step)
     ppo_params = config_dict.ConfigDict(run["ppo_config"])
     policy = load_policy(ckpt, env, ppo_params, deterministic=True)
     return run, env, ckpt, jax.jit(policy)
@@ -507,19 +668,21 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
     (rather than jitted here) so callers compile once and reuse the same
     jitted callables across every scenario.
 
-    Returns (rec, fell_at, budget): `rec` maps signal name -> np.ndarray over
-    the steps taken (through and including the step that trips `done`, if
-    any); `fell_at` is that step's index, or None if the scenario completed
-    without falling; `budget` is the (contacts, rows) peak of this scenario,
-    either of which is None where the backend has no counter for it.
+    Returns (rec, meta, fell_at, budget). `rec` follows RECORD_FIELDS: it
+    maps signal name -> np.ndarray over the steps taken, through and
+    including the step that trips `done`, if any. `meta` holds the per-run
+    constants: the control step `dt` and the `foot_sides` tokens. `fell_at`
+    is the index of the step that tripped `done`, or None if the scenario
+    completed without falling. `budget` is the (contacts, rows) peak of this
+    scenario, either of which is None where the backend has no counter for
+    it. The record is checked with check_record before it is returned.
     """
+    meta = {"dt": float(env.dt), "foot_sides": foot_sides(env.robot_spec.foot_sites)}
+    dims = record_dims(env)
+    knee_idx = _knee_index(env)
     rng = jax.random.PRNGKey(seed)
     state = reset(rng)
-    rec = {
-        "cmd": [], "vx": [], "vy": [], "wz": [], "height": [],
-        "qvel": [], "contact": [], "foot_speed": [], "tau": [],
-        "foot_clear": [], "foot_vz": [], "ctrl": [], "qpos": [],
-    }
+    rec = {k: [] for k in RECORD_FIELDS if not (k == "knee_q" and knee_idx is None)}
     nacon_seen, nefc_seen = [], []
     fell_at = None
     for i in range(n_steps):
@@ -535,12 +698,14 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         contact = np.asarray(env._foot_contact(d))
         foot_vel = np.asarray(env._foot_linvel(d))
         foot_speed = np.hypot(foot_vel[:, 0], foot_vel[:, 1])
+        qpos = np.asarray(d.qpos)
+        qpos_act = qpos[np.asarray(env._qadr)]
 
         rec["cmd"].append(np.asarray(cmd))
         rec["vx"].append(float(linvel[0]))
         rec["vy"].append(float(linvel[1]))
         rec["wz"].append(float(gyro[2]))
-        rec["height"].append(float(np.asarray(d.qpos)[env._base_qadr + 2]))
+        rec["height"].append(float(qpos[env._base_qadr + 2]))
         rec["qvel"].append(np.asarray(d.qvel[env._vadr]))
         rec["contact"].append(contact)
         rec["foot_speed"].append(foot_speed)
@@ -560,7 +725,14 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
         # robot_spec.actuated_joints order), so the two line up column for
         # column.
         rec["ctrl"].append(np.asarray(d.ctrl))
-        rec["qpos"].append(np.asarray(d.qpos)[np.asarray(env._qadr)])
+        rec["qpos"].append(qpos_act)
+        # The base pose and the foot positions, all read at the
+        # forward-kinematics stage (see the RECORD_FIELDS comment).
+        rec["base_pos"].append(np.asarray(d.xpos)[env._root_body])
+        rec["base_quat"].append(np.asarray(env._quat(d)))
+        rec["foot_pos"].append(np.asarray(d.site_xpos)[env._foot_site_ids])
+        if knee_idx is not None:
+            rec["knee_q"].append(qpos_act[knee_idx])
 
         # Warp's contact and constraint-row budgets, sampled every step. The
         # rollout is a plain Python loop, so this is a numpy read per step and
@@ -573,10 +745,18 @@ def rollout(env, reset, step, inf, cmd_at, n_steps: int, seed: int = 0):
             fell_at = i
             break
     budget = (peak_over(nacon_seen), peak_over(nefc_seen))
-    return {k: np.array(v) for k, v in rec.items()}, fell_at, budget
+    # The reshape keeps an empty record's per-step shape.
+    out = {}
+    for k, v in rec.items():
+        f = RECORD_FIELDS[k]
+        out[k] = np.asarray(v, dtype=f.dtype).reshape((len(v), *field_shape(f, dims)))
+    check_record(out, dims)
+    return out, meta, fell_at, budget
 
 
-def run_battery(run_dir: Path, extra_env_overrides: dict | None = None) -> dict:
+def run_battery(
+    run_dir: Path, extra_env_overrides: dict | None = None, step: int | None = None
+) -> dict:
     """Run the fixed scenario battery against `run_dir`'s checkpoint.
 
     `extra_env_overrides` (`{block: {key: value}}`, from `--set`) is
@@ -584,11 +764,15 @@ def run_battery(run_dir: Path, extra_env_overrides: dict | None = None) -> dict:
     so a re-scored table says what it was measured under. Without it the
     result has no `env_overrides` key at all.
 
+    `step` picks the checkpoint saved at that step (from `--checkpoint`).
+    None measures the latest. The result's `checkpoint` field names the
+    one measured.
+
     Returns the same dict main() writes (minus the `timestamp` main() adds
     at write time).
     """
-    run, env, ckpt, inf = load_checkpoint_policy(run_dir, extra_env_overrides)
-    reset, step = jax.jit(env.reset), jax.jit(env.step)
+    run, env, ckpt, inf = load_checkpoint_policy(run_dir, extra_env_overrides, step=step)
+    reset, env_step = jax.jit(env.reset), jax.jit(env.step)
 
     torque_cap = np.asarray(env.mj_model.actuator_forcerange[:, 1])
 
@@ -600,8 +784,10 @@ def run_battery(run_dir: Path, extra_env_overrides: dict | None = None) -> dict:
         results["env_overrides"] = extra_env_overrides
     nacon_seen, nefc_seen = [], []
     for name, (cmd_at, n_steps) in battery_scenarios(env.dt, env._config.command).items():
-        rec, fell_at, (nacon, nefc) = rollout(env, reset, step, inf, cmd_at, n_steps)
-        results[name] = scenario_result(name, rec, fell_at, env.dt, torque_cap, n_steps)
+        rec, meta, fell_at, (nacon, nefc) = rollout(env, reset, env_step, inf, cmd_at, n_steps)
+        results[name] = scenario_result(
+            name, rec, fell_at, env.dt, torque_cap, n_steps, meta=meta
+        )
         nacon_seen.append(nacon)
         nefc_seen.append(nefc)
 
@@ -667,6 +853,11 @@ def main():
         help="re-score under a changed task.env value, e.g. obs_noise.joint_vel=1.75; "
         "repeatable, requires --out, recorded under env_overrides",
     )
+    ap.add_argument(
+        "--checkpoint", type=int, default=None, metavar="STEP",
+        help="measure the checkpoint saved at this step instead of the latest; "
+        "battery.json's checkpoint field names the one measured",
+    )
     args = ap.parse_args()
 
     extra = None
@@ -688,7 +879,7 @@ def main():
         except ValueError as exc:
             ap.error(str(exc))
 
-    results = run_battery(args.run, extra_env_overrides=extra)
+    results = run_battery(args.run, extra_env_overrides=extra, step=args.checkpoint)
     out = args.out or (args.run / "battery.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     stamped = dict(results, timestamp=datetime.now().isoformat(timespec="seconds"))

@@ -292,3 +292,70 @@ def test_a_scenario_that_never_settled_renders_a_dash():
 def test_a_battery_without_a_tracking_error_renders_no_servo_section():
     """battery.json files written before the tracking error existed."""
     assert "## Servo tracking" not in render_markdown(BATTERY)
+
+
+# -- the gait shape ----------------------------------------------------------
+
+_SHAPED = {
+    **GOOD_ROW,
+    "speed_frac": 0.912, "heading_drift_deg": -3.45, "lateral_drift_m": 0.0812,
+    "support_frac_0": 0.0, "support_frac_1": 0.62, "support_frac_2": 0.38,
+    "roll_std_deg": 1.87, "pelvis_sway_cm": 1.42, "step_length_m": 0.1834,
+    "landing_x_m_left": 0.21, "landing_y_m_left": 0.0912, "knee_td_rad_left": 0.412,
+    "landing_x_m_right": 0.19, "landing_y_m_right": -0.0887, "knee_td_rad_right": 0.398,
+}
+_UNSHAPED = {
+    **GOOD_ROW,
+    "speed_frac": None, "heading_drift_deg": None, "lateral_drift_m": None,
+    "support_frac_0": None, "support_frac_1": None, "support_frac_2": None,
+    "roll_std_deg": None, "pelvis_sway_cm": None, "step_length_m": None,
+    "landing_x_m_left": None, "landing_y_m_left": None, "knee_td_rad_left": None,
+    "landing_x_m_right": None, "landing_y_m_right": None, "knee_td_rad_right": None,
+}
+_SHAPE_BATTERY = {**BATTERY, "walk_ramp": _SHAPED, "stand": _UNSHAPED}
+
+
+def test_the_gait_shape_section_shows_the_travel_numbers():
+    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
+    header = next(line for line in section if line.startswith("| scenario | speed_frac"))
+    row = next(line for line in section if line.startswith("| walk_ramp |") and "0.912" in line)
+
+    assert "heading_drift_deg" in header and "support 0 / 1 / 2" in header
+    assert "| 0.912 | -3.45 | 0.0812 | 0.000 / 0.620 / 0.380 | 1.87 | 1.42 | 0.1834 |" in row
+
+
+def test_the_gait_shape_section_shows_left_and_right_side_by_side():
+    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
+    header = next(line for line in section if line.startswith("| scenario | landing_x_m"))
+    rows = [line for line in section if line.startswith("| walk_ramp |")]
+
+    assert "landing_x_m (left / right)" in header
+    assert "knee_td_rad (left / right)" in header
+    assert any("0.2100 / 0.1900" in r and "0.412 / 0.398" in r for r in rows)
+
+
+def test_an_unmeasured_gait_shape_value_renders_a_dash():
+    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
+    rows = [line for line in section if line.startswith("| stand |")]
+
+    assert len(rows) == 2
+    assert all("| - |" in r or "- / -" in r for r in rows)
+    assert not any("0.000" in r for r in rows)
+
+
+def test_a_battery_without_gait_shape_renders_no_gait_shape_section():
+    """battery.json files written before the gait-shape metrics existed."""
+    assert "## Gait shape" not in render_markdown(BATTERY)
+
+
+def test_gait_shape_sides_follow_the_keys():
+    """A robot whose foot sites carry no side token gets foot0, foot1 keys."""
+    row = {
+        k.replace("_left", "_foot0").replace("_right", "_foot1"): v
+        for k, v in _SHAPED.items()
+    }
+    section = _section(render_markdown({**BATTERY, "walk_ramp": row}), "## Gait shape")
+    header = next(line for line in section if line.startswith("| scenario | landing_x_m"))
+
+    assert "landing_x_m (foot0 / foot1)" in header
+    assert "left" not in header
