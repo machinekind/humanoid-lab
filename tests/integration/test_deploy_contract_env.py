@@ -243,3 +243,58 @@ def test_an_actor_observation_the_robot_cannot_measure_is_refused():
     env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
     with pytest.raises(ValueError, match="height"):
         dc.build_contract(env, run_for(env), "ckpt")
+
+
+def test_the_default_contract_is_schema_1_with_cos_sin(ideal_contract):
+    """A stock export still loads on a robot running an old vendored runtime."""
+    assert ideal_contract["schema_version"] == dc.LEGACY_SCHEMA_VERSION == 1
+    assert ideal_contract["gait_clock"]["phase_obs"] == "cos_sin"
+
+
+def test_a_frozen_clock_at_the_default_mode_stays_schema_1_cos_sin():
+    env = build_env("sizing_ideal", **{"gait.freq": (0.0, 0.0)})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == 1
+    assert meta["gait_clock"]["phase_obs"] == "cos_sin"
+    state = env.reset(jax.random.PRNGKey(0))
+    phase = np.asarray(env._obs_catalog(state.data, state.info)["phase"])
+    assert np.allclose(phase, [1.0, -1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_a_frozen_clock_with_zeros_ships_schema_2_and_observes_zeros():
+    env = build_env("sizing_ideal", **{"gait.freq": (0.0, 0.0), "gait.frozen_phase_obs": "zeros"})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == dc.SCHEMA_VERSION == 2
+    assert meta["gait_clock"]["phase_obs"] == "zeros"
+    state = env.reset(jax.random.PRNGKey(0))
+    phase = np.asarray(env._obs_catalog(state.data, state.info)["phase"])
+    assert phase.shape == (2 * env._n_feet,)
+    assert np.array_equal(phase, np.zeros(2 * env._n_feet, np.float32))
+
+
+def test_zeros_on_a_running_clock_keeps_cos_sin():
+    """The mode applies only when gait.freq is (0, 0)."""
+    env = build_env("sizing_ideal", **{"gait.frozen_phase_obs": "zeros"})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == 1
+    assert meta["gait_clock"]["phase_obs"] == "cos_sin"
+
+
+def test_a_heading_err_policy_is_refused_at_export():
+    """Owner decision 1 (b): the runtime has no yaw input and no yaw_ref."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.obs.state = tuple(cfg.obs.state) + ("heading_err",)
+    env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
+    with pytest.raises(ValueError, match="heading_err"):
+        dc.build_contract(env, run_for(env), "ckpt")
+
+
+def test_heading_err_on_the_critic_list_only_builds_a_contract():
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.obs.privileged = tuple(cfg.obs.privileged) + ("heading_err",)
+    env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert "heading_err" not in [c["name"] for c in meta["obs_layout"]]
+    assert meta["schema_version"] == 1

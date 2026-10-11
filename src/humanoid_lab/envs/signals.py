@@ -145,6 +145,20 @@ def foot_linvel(site_xpos, subtree_com, cdof, qvel, foot_site_ids, root_body, do
     return xp.matmul(xp.matrix_transpose(jacp), qvel[..., None, :, None])[..., 0]
 
 
+def foot_pos_base(site_xpos, xpos, foot_site_ids, root_body, q):
+    """Per-foot site position relative to the base, in the base frame, shape (..., F, 3).
+
+    The base position is xpos[root_body]. It comes from the same forward
+    kinematics stage as site_xpos and the quat sensor. The free joint's qpos
+    runs one substep ahead of them, so it is not used here. `root_body` is
+    the body id of the free joint. `[..., 0]` of the result is each foot's
+    signed offset along the base's forward axis. A foot ahead of the base
+    has a positive x.
+    """
+    rel = site_xpos[..., foot_site_ids, :] - xpos[..., root_body, :][..., None, :]
+    return quat_rotate_inv(q[..., None, :], rel)
+
+
 def body_y_sep(xpos, pair, q):
     """|y| distance between two bodies, base frame."""
     xp = xp_of(xpos, q)
@@ -191,6 +205,10 @@ def readings(d, consts):
         out["feet_sep"] = body_y_sep(d.xpos, consts.ankle_pair, q)
     if consts.knee_pair is not None:
         out["knee_sep"] = body_y_sep(d.xpos, consts.knee_pair, q)
+    # Only the landing terms read the feet's base-frame position. Off, the
+    # readings and the trace are unchanged.
+    if consts.step_length_on or consts.foot_reach_on or consts.knee_extend_on:
+        out["foot_pos_base"] = foot_pos_base(d.site_xpos, d.xpos, consts.foot_site_ids, consts.root_body, q)
     return out
 
 
@@ -218,8 +236,14 @@ def catalog(r, info, consts):
         out["heading_err"] = heading_err(info["yaw_ref"], r["yaw"])[..., None]
     else:
         out["heading_err"] = xp.zeros(r["gyro"].shape[:-1] + (1,), dtype=xp.float32, device=_dev(r["gyro"]))
-    leg = progress.leg_phases(info["phase"])
-    out["phase"] = xp.concat([xp.cos(leg), xp.sin(leg)], axis=-1)
+    if consts.frozen_phase_zeros:
+        # gait.frozen_phase_obs "zeros" on a frozen clock: no left/right marker.
+        out["phase"] = xp.zeros(
+            r["gyro"].shape[:-1] + (2 * consts.n_feet,), dtype=xp.float32, device=_dev(r["gyro"])
+        )
+    else:
+        leg = progress.leg_phases(info["phase"])
+        out["phase"] = xp.concat([xp.cos(leg), xp.sin(leg)], axis=-1)
     return out
 
 

@@ -105,6 +105,7 @@ def toy_consts(xp_name="numpy") -> TaskConstants:
         feet_apex_min_on=False,
         naconmax_per_env=None,
         njmax=None,
+        root_body=0,
     )
 
 

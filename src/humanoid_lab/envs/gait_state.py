@@ -9,7 +9,8 @@ statement of the step order. After it, each backend calls
 compose.total_reward and signals.observe.
 
 Some `info` leaves belong to one episode: the no-progress meter, the
-per-foot gait trackers and the heading reference. Joystick.step cannot clear
+per-foot gait trackers, the heading reference and the landing record
+(land_frac). Joystick.step cannot clear
 them on its own. Truncation and the restore of `data` and `obs` happen in the
 brax and playground wrappers after the env step, so the step that ends an
 episode does not know the next one starts. The wrappers in envs/wrappers.py
@@ -43,7 +44,7 @@ GAIT_TRACKER_KEYS = (
 )
 
 # Layer order. make_wrap_env_fn stacks the wrappers in this order.
-LAYERS = ("progress", "gait", "heading")
+LAYERS = ("progress", "gait", "heading", "land")
 
 
 def gait_dur_ema_on(scales) -> bool:
@@ -70,6 +71,8 @@ def reseed_flags(cfg) -> tuple:
         names = list(obs.get("state", ())) + list(obs.get("privileged", ()))
         if "heading_err" in names:
             flags.append("heading")
+    if reward is not None and compose.land_frac_on(reward):
+        flags.append("land")
     return tuple(flags)
 
 
@@ -85,8 +88,9 @@ def clear_done(info, done, flags, reset_values):
     done is a bool array with a leading world axis. Every leaf of info has
     that axis first, and the mask broadcasts over the trailing axes.
     reset_values holds the fresh values the layers need: 'progress_ema' for
-    'progress' and 'yaw_ref' for 'heading'. Other keys are not touched, and
-    dtypes are kept.
+    'progress' and 'yaw_ref' for 'heading'. 'land' zeroes land_frac, so a
+    new episode's first landing is not compared with the dead episode's
+    last one. Other keys are not touched, and dtypes are kept.
     """
     info = dict(info)
     if "progress" in flags:
@@ -99,6 +103,9 @@ def clear_done(info, done, flags, reset_values):
             info[k] = _where(done, xp_of(v).zeros_like(v), v)
     if "heading" in flags:
         info["yaw_ref"] = _where(done, reset_values["yaw_ref"], info["yaw_ref"])
+    if "land" in flags:
+        land = info["land_frac"]
+        info["land_frac"] = _where(done, xp_of(land).zeros_like(land), land)
     return info
 
 
@@ -120,6 +127,10 @@ def reset_state(command, consts, cfg, yaw=None, push_countdown=None, mirror_u=No
     gap, given when the push schedule is ranged. mirror_u is the uniform draw
     behind the mirror flag, used when symmetry is on. Every gated key follows
     its config gate, so the info pytree never depends on anything else.
+
+    With the command ramp on, info["command"] starts at zero and
+    info["cmd_target"] holds the sampled command. The no-progress meter then
+    seeds from the zero command it is served.
     """
     xp = xp_of(command)
     dev = array_api_compat.device(command)
@@ -130,8 +141,13 @@ def reset_state(command, consts, cfg, yaw=None, push_countdown=None, mirror_u=No
         return xp.zeros(batch + tail, dtype=f32, device=dev)
 
     nu, nf = consts.action_size, consts.n_feet
+    if progress.ramp_on(cfg.get("command")):
+        # The served command starts at zero and slews toward the sample.
+        head = {"command": xp.zeros_like(command), "cmd_target": command}
+    else:
+        head = {"command": command}
     info = {
-        "command": command,
+        **head,
         "last_action": zeros(nu),
         "last_last_action": zeros(nu),
         "last_torque": zeros(nu),
@@ -149,12 +165,16 @@ def reset_state(command, consts, cfg, yaw=None, push_countdown=None, mirror_u=No
     if consts.gait_dur_ema_on:
         info["air_dur_ema"] = zeros(nf)
         info["stance_dur_ema"] = zeros(nf)
+    if consts.land_frac_on:
+        # Each foot's last landing fraction per landing term, in
+        # compose.LANDING_SLOTS order.
+        info["land_frac"] = zeros(nf, len(compose.LANDING_SLOTS))
     if push_countdown is not None:
         info["push_countdown"] = push_countdown
     if cfg.symmetry.enable:
         info["mirror"] = mirror_u < cfg.symmetry.mirror_prob
     if cfg.no_progress.enable:
-        info["progress_ema"] = progress.cmd_speed(command)
+        info["progress_ema"] = progress.cmd_speed(info["command"])
     return info
 
 
@@ -213,6 +233,9 @@ def update(info, r, action, consts, cfg, draws):
        must not depend on the config.
     3. The rewards are computed. They read the trackers as they were before
        this step's update, so a landing pays the completed swing's air time.
+       When land_frac exists, each landing foot then records this step's
+       landing fractions into it. The rewards read the previous record,
+       which holds the other foot's last landing for the pair-min.
     4. When the duration EMAs exist, each completed mode duration is folded
        into its foot's EMA on the event step: a landing closes a swing, a
        liftoff closes a stance. This runs after the rewards, which read the
@@ -228,8 +251,11 @@ def update(info, r, action, consts, cfg, draws):
        this step. This is after the increment of step 8 and before the
        resample of step 10. The cut only flips done. It attaches no reward
        term. Losing the rest of the episode is the whole penalty.
-    10. A due command is resampled and steps_since_cmd restarts. With the cut
-       on, progress_ema is reseeded to the new demand. done is fall | cut.
+    10. A due command is resampled and steps_since_cmd restarts. With the
+       command ramp on, the sample goes to cmd_target instead, and the
+       command moves toward cmd_target by at most rate * dt every step. With
+       the cut on, progress_ema is reseeded to the new demand, read from the
+       command after that move. done is fall | cut.
     """
     info = dict(info)
     xp = xp_of(r["contact"])
@@ -251,7 +277,9 @@ def update(info, r, action, consts, cfg, draws):
     )
 
     # 3.
-    rewards, fall = compose.compute_rewards(r, info, action, first_contact, contact, consts, cfg)
+    rewards, fall, land = compose.compute_rewards(r, info, action, first_contact, contact, consts, cfg)
+    if consts.land_frac_on:
+        info["land_frac"] = xp.where(first_contact[..., None], land, info["land_frac"])
 
     # 4.
     if consts.gait_dur_ema_on:
@@ -314,7 +342,14 @@ def update(info, r, action, consts, cfg, draws):
     # grace_sec while the robot turns the gait around.
     resample = info["steps_since_cmd"] >= cfg.command.resample_steps
     new_command = progress.command_from_draws(draws["command"], cfg.command)
-    info["command"] = xp.where(resample[..., None], new_command, info["command"])
+    if progress.ramp_on(cfg.command):
+        ramp = cfg.command.ramp
+        info["cmd_target"] = xp.where(resample[..., None], new_command, info["cmd_target"])
+        info["command"] = progress.ramp_command(
+            info["command"], info["cmd_target"], float(ramp.lin), float(ramp.yaw), dt
+        )
+    else:
+        info["command"] = xp.where(resample[..., None], new_command, info["command"])
     info["steps_since_cmd"] = xp.where(resample, 0, info["steps_since_cmd"])
     if cfg.no_progress.enable:
         # A fresh command restarts the meter at ratio 1: the EMA is reseeded

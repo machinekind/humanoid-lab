@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from task_toys import BATCHES, MODES, assert_batched_matches_stacked, toy_consts, toy_replace
 
-from humanoid_lab.envs import joystick
+from humanoid_lab.envs import joystick, progress
 from humanoid_lab.envs.constants import TaskConstants, xp_of
 from humanoid_lab.rewards import compose, terms
 
@@ -40,6 +40,13 @@ def _arrays(batch, seed=0):
         "contact_b": rng.uniform(size=batch + (F,)) > 0.5,
         "fall": rng.uniform(size=batch) > 0.5,
         "dur": f(F, lo=0.0, hi=0.6) * (rng.uniform(size=batch + (F,)) > 0.2),
+        "target": f(lo=-0.1, hi=0.4),
+        "feet_x": f(F, lo=-0.3, hi=0.4),
+        "frac": f(F, lo=0.0, hi=1.0),
+        "contact_c": rng.uniform(size=batch + (F,)) > 0.5,
+        "knee": f(F, lo=0.0, hi=1.2),
+        "gx": f(lo=-0.3, hi=0.3),
+        "vx": f(lo=-0.5, hi=1.2),
     }
 
 
@@ -90,6 +97,26 @@ def _cases(a):
             terms.gait_symmetry_income,
             (a["dur"], a["dur"][..., ::-1].copy(), a["contact_b"], 0.1, 1.0),
         ),
+        "step_length": (terms.step_length, (a["feet_x"], a["contact_b"], a["target"], 1.5)),
+        "step_length_pair": (
+            terms.step_length,
+            (a["feet_x"], a["contact_b"], a["target"], 1.0, True, a["frac"]),
+        ),
+        "foot_reach": (terms.foot_reach, (a["feet_x"], a["contact_b"], a["target"], -0.05, 2.0)),
+        "foot_reach_pair": (
+            terms.foot_reach,
+            (a["feet_x"], a["contact_b"], a["target"], 0.0, 2.0, True, a["frac"]),
+        ),
+        "knee_extend": (
+            terms.knee_extend,
+            (a["knee"], a["feet_x"], a["contact_c"], a["contact_b"], a["dur"], 0.2, 1.0, 0.0, 0.2, 0.5),
+        ),
+        "knee_extend_pair": (
+            terms.knee_extend,
+            (a["knee"], a["feet_x"], a["contact_c"], a["contact_b"], a["dur"], 0.2, 1.0, 0.05, 0.2, 0.5)
+            + (True, a["frac"]),
+        ),
+        "forward_lean": (terms.forward_lean, (a["gx"], a["vx"], 8.0, 1.0, 0.05)),
     }
 
 
@@ -136,6 +163,129 @@ def test_toy_consts_actuator_stub():
     np.testing.assert_allclose(np.asarray(out), np.asarray(c.default_pose) + 0.5)
 
 
+# -- landing and lean terms -----------------------------------------------------
+
+
+def _np(*xs):
+    return [np.asarray(x, np.float32) for x in xs]
+
+
+def test_step_length_floors_the_target():
+    foot_x, target = _np([0.03, 0.0], 0.01)
+    fc = np.array([True, False])
+    pay, frac = terms.step_length(foot_x, fc, target)
+    pay_floor, _ = terms.step_length(foot_x, fc, np.float32(terms.STEP_LENGTH_MIN_TARGET))
+    assert float(pay) == pytest.approx(0.03 / 0.05) == pytest.approx(float(pay_floor))
+    np.testing.assert_allclose(frac, [0.6, 0.0], rtol=1e-6)
+
+
+def test_step_length_clips_and_raises_to_power():
+    foot_x, target = _np([0.3, -0.1], 0.2)
+    fc = np.array([True, True])
+    pay, frac = terms.step_length(foot_x, fc, target)
+    np.testing.assert_array_equal(frac, [1.0, 0.0])
+    assert float(pay) == 1.0
+    foot_x = np.asarray([0.1, 0.0], np.float32)
+    _, frac2 = terms.step_length(foot_x, fc, target, power=2.0)
+    np.testing.assert_allclose(frac2, [0.25, 0.0], rtol=1e-6)
+
+
+def test_step_length_pair_min_reads_the_other_foot():
+    foot_x, target, last = _np([0.2, 0.0], 0.2, [0.9, 0.3])
+    fc = np.array([True, False])
+    pay, frac = terms.step_length(foot_x, fc, target, pair_min=True, last_frac=last)
+    # foot 0 lands with frac 1; the other foot's last landing earned 0.3
+    assert float(pay) == pytest.approx(0.3)
+    np.testing.assert_array_equal(frac, [1.0, 0.0])  # recorded before the pair-min
+    pay_off, _ = terms.step_length(foot_x, fc, target)
+    assert float(pay_off) == 1.0
+
+
+@pytest.mark.parametrize("fn", [terms.step_length, terms.foot_reach])
+def test_landing_terms_need_two_feet(fn):
+    x = np.zeros(3, np.float32)
+    with pytest.raises(ValueError, match="two feet"):
+        fn(x, np.zeros(3, bool), np.float32(0.2))
+
+
+def test_knee_extend_pair_min_needs_two_feet():
+    x = np.zeros(3, np.float32)
+    b = np.zeros(3, bool)
+    with pytest.raises(ValueError, match="two feet"):
+        terms.knee_extend(x, x, b, b, x, 0.2, 1.0, pair_min=True, last_frac=x)
+
+
+def test_foot_reach_floor_and_x_min():
+    fc = np.array([True, True])
+    foot_x = np.asarray([0.01, 0.0], np.float32)
+    pay, frac = terms.foot_reach(foot_x, fc, np.float32(-0.1), power=1.0)
+    np.testing.assert_allclose(frac, [0.5, 0.0], rtol=1e-6)  # target floored at 0.02
+    assert float(pay) == pytest.approx(0.5)
+    foot_x = np.asarray([0.1, -0.1], np.float32)
+    _, frac = terms.foot_reach(foot_x, fc, np.float32(0.2), x_min=-0.1, power=1.0)
+    np.testing.assert_allclose(frac, [2.0 / 3.0, 0.0], rtol=1e-6)
+    _, frac = terms.foot_reach(foot_x, fc, np.float32(0.2), x_min=-0.1)
+    np.testing.assert_allclose(frac, [4.0 / 9.0, 0.0], rtol=1e-6)
+
+
+def _knee(knee, foot_x, contact, first, air, **kw):
+    args = (*_np(knee, foot_x), np.array(contact), np.array(first), *_np(air))
+    return terms.knee_extend(*args, 0.2, 1.0, **kw)
+
+
+def test_knee_extend_pays_late_swing():
+    # ext = (1.0 - q) / 0.8: foot 0 at 1.0 (bent), foot 1 at 0.6 -> 0.5
+    pay, td = _knee([1.0, 0.6], [0.1, 0.1], [False, False], [False, False], [0.0, 0.0])
+    assert float(pay) == pytest.approx(0.5)
+    np.testing.assert_array_equal(td, [0.0, 0.0])
+    # in contact or behind x_split pays nothing
+    pay, _ = _knee([0.2, 0.2], [0.1, -0.1], [True, False], [False, False], [0.0, 0.0])
+    assert float(pay) == 0.0
+    pay, _ = _knee([0.2, 0.2], [0.1, 0.1], [False, False], [False, False], [0.0, 0.0], x_split=0.15)
+    assert float(pay) == 0.0
+
+
+def test_knee_extend_touchdown_needs_a_real_step():
+    kw = {"td_mult": 2.0}
+    # a real step: in the air >= 0.2 s, landing ahead of the base
+    pay, td = _knee([0.2, 0.2], [0.1, 0.1], [True, True], [True, False], [0.3, 0.3], **kw)
+    np.testing.assert_allclose(td, [1.0, 0.0])
+    assert float(pay) == pytest.approx(2.0)
+    # a tap (too short) and a landing behind record 0
+    pay, td = _knee([0.2, 0.2], [0.1, -0.1], [True, True], [True, True], [0.1, 0.3], **kw)
+    np.testing.assert_array_equal(td, [0.0, 0.0])
+    assert float(pay) == 0.0
+
+
+def test_knee_extend_td_mult_scales_only_the_touchdown():
+    args = ([0.6, 0.6], [0.1, 0.1], [True, False], [True, False], [0.3, 0.0])
+    late = 0.5  # foot 1 in late swing
+    for mult in (0.0, 1.0, 3.0):
+        pay, td = _knee(*args, td_mult=mult)
+        assert float(pay) == pytest.approx(late + mult * 0.5)
+        np.testing.assert_allclose(td, [0.5, 0.0])
+
+
+def test_knee_extend_records_td_ext_before_the_pair_min():
+    last = np.asarray([0.9, 0.1], np.float32)
+    pay, td = _knee([0.2, 0.2], [0.1, 0.1], [True, True], [True, False], [0.3, 0.3],
+                    td_mult=1.0, pair_min=True, last_frac=last)  # fmt: skip
+    np.testing.assert_allclose(td, [1.0, 0.0])
+    assert float(pay) == pytest.approx(0.1)
+
+
+def test_forward_lean_at_zero_degrees_and_target():
+    gx = np.asarray([0.1, -0.2, 0.05], np.float32)
+    vx = np.asarray([0.5, 1.0, 3.0], np.float32)
+    np.testing.assert_allclose(terms.forward_lean(gx, vx, 0.0, 1.0, 0.1), np.exp(-gx**2 / 0.1), rtol=1e-6)
+    vx = np.asarray([-0.5, 0.5, 3.0], np.float32)
+    target = np.sin(np.radians(10.0) * np.clip(vx / 1.0, 0.0, 1.0))
+    out = terms.forward_lean(target.astype(np.float32), vx, 10.0, 1.0, 0.1)
+    np.testing.assert_allclose(out, 1.0, rtol=1e-6)
+    off = terms.forward_lean(np.zeros(3, np.float32), vx, 10.0, 1.0, 0.1)
+    np.testing.assert_allclose(off, np.exp(-target**2 / 0.1), rtol=1e-5)
+
+
 # -- composition --------------------------------------------------------------
 
 BASE_KEYS = [
@@ -152,10 +302,10 @@ STYLE_KEYS = {
     "feet_apex_min_on": "feet_apex_min",
 }
 R_KEYS = ["gyro", "linvel", "gravity", "qpos_act", "qvel_act", "qacc_act", "actuator_force",
-          "foot_clearance", "foot_linvel", "base_height"]  # fmt: skip
+          "foot_clearance", "foot_linvel", "base_height", "foot_pos_base"]  # fmt: skip
 INFO_KEYS = ["command", "phase", "last_torque", "last_action", "last_last_action", "feet_air_time",
              "feet_contact_time", "last_contact", "swing_apex", "last_apex", "air_dur_ema",
-             "stance_dur_ema"]  # fmt: skip
+             "stance_dur_ema", "land_frac"]  # fmt: skip
 
 
 def _compose_inputs(batch, seed=1):
@@ -182,6 +332,8 @@ def _compose_inputs(batch, seed=1):
         "air_dur_ema": f(nf, lo=0.1, hi=0.5), "stance_dur_ema": f(nf, lo=0.1, hi=0.5),
         "action": f(nu), "first_contact": rng.uniform(size=batch + (nf,)) > 0.5,
         "contact": rng.uniform(size=batch + (nf,)) > 0.5,
+        # Drawn last, so the values above do not move.
+        "foot_pos_base": f(nf, 3, lo=-0.2, hi=0.4), "land_frac": f(nf, 3, lo=0.0, hi=1.0),
     }  # fmt: skip
 
 
@@ -190,9 +342,14 @@ def _style_consts(xp_name, **flags):
 
 
 def _run(consts, cfg, vals):
+    """compute_rewards' (rewards, fall, land), or (rewards, fall) when land is
+    None: assert_batched_matches_stacked cannot stack None leaves."""
     r = {k: vals[k] for k in R_KEYS}
     info = {k: vals[k] for k in INFO_KEYS}
-    return compose.compute_rewards(r, info, vals["action"], vals["first_contact"], vals["contact"], consts, cfg)
+    rewards, fall, land = compose.compute_rewards(
+        r, info, vals["action"], vals["first_contact"], vals["contact"], consts, cfg
+    )
+    return (rewards, fall) if land is None else (rewards, fall, land)
 
 
 def _stacked_fn(consts, cfg, names):
@@ -281,7 +438,7 @@ def test_body_pairs_use_the_readings():
     r = {k: vals[k] for k in R_KEYS} | {"feet_sep": np.full(3, 0.5, np.float32), "knee_sep": np.full(3, 0.1, np.float32)}
     info = {k: vals[k] for k in INFO_KEYS}
     cfg = _cfg()
-    rewards, _ = compose.compute_rewards(r, info, vals["action"], vals["first_contact"], vals["contact"], toy_consts("numpy"), cfg)
+    rewards, _, _ = compose.compute_rewards(r, info, vals["action"], vals["first_contact"], vals["contact"], toy_consts("numpy"), cfg)
     np.testing.assert_array_equal(rewards["feet_distance"], terms.distance_band(r["feet_sep"], *cfg.reward.feet_distance_range))
     np.testing.assert_array_equal(rewards["knee_distance"], terms.distance_band(r["knee_sep"], *cfg.reward.knee_distance_range))
 
@@ -293,6 +450,271 @@ def test_flipping_tracking_product_changes_values_and_not_the_order():
     assert list(on) == list(off)
     np.testing.assert_array_equal(on["tracking_lin_vel"], off["tracking_lin_vel"] * off["tracking_ang_vel"])
     assert not np.array_equal(on["tracking_lin_vel"], off["tracking_lin_vel"])
+
+
+# v_full is above most toy command speeds, so the scale is unclipped on most rows.
+LIFT = {"v_full": 2.0, "min_frac": 0.25}
+
+
+def _lift_cfg(**reward):
+    cfg = _cfg(**reward)
+    cfg.gait.lift.v_full = LIFT["v_full"]
+    cfg.gait.lift.min_frac = LIFT["min_frac"]
+    return cfg
+
+
+def test_lift_off_matches_no_lift_block():
+    vals = _compose_inputs((3,))
+    consts = _style_consts("numpy", **ALL_STYLE)
+    off, _ = _run(consts, _cfg(), vals)
+    bare = _cfg()
+    del bare.gait["lift"]
+    assert "lift" not in bare.gait
+    plain, _ = _run(consts, bare, vals)
+    assert list(off) == list(plain)
+    for k in plain:
+        np.testing.assert_array_equal(off[k], plain[k], err_msg=k)
+
+
+def test_lift_scales_feet_phase_and_feet_apex_only():
+    vals = _compose_inputs((4,))
+    # A stand-still row, a slow row under the floor, one mid row, one past v_full.
+    vals["command"] = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]], np.float32)
+    consts = _style_consts("numpy", **ALL_STYLE)
+    cfg = _lift_cfg()
+    on, _ = _run(consts, cfg, vals)
+    off, _ = _run(consts, _cfg(), vals)
+    cmd = vals["command"]
+    ls = progress.lift_scale(cmd, LIFT["v_full"], LIFT["min_frac"])
+    np.testing.assert_array_equal(ls, [0.25, 0.25, 0.5, 1.0])
+    moving = progress.cmd_speed(cmd) > consts.deadband
+    target, _ = progress.gait_targets(vals["phase"], cfg.gait.duty, cfg.gait.swing_height)
+    np.testing.assert_array_equal(
+        on["feet_phase"], terms.feet_phase(vals["foot_clearance"], target * ls[..., None], cfg.reward.phase_sigma) * moving
+    )
+    np.testing.assert_array_equal(
+        on["feet_apex"],
+        terms.feet_apex(vals["swing_apex"], vals["first_contact"], cfg.reward.apex_target * ls[..., None]) * moving,
+    )
+    # feet_apex_min keeps the unscaled target. So does every other term.
+    for k in set(on) - {"feet_phase", "feet_apex"}:
+        np.testing.assert_array_equal(on[k], off[k], err_msg=k)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("batch", BATCHES, ids=str)
+def test_compute_rewards_with_lift_batched_equals_stacked(batch, mode):
+    if mode == "jax" and tuple(batch) != (3,):
+        pytest.skip("eager jax runs at (3,) only; test_shared_math_jit covers jit at (2, 3)")
+    vals = _compose_inputs(batch)
+    names = sorted(vals)
+    consts = _style_consts("numpy" if mode == "numpy" else "jax", **ALL_STYLE)
+    fn = _stacked_fn(consts, _lift_cfg(), names)
+    assert_batched_matches_stacked(fn, [vals[n] for n in names], batch, mode, atol=1e-5)
+
+
+# -- landing and lean terms in compose -------------------------------------------
+
+KEPT_FLAGS = {f"{t}_on": t for t in compose.KEPT_TERMS}
+ALL_KEPT = dict.fromkeys(KEPT_FLAGS, True)
+
+
+def _kept_cfg(pair_min=True, target="clock", scales=compose.KEPT_TERMS):
+    """default_config with the given kept terms on and every required parameter set."""
+    cfg = _cfg()
+    rcfg = cfg.reward
+    for t in scales:
+        rcfg.scales[t] = 1.0
+    rcfg.step_length.update(target=target, target_a=0.05, target_b=0.2, pair_min=pair_min)
+    rcfg.foot_reach.update(target_a=0.05, target_b=0.15, pair_min=pair_min)
+    rcfg.knee_extend.update(flex_lo=0.1, flex_hi=0.6, td_min_air=0.1, td_mult=0.5, pair_min=pair_min)
+    rcfg.forward_lean.update(max_deg=5.0, vx_max=1.0, sigma=0.05)
+    return cfg
+
+
+def _kept_consts(xp_name, cfg, style=False):
+    """Gates that follow cfg: a kept term is on when its scale is nonzero."""
+    flags = {f"{t}_on": bool(cfg.reward.scales[t]) for t in compose.KEPT_TERMS}
+    return _style_consts(
+        xp_name, land_frac_on=compose.land_frac_on(cfg.reward), **flags, **(ALL_STYLE if style else {})
+    )
+
+
+def _fwd_rows(vals):
+    """Rows 0 and 1 walk forward. Row 2 is below FWD_MIN_VX and row 3 backs up."""
+    vals["command"] = np.array([[0.6, 0.1, 0.0], [1.4, 0.0, 0.2], [0.08, 0.0, 0.0], [-0.4, 0.0, 0.0]], np.float32)
+    return vals
+
+
+def test_land_frac_on_reads_config_only():
+    assert not compose.land_frac_on(joystick.default_config().reward)
+    assert not compose.land_frac_on({})
+    assert not compose.land_frac_on({"scales": {"step_length": 1.0}})
+    assert not compose.land_frac_on({"scales": {"step_length": 0.0}, "step_length": {"pair_min": True}})
+    # forward_lean has no landing slot.
+    assert not compose.land_frac_on({"scales": {"forward_lean": 1.0}, "forward_lean": {"pair_min": True}})
+    for t in compose.LANDING_SLOTS:
+        assert compose.land_frac_on({"scales": {t: 0.5}, t: {"pair_min": True}})
+    assert compose.land_frac_on(_kept_cfg().reward)
+    assert not compose.land_frac_on(_kept_cfg(pair_min=False).reward)
+
+
+def test_kept_keys_come_after_the_style_terms_in_kept_order():
+    vals = _compose_inputs((3,))
+    cfg = _kept_cfg()
+    rewards, _, _ = _run(_kept_consts("numpy", cfg, style=True), cfg, vals)
+    assert list(rewards) == BASE_KEYS + list(STYLE_KEYS.values()) + list(compose.KEPT_TERMS)
+    rewards, _, _ = _run(_kept_consts("numpy", cfg), cfg, vals)
+    assert list(rewards) == BASE_KEYS + list(compose.KEPT_TERMS)
+    for t in compose.KEPT_TERMS:
+        one = _kept_cfg(scales=(t,))
+        out = _run(_kept_consts("numpy", one), one, vals)
+        assert list(out[0]) == BASE_KEYS + [t]
+
+
+def test_kept_terms_off_leave_the_rewards_unchanged():
+    vals = _compose_inputs((3,))
+    consts = _style_consts("numpy", **ALL_STYLE)
+    plain = _run(consts, _cfg(), vals)
+    # Parameters set but every scale 0: the gates are off.
+    off_cfg = _kept_cfg(scales=())
+    off = _run(_kept_consts("numpy", off_cfg, style=True), off_cfg, vals)
+    assert len(off) == 2  # land is None
+    assert list(off[0]) == list(plain[0])
+    for k in plain[0]:
+        np.testing.assert_array_equal(off[0][k], plain[0][k], err_msg=k)
+
+
+def _direct(vals, cfg, consts):
+    """The four kept terms and their fractions from direct terms.* calls."""
+    rcfg = cfg.reward
+    cmd = vals["command"]
+    vx = cmd[..., 0]
+    fwd = progress.fwd_mask(cmd, consts.deadband)
+    foot_x = vals["foot_pos_base"][..., 0]
+    last = vals["land_frac"]
+    fc = vals["first_contact"]
+    p = rcfg.step_length
+    if p.target == "clock":
+        target = vx / (2.0 * progress.clock_freq(progress.cmd_speed(cmd), consts.cmd_vmax, cfg.gait.freq))
+    else:
+        target = p.target_a + p.target_b * np.clip(vx, 0.0, None)
+    pm = bool(p.pair_min)
+    step, step_frac = terms.step_length(foot_x, fc, target, p.power, pm, last[..., 1] if pm else None)
+    p = rcfg.foot_reach
+    target = p.target_a + p.target_b * np.clip(vx, 0.0, None)
+    reach, reach_frac = terms.foot_reach(foot_x, fc, target, p.x_min, p.power, pm, last[..., 0] if pm else None)
+    p = rcfg.knee_extend
+    knee, td_ext = terms.knee_extend(
+        vals["qpos_act"][..., consts.knee_qidx], foot_x, vals["contact"], fc, vals["feet_air_time"],
+        p.flex_lo, p.flex_hi, p.x_split, p.td_min_air, p.td_mult, pm, last[..., 2] if pm else None,
+    )  # fmt: skip
+    p = rcfg.forward_lean
+    lean = terms.forward_lean(vals["gravity"][..., 0], vx, p.max_deg, p.vx_max, p.sigma)
+    pays = {"step_length": step * fwd, "foot_reach": reach * fwd, "knee_extend": knee * fwd, "forward_lean": lean * fwd}
+    return pays, {"foot_reach": reach_frac, "step_length": step_frac, "knee_extend": td_ext}
+
+
+@pytest.mark.parametrize("target", ["clock", "linear"])
+@pytest.mark.parametrize("pair_min", [False, True], ids=["plain", "pair_min"])
+def test_kept_terms_equal_the_direct_calls_times_fwd(pair_min, target):
+    vals = _fwd_rows(_compose_inputs((4,)))
+    cfg = _kept_cfg(pair_min=pair_min, target=target)
+    consts = _kept_consts("numpy", cfg)
+    out = _run(consts, cfg, vals)
+    want, _ = _direct(vals, cfg, consts)
+    for t in compose.KEPT_TERMS:
+        np.testing.assert_allclose(out[0][t], want[t], rtol=1e-6, err_msg=t)
+        assert not out[0][t][2:].any(), t  # fwd is off on rows 2 and 3
+    assert out[0]["forward_lean"][:2].all()
+
+
+def test_land_stacks_the_fractions_in_slot_order():
+    vals = _fwd_rows(_compose_inputs((4,)))
+    cfg = _kept_cfg()
+    consts = _kept_consts("numpy", cfg)
+    _, _, land = _run(consts, cfg, vals)
+    _, fracs = _direct(vals, cfg, consts)
+    assert land.shape == (4, F, 3) and land.dtype == np.float32
+    # The PR's slot order, spelled out so a reorder of LANDING_SLOTS fails here.
+    assert compose.LANDING_SLOTS == ("foot_reach", "step_length", "knee_extend")
+    for i, t in enumerate(("foot_reach", "step_length", "knee_extend")):
+        np.testing.assert_allclose(land[..., i], fracs[t], rtol=1e-6, err_msg=t)
+    # The record ignores fwd: row 3 backs up and still records its fractions.
+    assert land[3].any()
+
+
+def test_a_disabled_landing_terms_slot_is_zero():
+    vals = _fwd_rows(_compose_inputs((4,)))
+    cfg = _kept_cfg(scales=("foot_reach", "forward_lean"))
+    consts = _kept_consts("numpy", cfg)
+    rewards, _, land = _run(consts, cfg, vals)
+    assert list(rewards)[-2:] == ["foot_reach", "forward_lean"]
+    _, fracs = _direct(vals, cfg, consts)
+    np.testing.assert_allclose(land[..., 0], fracs["foot_reach"], rtol=1e-6)
+    zeros = np.zeros((4, F), np.float32)
+    np.testing.assert_array_equal(land[..., 1], zeros)
+    np.testing.assert_array_equal(land[..., 2], zeros)
+
+
+def test_land_is_none_without_pair_min():
+    vals = _compose_inputs((3,))
+    cfg = _kept_cfg(pair_min=False)
+    _, _, land = compose.compute_rewards(
+        {k: vals[k] for k in R_KEYS}, {k: vals[k] for k in INFO_KEYS}, vals["action"],
+        vals["first_contact"], vals["contact"], _kept_consts("numpy", cfg), cfg,
+    )  # fmt: skip
+    assert land is None
+
+
+def test_pair_min_reads_the_other_foots_slot():
+    """Foot 0 lands with every fraction at 1. Each slot of last holds a
+    different value for foot 1, so a wrong slot or a missing flip shows."""
+    vals = _fwd_rows(_compose_inputs((4,)))
+    vals["foot_pos_base"][..., 0] = np.array([1.0, 0.0], np.float32)  # far ahead, foot 1 at the base
+    vals["first_contact"][:] = np.array([True, False])
+    vals["contact"][:] = np.array([True, False])
+    vals["feet_air_time"][:] = 0.5
+    vals["qpos_act"][..., :2] = 0.0  # knees straight: extension 1
+    last = np.zeros((4, F, 3), np.float32)
+    last[..., 1, :] = np.array([0.3, 0.4, 0.2], np.float32)  # foot 1: reach, step, knee
+    last[..., 0, :] = 0.9  # foot 0's own record must not count
+    vals["land_frac"] = last
+    cfg = _kept_cfg()
+    cfg.reward.knee_extend.td_mult = 1.0
+    rewards, _, _ = _run(_kept_consts("numpy", cfg), cfg, vals)
+    np.testing.assert_allclose(rewards["foot_reach"][:2], 0.3, rtol=1e-6)
+    np.testing.assert_allclose(rewards["step_length"][:2], 0.4, rtol=1e-6)
+    # Foot 1 is in contact, so no late-swing pay: the touchdown bonus alone.
+    np.testing.assert_allclose(rewards["knee_extend"][:2], 0.2, rtol=1e-6)
+
+
+def test_clock_target_follows_the_gait_clock():
+    """At a speed past cmd_vmax the clock runs at freq[1], so the target is
+    vx / (2 * freq[1])."""
+    vals = _compose_inputs((1,))
+    vals["command"] = np.array([[1.2, 0.0, 0.0]], np.float32)
+    vals["first_contact"][:] = np.array([True, False])
+    cfg = _kept_cfg(pair_min=False, scales=("step_length",))
+    cfg.gait.freq = (1.0, 2.0)
+    want_target = 1.2 / (2.0 * 2.0)
+    vals["foot_pos_base"][..., 0] = np.array([0.5 * want_target, 0.0], np.float32)
+    rewards, _ = _run(_kept_consts("numpy", cfg), cfg, vals)
+    np.testing.assert_allclose(rewards["step_length"], [0.5], rtol=1e-5)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("batch", BATCHES, ids=str)
+@pytest.mark.parametrize("pair_min", [False, True], ids=["plain", "pair_min"])
+def test_compute_rewards_with_kept_terms_land_batched_equals_stacked(pair_min, batch, mode):
+    if mode == "jax" and tuple(batch) != (3,):
+        pytest.skip("eager jax runs at (3,) only; test_shared_math_jit covers jit at (2, 3)")
+    vals = _compose_inputs(batch)
+    names = sorted(vals)
+    cfg = _kept_cfg(pair_min=pair_min)
+    consts = _kept_consts("numpy" if mode == "numpy" else "jax", cfg, style=True)
+    fn = _stacked_fn(consts, cfg, names)
+    assert_batched_matches_stacked(fn, [vals[n] for n in names], batch, mode, atol=1e-5)
 
 
 def test_the_config_is_read_at_call_time():

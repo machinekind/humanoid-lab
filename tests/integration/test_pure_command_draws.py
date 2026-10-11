@@ -1,6 +1,6 @@
 """Pure command draws wired into the env.
 
-The five draws (wz, vy, slow, fast, back) are RNG-coupled sampling logic with
+The six draws (wz, vy, slow, fast, back, straight) are RNG-coupled sampling logic with
 no piece worth extracting, so everything is tested through the env's own
 `_sample_command` and through `step`'s resample branch. `_sample_command`
 reads its config at trace time and each draw is gated by a plain `if p:`, so
@@ -42,6 +42,7 @@ PROB_KEYS = (
     "pure_slow_prob",
     "pure_fast_prob",
     "pure_back_prob",
+    "straight_prob",
 )
 
 # One fixed bank of keys, vmapped: 128 draws is enough that a stream that
@@ -221,6 +222,7 @@ def test_two_draws_fire_on_different_rows_and_keep_doing_so_together(env):
         ("pure_slow_prob", 0, "slow_vx"),
         ("pure_fast_prob", 0, "fast_vx"),
         ("pure_back_prob", 0, "back_vx"),
+        ("straight_prob", 0, "vx"),
     ],
 )
 def test_a_draw_at_probability_one_is_clean_and_in_range(env, prob_key, axis, range_key):

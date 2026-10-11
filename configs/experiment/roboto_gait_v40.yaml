@@ -1,0 +1,95 @@
+# @package _global_
+# roboto_gait_v40: the gait recipe the Torch trainer reached at v40 on
+# roboto_origin. Source: docs/warp-training.md lines 16-21.
+#
+# Each value carries a trailing mark. (C) means the doc confirms it. (U)
+# means it is unconfirmed. The unconfirmed values are placeholders until the
+# PR author supplies the v40 run.json. The PR description lists every one.
+#
+# The preset carries task.env and actuators keys, plus the network group
+# override. It has no ppo block and no dr or domain_rand block. The PPO mirror-symmetry loss
+# (ppo.sym_coef) arrives in commit 4.
+#
+# Left at their defaults, and unconfirmed: command.ramp (off, because the
+# doc's lessons say command ramps collapsed slow walking into standing),
+# command.straight_prob, gait.lift, reset_keyframe, any actuators group
+# action_scale_rad, and every base reward scale of the Brax run the chain
+# warm-started from.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  # (U) The only PR-head evidence is wtrain/bench_warp.py's docstring,
+  # "roboto_origin/deploy_pd at the training sim settings".
+  - override /actuators: deploy_pd
+  # (U) Every other roboto experiment uses the large network, and a warm
+  # start from that lineage needs it.
+  - override /network: large
+
+task:
+  env:
+    gait:
+      freq: [0.8, 1.4] # (C)
+
+    command:
+      deadband: 0.15 # (C)
+      # (U) The doc says only "oversampled slow commands". slow_vx keeps
+      # its default (U).
+      pure_slow_prob: 0.25
+
+    # (C) "heading_err actor+critic obs": heading_err is on both lists.
+    # (C) It is last on the state list: wtrain/train.py asserts that.
+    # (U) Its last place on the privileged list.
+    # (U) Every other component of both lists. These are the default lists.
+    obs:
+      state:
+        - gyro
+        - gravity
+        - joint_pos
+        - joint_vel
+        - last_action
+        - command
+        - phase
+        - heading_err
+      privileged:
+        - gyro
+        - gravity
+        - joint_pos
+        - joint_vel
+        - last_action
+        - command
+        - phase
+        - linvel
+        - height
+        - contacts
+        - actuator_force
+        - heading_err
+
+    reward:
+      scales:
+        step_length: 1.0 # (U)
+        foot_reach: 1.0 # (U)
+        knee_extend: 0.5 # (U)
+        forward_lean: 0.5 # (U)
+      step_length:
+        target: clock # (U) the wtrain fallback when target_a is absent
+        power: 1.0 # (U) wtrain default
+        pair_min: true # (C)
+      foot_reach:
+        target_a: 0.05 # (U) required
+        target_b: 0.15 # (U) required
+        power: 2.0 # (U) wtrain default
+        x_min: 0.0 # (U) wtrain default
+        pair_min: true # (C)
+      knee_extend:
+        # (U) required. roboto's home knee is 0.3 rad, and flexion is
+        # positive.
+        flex_lo: 0.1
+        flex_hi: 0.6
+        x_split: 0.0 # (U) wtrain default
+        td_min_air: 0.2 # (U) wtrain default
+        td_mult: 0.0 # (U) wtrain default
+        pair_min: true # (C)
+      forward_lean:
+        max_deg: 0.0 # (C) "target 0 deg"
+        vx_max: 1.0 # (U) roboto's vx range tops out at 1.0
+        sigma: 0.01 # (U)

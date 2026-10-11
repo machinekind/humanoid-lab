@@ -151,12 +151,14 @@ def load_for_export(run_dir) -> Loaded:
     cut off, the command resampler idle) touch training-only keys, so no
     contract field moves.
     """
-    from humanoid_lab import policy_io
+    from humanoid_lab import policy_io, run_record
     from humanoid_lab.deploy_contract import build_contract, check_config_covered
     from humanoid_lab.eval import battery
 
     run_dir = Path(run_dir)
-    run = json.loads((run_dir / "run.json").read_text())
+    # A legacy Torch run comes back with env_config set to its migrated
+    # hydra_config.task.env.
+    run = run_record.load_run(run_dir)
     # Fail on an unclassified env key before building anything.
     check_config_covered(run.get("env_config") or {})
     check_network_supported(run)
@@ -167,8 +169,8 @@ def load_for_export(run_dir) -> Loaded:
     run, env, checkpoint, inference = battery.load_checkpoint_policy(
         run_dir, extra_env_overrides={"sim": {"backend": "auto", "num_envs": 1}}
     )
-    # run.json's env_config can be stale (a wtrain run keeps its source
-    # run's), so the rebuilt env's own config is checked too.
+    # env_config is a partial or recorded copy, so the rebuilt env's own
+    # config is checked too.
     check_config_covered(env._config.to_dict())
     meta = build_contract(env, run, checkpoint)
 

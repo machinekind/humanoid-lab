@@ -7,12 +7,13 @@ import jax.numpy as jp
 import pytest
 
 from humanoid_lab.envs.joystick import (
+    _GATED_TERMS,
     _STYLE_TERMS,
     _reward_metric_names,
     check_gait_symmetry_cap,
     default_config,
 )
-from humanoid_lab.rewards import terms
+from humanoid_lab.rewards import compose, terms
 
 
 def _is_finite_scalar(x) -> bool:
@@ -324,6 +325,21 @@ def test_feet_apex_min_at_scale_zero_leaves_the_metric_names_unchanged():
     scales.feet_apex_min = 10.0
     armed = _reward_metric_names(scales)
     assert set(armed) - set(names) == {"reward/feet_apex_min"}
+
+
+def test_kept_terms_at_scale_zero_leave_the_metric_names_unchanged():
+    """The landing and lean terms are gated like the style terms: at scale 0
+    they add no reward/* metric key, and each nonzero scale adds its own."""
+    scales = default_config().reward.scales
+    assert _GATED_TERMS == _STYLE_TERMS + compose.KEPT_TERMS
+    for t in compose.KEPT_TERMS:
+        assert scales[t] == 0.0
+    names = _reward_metric_names(scales)
+    assert not {f"reward/{t}" for t in compose.KEPT_TERMS} & set(names)
+    for t in compose.KEPT_TERMS:
+        one = default_config().reward.scales
+        one[t] = 0.5
+        assert set(_reward_metric_names(one)) - set(names) == {f"reward/{t}"}
 
 
 def test_feet_landing_is_zero_for_a_foot_moving_up():
@@ -683,7 +699,7 @@ def test_gait_symmetry_income_at_scale_zero_leaves_the_metric_names_unchanged():
     scales = default_config().reward.scales
     assert scales.gait_symmetry_income == 0.0
     names = _reward_metric_names(scales)
-    assert names == [f"reward/{k}" for k in scales if k not in _STYLE_TERMS]
+    assert names == [f"reward/{k}" for k in scales if k not in _GATED_TERMS]
     assert "reward/gait_symmetry_income" not in names
 
     scales.gait_symmetry_income = 0.5

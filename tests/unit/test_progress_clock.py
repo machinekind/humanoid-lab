@@ -5,6 +5,7 @@ Every function runs on numpy and eager jax at batch shapes (), (3,) and
 tests/integration/test_shared_math_jit.py runs the same checks under jit.
 """
 
+import itertools
 import math
 
 import jax.numpy as jnp
@@ -41,6 +42,27 @@ def test_cmd_speed(batch, mode):
 def test_cmd_speed_values():
     out = progress.cmd_speed(np.array([[0.3, 0.4, 0.0], [0.0, 0.0, -1.0]], np.float32))
     np.testing.assert_allclose(out, [0.5, progress.YAW_SPEED_WEIGHT], rtol=1e-6)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("batch", BATCHES, ids=str)
+def test_fwd_mask_and_lift_scale(batch, mode):
+    cmd = _commands(batch)
+    assert_batched_matches_stacked(lambda c: progress.fwd_mask(c, DEADBAND), (cmd,), batch, mode)
+    assert_batched_matches_stacked(lambda c: progress.lift_scale(c, 0.5, 0.25), (cmd,), batch, mode)
+
+
+@pytest.mark.parametrize("deadband, threshold", [(0.05, 0.1), (0.15, 0.15)])
+def test_fwd_mask_threshold_is_the_larger_of_the_floor_and_the_deadband(deadband, threshold):
+    vx = np.array([threshold - 1e-3, threshold, threshold + 1e-3, -1.0], np.float32)
+    cmd = np.stack([vx, np.zeros(4, np.float32), np.zeros(4, np.float32)], axis=-1)
+    np.testing.assert_array_equal(progress.fwd_mask(cmd, deadband), [False, False, True, False])
+    assert progress.FWD_MIN_VX == 0.1
+
+
+def test_lift_scale_clips_into_min_frac_and_one():
+    cmd = np.array([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0], [0.0, 0.3, 0.0], [2.0, 0.0, 0.0]], np.float32)
+    np.testing.assert_allclose(progress.lift_scale(cmd, 0.5, 0.25), [0.25, 0.5, 0.6, 1.0], rtol=1e-6)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -123,6 +145,7 @@ CFG_ALL = {
     "pure_slow_prob": 0.2,
     "pure_fast_prob": 0.2,
     "pure_back_prob": 0.2,
+    "straight_prob": 0.2,
 }
 
 
@@ -210,6 +233,35 @@ def test_a_later_draw_overwrites_an_earlier_one():
     np.testing.assert_array_equal(out[:, 0], d["pure_slow_vx"])
 
 
+def test_straight_keeps_vx_and_zeroes_vy_and_wz():
+    d = _draws((4,), on=("straight",))
+    d["vy"] = -d["vy"]
+    d["wz"] = -d["wz"]
+    out = progress.command_from_draws(d, _Cfg(CFG_ALL))
+    np.testing.assert_array_equal(out[:, 0], d["vx"])
+    np.testing.assert_array_equal(out[:, 1:], 0.0)
+    assert not np.any(np.signbit(out[:, 1:]))
+
+
+def test_straight_is_order_independent(monkeypatch):
+    cfg = _Cfg(CFG_ALL)
+    others = ("pure_wz", "pure_vy", "pure_slow", "pure_fast", "pure_back")
+    default = progress.COMMAND_DRAWS
+    straight = tuple(e for e in default if e[0] == "straight")
+    moved = straight + tuple(e for e in default if e[0] != "straight")
+    assert len(straight) == 1 and moved != default
+    for n in range(len(others) + 1):
+        for subset in itertools.combinations(others, n):
+            d = _draws((4,), on=subset + ("straight",))
+            d["vy"] = -d["vy"]
+            want = progress.command_from_draws(d, cfg)
+            monkeypatch.setattr(progress, "COMMAND_DRAWS", moved)
+            got = progress.command_from_draws(d, cfg)
+            monkeypatch.setattr(progress, "COMMAND_DRAWS", default)
+            np.testing.assert_array_equal(got, want)
+            assert np.array_equal(np.signbit(got), np.signbit(want)), subset
+
+
 def test_standing_still_overrides_every_draw():
     cfg = _Cfg(CFG_ALL)
     names = [n for n, *_ in progress.COMMAND_DRAWS]
@@ -236,3 +288,64 @@ def test_a_disabled_draw_needs_no_draws():
 def test_command_dtype_follows_the_draws():
     out = progress.command_from_draws(_draws((2,)), _Cfg())
     assert out.dtype == np.float32
+
+
+# The command ramp.
+
+LIN, YAW = 0.5, 1.0
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("batch", BATCHES, ids=str)
+def test_ramp_command_batched_equals_stacked(batch, mode):
+    assert_batched_matches_stacked(
+        lambda c, t: progress.ramp_command(c, t, LIN, YAW, DT),
+        [_commands(batch, seed=4), _commands(batch, seed=5)],
+        batch,
+        mode,
+    )
+
+
+def test_a_ramp_step_never_exceeds_the_rate_times_dt():
+    cmd, target = _commands((64,), seed=6), _commands((64,), seed=7)
+    step = progress.ramp_command(cmd, target, LIN, YAW, DT) - cmd
+    tol = 1e-6
+    assert np.all(np.abs(step[:, :2]) <= LIN * DT + tol)
+    assert np.all(np.abs(step[:, 2]) <= YAW * DT + tol)
+    # A far target moves by the full limit, with the sign of the difference.
+    far = np.abs(target - cmd) > np.array([LIN, LIN, YAW]) * DT
+    limit = np.broadcast_to(np.array([LIN, LIN, YAW], np.float32) * DT, cmd.shape)
+    np.testing.assert_allclose(
+        step[far], (np.sign(target - cmd) * limit)[far], rtol=1e-5, atol=1e-6
+    )
+
+
+def test_the_ramp_reaches_the_target_and_stays_there():
+    cmd = np.zeros(3, np.float32)
+    target = np.array([0.4, -0.3, 0.6], np.float32)
+    # 0.4 m/s at 0.5 m/s^2 takes 0.8 s, 40 steps. 0.6 rad/s at 1 rad/s^2 takes 30.
+    for _ in range(45):
+        cmd = progress.ramp_command(cmd, target, LIN, YAW, DT)
+    np.testing.assert_allclose(cmd, target, atol=1e-6)
+    for _ in range(10):
+        cmd = progress.ramp_command(cmd, target, LIN, YAW, DT)
+        np.testing.assert_allclose(cmd, target, atol=1e-6)
+
+
+def test_the_lin_and_yaw_limits_act_independently():
+    cmd = np.zeros(3, np.float32)
+    target = np.array([1.0, 1.0, 1.0], np.float32)
+    fast_lin = progress.ramp_command(cmd, target, 10.0, YAW, DT)
+    np.testing.assert_allclose(fast_lin, [0.2, 0.2, YAW * DT], rtol=1e-6)
+    fast_yaw = progress.ramp_command(cmd, target, LIN, 10.0, DT)
+    np.testing.assert_allclose(fast_yaw, [LIN * DT, LIN * DT, 0.2], rtol=1e-6)
+
+
+def test_ramp_on_reads_the_config():
+    assert not progress.ramp_on(None)
+    assert not progress.ramp_on({})
+    assert not progress.ramp_on({"vx": (-1.0, 1.0)})
+    assert not progress.ramp_on({"ramp": {"lin": 0.0, "yaw": 0.0}})
+    assert not progress.ramp_on({"ramp": {}})
+    assert progress.ramp_on({"ramp": {"lin": 0.5, "yaw": 1.0}})
+    assert progress.ramp_on({"ramp": {"lin": 0.5}})

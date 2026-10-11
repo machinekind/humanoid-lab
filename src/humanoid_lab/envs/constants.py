@@ -38,6 +38,15 @@ class TaskConstants:
     Joystick builds it once. Fields hold the same objects the env uses (jp
     arrays on JAX); a backend that needs numpy indices or tensors converts
     them once. Config scalars are Python floats.
+
+    The `*_on` flags are the static gates of the config-gated reward terms.
+    `step_length_on`, `foot_reach_on`, `knee_extend_on` and `forward_lean_on`
+    follow the term's scale. `land_frac_on` is true when some landing term
+    has pair_min on (compose.land_frac_on), and then info carries
+    land_frac. Every gate defaults to off.
+
+    `frozen_phase_zeros` is true when gait.freq is (0, 0) and
+    gait.frozen_phase_obs is "zeros". Then the phase observation is zeros.
     """
 
     dt: float
@@ -88,3 +97,10 @@ class TaskConstants:
     state_sign: Any = None
     priv_perm: Any = None
     priv_sign: Any = None
+    root_body: Any = None
+    step_length_on: bool = False
+    foot_reach_on: bool = False
+    knee_extend_on: bool = False
+    forward_lean_on: bool = False
+    land_frac_on: bool = False
+    frozen_phase_zeros: bool = False

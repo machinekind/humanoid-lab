@@ -18,7 +18,7 @@ ctrl = clip(anchor_ctrl + act * action_scale, ctrl_low, ctrl_high)
 
 | field | what it is |
 |---|---|
-| `schema_version` | contract schema, currently 1 |
+| `schema_version` | contract schema, 1 or 2 (see the frozen clock below) |
 | `run_name`, `task`, `checkpoint`, `robot`, `preset`, `actuator_model` | provenance |
 | `obs_layout`, `obs_size` | ordered actor components with their widths, and the total |
 | `action_size`, `joint_names` | the action vector's width and its column order |
@@ -30,7 +30,7 @@ ctrl = clip(anchor_ctrl + act * action_scale, ctrl_low, ctrl_high)
 | `torque_low`, `torque_high` | per-actuator torque envelope from the compiled model |
 | `gains` | the effective per-actuator kp/kd the policy trained against |
 | `command_low`, `command_high` | the trained command box, ordered (vx, vy, wz) |
-| `gait_clock` | the constants of the clock the actor observes as `phase` |
+| `gait_clock` | the constants of the clock the actor observes as `phase`, and `phase_obs`, the phase observation mode |
 
 `joint_names` is the canonical actuated-joint order from `robot.yaml`. Every
 per-joint vector in the table uses it.
@@ -58,9 +58,10 @@ until someone classifies it. `tests/unit/test_deploy_contract.py` walks
 `default_config()` and fails on the same condition, so the block lands at
 commit time rather than at export time.
 
-The consumed set is small: `ctrl_dt`, `action_scale`, `reset_keyframe`,
-`obs.state`, `obs.include`, the three command box ranges, `gait.freq` and
-`command.deadband`. Everything else shapes training only.
+The consumed set is small: `ctrl_dt`, `reset_keyframe`, `obs.state`, the
+three command box ranges (`command.vx`, `command.vy`, `command.wz`),
+`gait.freq`, `command.deadband` and `gait.frozen_phase_obs`. Everything else
+shapes training only.
 
 Two classifications carry an argument.
 
@@ -78,6 +79,18 @@ float32 speed with `>` and the runtime compares a float64 speed with `<=`.
 The two agree for any command farther from the deadband than float32
 rounding.
 
+`gait.frozen_phase_obs` is consumed because it picks what the actor sees as
+`phase` when `gait.freq` is (0, 0). `"cos_sin"` is the legacy observation,
+cos/sin of the frozen leg phases. `"zeros"` observes zeros of the same width.
+The mode ships explicitly as `gait_clock.phase_obs`, and the runtime never
+infers it from `freq_low` and `freq_high`. A contract with `"cos_sin"` is
+schema 1, so a stock export still loads on a robot that runs an old vendored
+runtime. A contract with `"zeros"` is schema 2. The current runtime reads
+schema 1 (always cos/sin) and schema 2. An old vendored runtime refuses
+schema 2, so a zeros policy cannot run on it with the wrong phase. An old
+checkpoint trained with a frozen clock keeps cos/sin: export rebuilds the env
+on `default_config()`, where the key defaults to `"cos_sin"`.
+
 `gait.swing_height`, `gait.duty` and `gait.air_time_cap` feed the reward's
 clearance targets, and the observation reads none of them.
 
@@ -87,6 +100,12 @@ armed draw whose range leaves the trained box raises, because
 under. Setting a fast range above the box is a known way to pull a policy
 past a speed it deadlocks at; a run that wants that here widens `command.vx`
 to match.
+
+The command ramp (`command.ramp.lin`, `command.ramp.yaw`) is training-only.
+In training it slews every new command from the old one at a bounded rate.
+The runtime feeds the operator command to the policy directly and does not
+ramp it. The robot side should rate-limit operator commands, so the policy
+never sees a step change sharper than the ones it trained on.
 
 ### Refusals
 
@@ -102,6 +121,14 @@ The last one is the list in `DEPLOYABLE_OBS`. The IMU gives `gyro` and
 `command`, and the runtime holds `last_action` and `phase` itself. A
 privileged signal on the actor list (`linvel`, `height`, `contacts`,
 `actuator_force`) has no deploy-side source.
+
+`heading_err` on the actor list is refused too. The robot would need a yaw
+input in the env's convention, and runtime state for `yaw_ref`, and the
+runtime has neither. In the env `yaw_ref` follows the measured yaw while the
+commanded turn rate exceeds `progress.TURN_WZ_THRESHOLD` (0.05 rad/s) and
+holds otherwise. `heading_err` also trains without noise, while a real IMU
+yaw drifts. `heading_err` on the critic list only is fine, because the
+critic does not ship.
 
 ## The export
 
@@ -123,6 +150,11 @@ behind: the critic reads privileged observations the robot does not have.
 The export runs on CPU. It builds the run's env through `eval/battery.py`'s
 loader, so the robot, preset, actuator overrides and network shape all come
 from `run.json`, and it steps no physics.
+
+The export reads `run.json` through `run_record.load_run`. A legacy Torch run
+is checked against its migrated `hydra_config.task.env`. A legacy run that
+sets a deleted reward term, or freezes the gait clock without
+`gait.frozen_phase_obs`, is refused.
 
 ### Both validations run before either file is placed
 
@@ -173,6 +205,11 @@ ctrl = policy.step(gyro=..., gravity=..., joint_pos=..., joint_vel=..., command=
 `joint_pos` is the raw encoder reading in `joint_names` order; the runtime
 subtracts `default_pose` itself. `command` is (vx, vy, wz). The return value
 is a ctrl vector in `ctrl_unit`, already clipped.
+
+The phase observation is cos/sin of the leg phases, or zeros when the
+contract's `gait_clock.phase_obs` is `"zeros"`. The runtime reads schema 1
+and schema 2 and refuses any other. A schema 2 contract without
+`gait_clock.phase_obs` is refused.
 
 `step` advances the two pieces of observation state, the previous action and
 the gait clock, after the observation is assembled. That is the order

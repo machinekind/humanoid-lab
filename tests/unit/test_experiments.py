@@ -10,6 +10,7 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from humanoid_lab import paths
+from humanoid_lab.envs import joystick
 from humanoid_lab.registry import TASKS, _apply_overrides
 from humanoid_lab.robot.presets import load_actuator_preset, resolve
 from humanoid_lab.robot.spec import load_robot_spec
@@ -246,3 +247,33 @@ def test_the_mirror_presets_reach_the_env_config(experiment):
     _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
     assert env_cfg.symmetry.enable is True
     assert env_cfg.symmetry.mirror_prob == 0.5
+
+
+V40_LANDING_TERMS = ("step_length", "foot_reach", "knee_extend")
+
+
+def test_roboto_gait_v40_carries_the_documented_recipe():
+    # docs/warp-training.md lines 16-21. The preset adds no ppo, dr or
+    # domain_rand block: commit 4 brings ppo.sym_coef.
+    with (paths.CONFIGS_DIR / "experiment" / "roboto_gait_v40.yaml").open() as f:
+        raw = yaml.safe_load(f)
+    assert set(raw) <= {"defaults", "task", "actuators"}
+
+    cfg = _compose(["experiment=roboto_gait_v40"])
+    assert cfg.robot.name == "roboto_origin"
+    assert cfg.actuators.name == "deploy_pd"
+    env = cfg.task.env
+    assert list(env.gait.freq) == [0.8, 1.4]
+    assert env.command.deadband == 0.15
+    assert env.obs.state[-1] == "heading_err"
+    assert env.obs.privileged[-1] == "heading_err"
+    for term in V40_LANDING_TERMS:
+        assert env.reward[term].pair_min is True, term
+    assert env.reward.forward_lean.max_deg == 0.0
+    for term in (*V40_LANDING_TERMS, "forward_lean"):
+        assert env.reward.scales[term] != 0.0, term
+
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    _apply_overrides(env_cfg, OmegaConf.to_container(env, resolve=True))
+    joystick.check_kept_terms(env_cfg.reward, env_cfg.gait, 2)

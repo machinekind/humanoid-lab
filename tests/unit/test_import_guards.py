@@ -39,6 +39,7 @@ CORE = (
     "humanoid_lab.eval.video",
     "humanoid_lab.export.policy",
     "humanoid_lab.deploy_contract",
+    "humanoid_lab.run_record",
 )
 
 # Written in pieces so the static scan below does not match this file.

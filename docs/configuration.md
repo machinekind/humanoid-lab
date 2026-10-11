@@ -203,9 +203,10 @@ A preset also picks the actuator model. Implemented models are `pd` and
 raise `NotImplementedError`. A `pd` preset also sets `soft_limit_factor` and
 `action_scale_factor`, or a flat `action_scale_rad` (radians per unit
 action, every joint the same) that replaces the factor formula. Non-pd
-models ignore both scale fields. roboto_origin's `deploy_pd` pins
-upstream's 0.25 rad. See `src/humanoid_lab/robot/presets.py` for the full
-field contract.
+models ignore both scale fields. A group may set its own `action_scale_rad`.
+Under `pd` it beats the preset value for that group's joints, and other
+models ignore it. roboto_origin's `deploy_pd` pins upstream's 0.25 rad.
+See `src/humanoid_lab/robot/presets.py` for the full field contract.
 
 `load_actuator_preset` (`src/humanoid_lab/robot/presets.py`) deep-merges
 `cfg.actuators.overrides` onto the loaded preset yaml before validating it.
@@ -319,6 +320,168 @@ every joint), `scales.joint_pos_limits`, `scales.joint_vel`,
 `interval_steps_range` (random gap to the next push, steps), `vel_z`
 (vertical kick, m/s), and `ang_vel_rp` / `ang_vel_yaw` (angular kicks,
 rad/s). Off, the legacy fixed schedule is bit-identical.
+
+## Speed-scaled lift (`task.env.gait.lift`)
+
+The lift scale shrinks the swing targets at slow commands. A slow command
+then asks for small steps instead of a high-knee march in place. The scale is
+
+    lift = clip(cmd_speed / v_full, min_frac, 1)
+
+where `cmd_speed` is the speed the gait clock serves (planar speed plus the
+weighted yaw rate).
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `lift.v_full` | `0.0` | Commanded speed at which the targets reach full height, m/s. `0` = off. |
+| `lift.min_frac` | `1.0` | Floor of the scale. |
+
+The scale multiplies two targets: the `feet_phase` clearance target from the
+gait clock and the `feet_apex` target `reward.apex_target`. `feet_apex_min`
+keeps the unscaled `apex_target`. Every other term is unchanged.
+
+With `v_full` at `0` the targets reach the terms untouched, so the rewards
+are bit-identical to a config without the block. `compute_rewards` reads
+`gait.lift` at call time, like `reward.*`.
+
+The lift scale is training-only. The phase observation reads neither key,
+and both are in `TRAINING_ONLY_KEYS` (`deploy_contract.py`).
+
+## Frozen clock observation (`task.env.gait.frozen_phase_obs`)
+
+With `gait.freq` at `(0, 0)` the gait clock never moves. This key picks what
+the actor observes as `phase` then.
+
+| Value | Phase observation |
+|---|---|
+| `"cos_sin"` (default) | cos/sin of the frozen leg phases, `[1, -1, 0, 0]` for two feet. The legacy observation. |
+| `"zeros"` | `zeros(2F)` for F feet. |
+
+A frozen `cos_sin` phase is a constant side-dependent input, which lets the
+policy specialise one leg. `"zeros"` removes that left/right marker. Any
+other value is refused at construction. With a running clock the key has no
+effect.
+
+The key ships in the deploy contract as `gait_clock.phase_obs`, and it is in
+`CONSUMED_KEYS`. A `"zeros"` contract is schema 2, which an old vendored
+runtime refuses. See docs/deploy.md.
+
+## Landing and lean terms (`task.env.reward`)
+
+Four terms ported from the Torch+MJWarp runner. Each is off at its default
+scale of `0.0`. A term is computed only when its scale in `reward.scales` is
+nonzero. With all four off, no reward key, metric, reading or `info` leaf is
+added.
+
+| Scale | What it pays |
+|---|---|
+| `step_length` | Each landing, for how far the landing foot is ahead of the other foot. |
+| `foot_reach` | Each landing, for how far ahead of the base the foot lands. |
+| `knee_extend` | An open knee in late swing, plus an optional bonus at touchdown. |
+| `forward_lean` | A body pitch that grows with the forward command. |
+
+All four pay only while the command walks forward:
+`cmd_vx > max(0.1, command.deadband)`. A stand, a turn in place or a
+backward command pays 0.
+
+The landing terms read each foot's position in the base frame. The base
+position is `xpos[root_body]`, where `root_body` is the body of the free
+joint. It comes from the same forward-kinematics stage as the foot sites and
+the base orientation. Forward of the base is +x.
+
+### `reward.step_length`
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `target` | `"clock"` | `"clock"`: target = `cmd_vx / (2 * freq)`, with `freq` the gait clock's frequency at the commanded speed. `"linear"`: target = `target_a + target_b * max(cmd_vx, 0)`. |
+| `target_a` | `None` | Target at zero speed, m. Required for `"linear"`. |
+| `target_b` | `None` | Target growth per m/s, s. Required for `"linear"`. |
+| `power` | `1.0` | Exponent on the fraction. |
+| `pair_min` | `False` | See below. |
+
+The fraction is `clip(ahead / target, 0, 1) ** power`, where `ahead` is the
+landing foot's x minus the other foot's x. The target is clamped to at least
+0.05 m. A foot landing behind the other one earns 0. Power 1 pays the same
+per second at any cadence for a given speed. Power 2 makes the pay per second
+grow with the step itself.
+
+### `reward.foot_reach`
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `target_a` | `None` | Target at zero speed, m. Required. |
+| `target_b` | `None` | Target growth per m/s, s. Required. |
+| `power` | `2.0` | Exponent on the fraction. |
+| `x_min` | `0.0` | Foot x that pays 0, m. Must stay below 0.02. |
+| `pair_min` | `False` | See below. |
+
+The target is `target_a + target_b * max(cmd_vx, 0)`, clamped to at least
+0.02 m. The fraction is `clip((foot_x - x_min) / (target - x_min), 0, 1) **
+power`. A foot landing at `x_min` or further back earns 0.
+
+### `reward.knee_extend`
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `flex_lo` | `None` | Knee angle that counts as fully extended, rad. Required. |
+| `flex_hi` | `None` | Knee angle that counts as not extended, rad. Required. |
+| `x_split` | `0.0` | Base-frame foot x past which an airborne foot is in late swing, m. |
+| `td_min_air` | `0.2` | Shortest swing that earns the touchdown bonus, s. |
+| `td_mult` | `0.0` | Weight of the touchdown bonus. `0` = no bonus. |
+| `pair_min` | `False` | See below. Applies to the touchdown bonus. |
+
+The extension is `clip((flex_hi - knee_q) / (flex_hi - flex_lo), 0, 1)`. It
+pays while a foot is in the air and ahead of `x_split`. The touchdown bonus
+pays `td_mult` times the extension on the landing step. Only a real step
+earns it: a swing of at least `td_min_air` seconds that lands ahead of the
+base. The term needs a `knee` joint group with one joint per foot.
+
+### `reward.forward_lean`
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `max_deg` | `None` | Lean at full speed, degrees. Required. |
+| `vx_max` | `None` | Forward command at which the lean reaches `max_deg`, m/s. Required. |
+| `sigma` | `None` | Width of the Gaussian. Required. |
+
+The target is `sin(radians(max_deg) * clip(cmd_vx / vx_max, 0, 1))`. The pay is
+`exp(-(gravity_x - target)^2 / sigma)`, where `gravity_x` is the x component
+of the body-frame gravity direction. It is 1 at the target.
+
+### `pair_min` and `land_frac`
+
+With `pair_min` on, a landing pays the lower of its own fraction and the other
+foot's last landing fraction. One leg's good step then cannot carry a
+shuffling partner.
+
+The last fractions live in `info["land_frac"]`, shape `(F, 3)` per world. The
+slot order is `[foot_reach, step_length, knee_extend]`. A slot whose term is
+off stays 0. A landing foot records its fractions after the rewards have read
+the previous record. Each fraction is recorded before the pair-min.
+
+`land_frac` exists only when some landing term has a nonzero scale and
+`pair_min` on. It restarts at 0 on respawn through the `land` layer of
+`envs/gait_state.py` (`LandReseedWrapper` in `envs/wrappers.py`). A new
+episode's first landing is then not compared with the dead episode's last
+one.
+
+### Construction refusals
+
+The env refuses to build when a term with a nonzero scale cannot run:
+
+- a required key above is left `None`. The error names each full key.
+- `step_length.target` is neither `"clock"` nor `"linear"`.
+- `step_length.target` is `"clock"` and `gait.freq[0]` is 0. The clock runs at
+  `freq[0]` at a zero command, so the target would be 0/0.
+- `foot_reach.x_min` is 0.02 or more. The fraction would divide by zero or a
+  negative number.
+- `step_length`, `foot_reach` or `knee_extend` is on and the robot does not
+  have exactly two feet.
+- `knee_extend` is on and the robot has no `knee` joint group with one joint
+  per foot.
+
+All four terms are training-only. Their keys sit under the `reward.` prefix,
+which `TRAINING_ONLY_PREFIXES` in `deploy_contract.py` covers.
 
 ## Settled pose anchor (`task.env.real_pose_ref`)
 
@@ -482,16 +645,18 @@ settles on refusing it — a quadruped policy trained this way held 0.000 m/s
 under a commanded -0.4 backward, and five isolating probes confirmed the
 refusal was learned rather than mechanical.
 
-The five draws below rewrite the base sample into a clean single-axis
-command with the given probability. They apply in the order `wz, vy, slow,
-fast, back`, a later draw overwriting an earlier one, and all of them run
+The six draws below rewrite the base sample into a clean command with the
+given probability. They apply in the order `wz, vy, slow, fast, back,
+straight`, a later draw overwriting an earlier one, and all of them run
 before `zero_prob`, which stays the sampler's last word: standing still
-overrides every draw.
+overrides every draw. `straight`'s place in that order does not change the
+result. Its zeros are `+0.0`, like every other draw's.
 
 Each draw is gated on its static probability and keys off
 `jax.random.fold_in(rng, 0x100 + idx)` with an index of its own — `1 wz,
-2 vy, 3 slow, 4 fast, 5 back`, fixed. So a draw at probability 0 does not
-exist in the trace, all five off leave the sampler bit-identical to the
+2 vy, 3 slow, 4 fast, 5 back, 6 straight`, fixed. `straight` keys off
+`jax.random.fold_in(rng, 0x106)`. So a draw at probability 0 does not
+exist in the trace, all six off leave the sampler bit-identical to the
 pre-1.6 one (`tests/integration/test_golden_baseline.py`), and enabling one
 draw does not move another draw's samples
 (`tests/integration/test_pure_command_draws.py`).
@@ -515,6 +680,7 @@ envelope (`vx ±0.8`, `vy ±0.6`, `wz ±0.6`).
 | `fast_vx` | `(0.5, 0.8)` | Range of the fast redraw, m/s. Tops out at `0.8`, the top of our commanded `vx` box. Setting `fast_vx` **above** the box is a known way to pull a policy past a speed it deadlocks at. Our envelope is capped pending sysid, so commanding past it is a decision for later, not a default. |
 | `pure_back_prob` | `0.0` | Redraw `vx` from `back_vx`, zero `vy` and `wz`: clean backward walking, the refusal described above. |
 | `back_vx` | `(-0.8, -0.2)` | Range of the backward redraw, m/s. Sits inside asimov_v1's negative `vx` range. **Not inside roboto_origin's**, whose overlay narrows `vx` to `[-0.6, 1.0]` — arming `pure_back_prob` there without narrowing `back_vx` is refused at construction (see below). |
+| `straight_prob` | `0.0` | Keep the drawn `vx`, zero `vy` and `wz`: straight walking. |
 
 Every armed redraw is checked against the **composed** `command` box when the
 env is constructed: `command.<range>` must sit inside `command.<axis>`, or
@@ -525,6 +691,43 @@ understates what it saw. `deploy_contract.py` refuses the same configuration
 at export; the construct-time check just moves the failure to before the GPU
 hours. Draws at probability `0.0` are not checked, so the shipped all-off
 defaults validate nothing.
+
+## Command ramp (`task.env.command.ramp`)
+
+The ramp limits how fast the served command can change. A sampled command
+goes to `info["cmd_target"]`, and each control step `info["command"]` moves
+toward it by at most rate · dt per axis. The policy observes and is rewarded
+on `info["command"]`.
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `ramp.lin` | `0.0` | Rate limit on `vx` and `vy`, m/s². |
+| `ramp.yaw` | `0.0` | Rate limit on `wz`, rad/s². |
+
+Both at `0.0` is off. When the ramp is on, both rates must be > 0. A config
+with only one rate set, or a negative rate, is refused when the env is
+constructed (`check_command_ramp` in `envs/joystick.py`).
+
+At reset the command starts at zero and `cmd_target` holds the sampled
+command. The command then slews toward it. A respawn keeps the command where
+it was, like every other piece of info the wrappers do not clear.
+
+`info["cmd_target"]` exists only when the ramp is on. With the ramp off the
+info pytree, the trace and the RNG stream are the same as without the key.
+
+With the no-progress cut also on, `progress_ema` seeds from the served
+command, which is zero at reset.
+
+The measurement env forces the ramp off, so the battery, video and export
+all run without it (`battery._measurement_env_overrides`). The battery
+writes its scripted command into `info["command"]`, and a ramp would slew it
+toward the random reset target. Sizing forces the ramp off too
+(`sizing.collect.sizing_env_overrides`). It measures the trained gait under
+its own commands. The ramp would start each episode at a zero command and
+lag every resample.
+
+The ramp is training-only. The runtime does not ramp commands, so the robot
+side should rate-limit operator commands (see `docs/deploy.md`).
 
 ## Domain randomization (`dr`)
 

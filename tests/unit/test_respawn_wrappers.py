@@ -79,7 +79,7 @@ def test_gait_dur_ema_on_follows_either_symmetry_scale():
     assert gait_dur_ema_on(scales)
 
 
-def test_wrap_env_fn_is_stock_with_both_reseeds_off():
+def test_wrap_env_fn_is_stock_with_every_reseed_off():
     cfg = default_config()
     assert wrappers.make_wrap_env_fn(cfg) is playground_wrapper.wrap_for_brax_training
 
@@ -142,6 +142,7 @@ def test_heading_reseed_value_is_the_shared_base_yaw():
         (wrappers.ProgressReseedWrapper, "progress", ["progress_ema"]),
         (wrappers.GaitReseedWrapper, "gait", []),
         (wrappers.HeadingReseedWrapper, "heading", ["yaw_ref"]),
+        (wrappers.LandReseedWrapper, "land", []),
     ],
 )
 def test_each_reseed_clears_through_gait_state(monkeypatch, wrapper, flag, reset_keys):
@@ -157,6 +158,7 @@ def test_each_reseed_clears_through_gait_state(monkeypatch, wrapper, flag, reset
     info = {**_gait_info(), "yaw_ref": jp.array([1.5, 1.5])}
     wrapper(_YawEnv([1.0, 0.0], [0.2, 0.9])).step(_state(info), None)
     assert calls == [((flag,), reset_keys, [True, False])]
+
 
 def test_wrap_env_fn_adds_the_heading_layer_only_with_heading_err():
     cfg = default_config()
@@ -179,3 +181,61 @@ def test_heading_layer_stacks_outermost():
     assert isinstance(env.env, wrappers.GaitReseedWrapper)
     assert isinstance(env.env.env, wrappers.ProgressReseedWrapper)
     assert isinstance(env.env.env.env, playground_wrapper.BraxAutoResetWrapper)
+
+
+# -- the land layer --------------------------------------------------------
+
+
+def _land_info():
+    # Two envs, two feet, three slots: the last landing fractions.
+    return {
+        **_gait_info(),
+        "land_frac": jp.array([[[0.5, 0.6, 0.7], [0.2, 0.3, 0.4]], [[0.5, 0.6, 0.7], [0.2, 0.3, 0.4]]]),
+    }
+
+
+def test_land_reseed_zeroes_land_frac_of_respawned_envs_only():
+    before = _land_info()
+    out = wrappers.LandReseedWrapper(_StubEnv([1.0, 0.0])).step(_state(before), None)
+    np.testing.assert_array_equal(out.info["land_frac"][0], np.zeros((2, 3)))
+    np.testing.assert_array_equal(out.info["land_frac"][1], before["land_frac"][1])
+    assert out.info["land_frac"].dtype == before["land_frac"].dtype
+    for k in before:
+        if k != "land_frac":
+            np.testing.assert_array_equal(out.info[k], before[k], err_msg=k)
+
+
+def _land_cfg(term="step_length", scale=1.0, pair_min=True):
+    cfg = default_config()
+    cfg.reward.scales[term] = scale
+    cfg.reward[term].pair_min = pair_min
+    return cfg
+
+
+@pytest.mark.parametrize("term", ["step_length", "foot_reach", "knee_extend"])
+def test_wrap_env_fn_adds_the_land_layer_only_with_land_frac(term):
+    env = wrappers.make_wrap_env_fn(_land_cfg(term))(_StubEnv([0.0]))
+    assert isinstance(env, wrappers.LandReseedWrapper)
+    assert isinstance(env.env, playground_wrapper.BraxAutoResetWrapper)
+    # a scale without pair_min, or pair_min without a scale, keeps no land_frac
+    for cfg in (_land_cfg(term, pair_min=False), _land_cfg(term, scale=0.0)):
+        assert wrappers.make_wrap_env_fn(cfg) is playground_wrapper.wrap_for_brax_training
+
+
+def test_wrap_env_fn_is_stock_for_forward_lean_alone():
+    cfg = default_config()
+    cfg.reward.scales.forward_lean = 1.0
+    assert wrappers.make_wrap_env_fn(cfg) is playground_wrapper.wrap_for_brax_training
+
+
+def test_land_layer_stacks_outermost():
+    cfg = _land_cfg()
+    cfg.no_progress.enable = True
+    cfg.reward.scales.gait_symmetry = -1.0
+    cfg.obs.state = tuple(cfg.obs.state) + ("heading_err",)
+    env = wrappers.make_wrap_env_fn(cfg)(_StubEnv([0.0]))
+    assert isinstance(env, wrappers.LandReseedWrapper)
+    assert isinstance(env.env, wrappers.HeadingReseedWrapper)
+    assert isinstance(env.env.env, wrappers.GaitReseedWrapper)
+    assert isinstance(env.env.env.env, wrappers.ProgressReseedWrapper)
+    assert isinstance(env.env.env.env.env, playground_wrapper.BraxAutoResetWrapper)

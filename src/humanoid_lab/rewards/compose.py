@@ -7,9 +7,16 @@ mujoco, brax, ml_collections or any env.
 `compute_rewards` is the body of Joystick._compute_rewards. `r` is the
 `signals.readings` dict, `info` the env info dict, and `cfg` the whole env
 config. Every array has leading batch dims (none for one world). Flags and
-parameters under `cfg.reward` are read at call time. The style gates,
-`orientation_tol` and `deadband` come from `consts`, fixed at construction.
+parameters under `cfg.reward` and `cfg.gait.lift` are read at call time. The
+style gates, `orientation_tol` and `deadband` come from `consts`, fixed at
+construction.
 `total_reward` is the scaled sum and the clip.
+
+The landing and lean terms (KEPT_TERMS) come last in the reward dict, each
+only when its gate in `consts` is on. The three landing terms also record a
+per-foot fraction. `compute_rewards` stacks them into `land` in
+LANDING_SLOTS order when `consts.land_frac_on`, and gait_state.update keeps
+the record in info["land_frac"] for the next landing's pair-min.
 """
 
 from __future__ import annotations
@@ -20,9 +27,34 @@ from humanoid_lab.envs import progress, signals
 from humanoid_lab.envs.constants import xp_of
 from humanoid_lab.rewards import terms
 
+# The landing and lean terms ported from the Torch+MJWarp runner, in their
+# order at the end of the reward dict.
+KEPT_TERMS = ("step_length", "foot_reach", "knee_extend", "forward_lean")
+# The land_frac[..., i] slot of each landing term, the order the PR used.
+LANDING_SLOTS = ("foot_reach", "step_length", "knee_extend")
+
+
+def land_frac_on(reward_cfg) -> bool:
+    """Whether info carries land_frac: some landing term has a nonzero scale
+    and pair_min on.
+
+    It reads config only. A partial config or a plain dict works.
+    """
+    scales = reward_cfg.get("scales") or {}
+    return any(
+        float(scales.get(t, 0.0)) and bool((reward_cfg.get(t) or {}).get("pair_min", False))
+        for t in LANDING_SLOTS
+    )
+
 
 def compute_rewards(r, info, action, first_contact, contact, consts, cfg):
-    """(rewards dict, fall) for one step. Dict order is the order of the sum."""
+    """(rewards dict, fall, land) for one step. Dict order is the order of the sum.
+
+    land is None unless consts.land_frac_on. Then it is the per-foot landing
+    fractions of this step, shape batch + (F, 3), in LANDING_SLOTS order. A
+    disabled landing term's slot is zero. The pair-min reads the previous
+    record, info["land_frac"].
+    """
     xp = xp_of(r["gyro"])
     cmd = info["command"]
     linvel = r["linvel"]
@@ -37,6 +69,15 @@ def compute_rewards(r, info, action, first_contact, contact, consts, cfg):
 
     foot_clearance = r["foot_clearance"]
     target_clearance, _stance_mask = progress.gait_targets(info["phase"], cfg.gait.duty, cfg.gait.swing_height)
+    # Speed-scaled lift (see gait.lift in default_config). v_full is plain
+    # config, so v_full 0 passes the clock target and the Python-float
+    # apex_target through untouched.
+    apex_target = rcfg.apex_target
+    lift = cfg.gait.get("lift")
+    if lift is not None and lift.v_full:
+        ls = progress.lift_scale(cmd, float(lift.v_full), float(lift.min_frac))
+        target_clearance = target_clearance * ls[..., None]
+        apex_target = rcfg.apex_target * ls[..., None]
     foot_vel = r["foot_linvel"]
 
     fall = signals.fall(r["base_height"], gravity[..., 2], cfg.fall.min_height, cfg.fall.max_tilt_gz)
@@ -142,7 +183,7 @@ def compute_rewards(r, info, action, first_contact, contact, consts, cfg):
         # a penalty, and gating a penalty on the tracking kernel would
         # relax it exactly when tracking is failing, which is when feet
         # are being slammed into the floor.
-        "feet_apex": terms.feet_apex(info["swing_apex"], first_contact, rcfg.apex_target)
+        "feet_apex": terms.feet_apex(info["swing_apex"], first_contact, apex_target)
         * moving
         * shape_gate,
         "feet_landing": terms.feet_landing(foot_vel[..., 2], foot_clearance, rcfg.glide_height)
@@ -222,13 +263,87 @@ def compute_rewards(r, info, action, first_contact, contact, consts, cfg):
             * shape_gate
         )
     if consts.feet_apex_min_on:
-        # In the shape_gate set for feet_apex's reason.
+        # In the shape_gate set for feet_apex's reason. It keeps the
+        # unscaled rcfg.apex_target. Of the terms this module has, the
+        # PR's recipe scaled feet_phase and feet_apex only.
         rewards["feet_apex_min"] = (
             terms.feet_apex_min(info["swing_apex"], info["last_apex"], first_contact, rcfg.apex_target)
             * moving
             * shape_gate
         )
-    return rewards, fall
+
+    # Landing and lean terms, gated by consts like the style terms, after
+    # them for the same order reason. All four pay only while the command
+    # walks forward (progress.fwd_mask).
+    land = None
+    if consts.step_length_on or consts.foot_reach_on or consts.knee_extend_on or consts.forward_lean_on:
+        fwd = progress.fwd_mask(cmd, consts.deadband)
+        vx = cmd[..., 0]
+        last = info.get("land_frac")
+        foot_x = r["foot_pos_base"][..., 0] if "foot_pos_base" in r else None
+        nf = consts.n_feet
+
+        def last_slot(term, p):
+            return last[..., LANDING_SLOTS.index(term)] if p.pair_min else None
+
+        def no_frac():
+            return xp.zeros(batch + (nf,), dtype=xp.float32, device=device)
+
+        step_frac = reach_frac = td_ext = None
+        if consts.step_length_on:
+            p = rcfg.step_length
+            if p.target == "clock":
+                freq = progress.clock_freq(progress.cmd_speed(cmd), consts.cmd_vmax, cfg.gait.freq)
+                target = vx / (2.0 * freq)
+            else:
+                target = float(p.target_a) + float(p.target_b) * xp.clip(vx, 0.0, None)
+            pay, step_frac = terms.step_length(
+                foot_x, first_contact, target, float(p.power), bool(p.pair_min), last_slot("step_length", p)
+            )
+            rewards["step_length"] = pay * fwd
+        if consts.foot_reach_on:
+            p = rcfg.foot_reach
+            target = float(p.target_a) + float(p.target_b) * xp.clip(vx, 0.0, None)
+            pay, reach_frac = terms.foot_reach(
+                foot_x,
+                first_contact,
+                target,
+                float(p.x_min),
+                float(p.power),
+                bool(p.pair_min),
+                last_slot("foot_reach", p),
+            )
+            rewards["foot_reach"] = pay * fwd
+        if consts.knee_extend_on:
+            p = rcfg.knee_extend
+            # feet_air_time is the pre-update value: the completed swing's
+            # time on the landing step, which the touchdown gate reads.
+            pay, td_ext = terms.knee_extend(
+                qpos_act[..., consts.knee_qidx],
+                foot_x,
+                contact,
+                first_contact,
+                info["feet_air_time"],
+                float(p.flex_lo),
+                float(p.flex_hi),
+                float(p.x_split),
+                float(p.td_min_air),
+                float(p.td_mult),
+                bool(p.pair_min),
+                last_slot("knee_extend", p),
+            )
+            rewards["knee_extend"] = pay * fwd
+        if consts.forward_lean_on:
+            p = rcfg.forward_lean
+            rewards["forward_lean"] = (
+                terms.forward_lean(gravity[..., 0], vx, float(p.max_deg), float(p.vx_max), float(p.sigma)) * fwd
+            )
+        if consts.land_frac_on:
+            slots = {"foot_reach": reach_frac, "step_length": step_frac, "knee_extend": td_ext}
+            land = xp.stack(
+                [slots[t] if slots[t] is not None else no_frac() for t in LANDING_SLOTS], axis=-1
+            )
+    return rewards, fall, land
 
 
 def total_reward(rewards, scales, dt):

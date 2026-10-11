@@ -28,8 +28,8 @@ Lessons that cost time:
 - A strong per-event bonus invites tapping exploits; gate on real steps.
 - exp kernels narrower than the current error give no gradient; use linear ones.
 - A constant side-dependent actor input (frozen clock phase) lets the policy
-  specialise one leg. The env still emits the legacy cos/sin for a frozen
-  clock.
+  specialise one leg. `gait.frozen_phase_obs` picks the frozen-clock
+  observation: `"cos_sin"` (legacy, the default) or `"zeros"`.
 - Turning the gait clock off caused shuffling; stepping penalties and command
   ramps collapsed slow walking into standing (use the deadband instead).
 - Measure achieved speed on every video; it went unnoticed at 48 % for a while.

@@ -88,6 +88,20 @@ def armed(demand, steps_since_cmd, dt, grace_sec, deadband=SPEED_DEADBAND):
     return (demand > deadband) & (steps_since_cmd * dt >= grace_sec)
 
 
+# The forward command below which the landing and lean terms switch off.
+# fwd_mask raises it to the deadband when the deadband is larger.
+FWD_MIN_VX = 0.1
+
+
+def fwd_mask(command, deadband):
+    """Whether the command asks to walk forward: vx above max(FWD_MIN_VX, deadband).
+
+    The landing terms (step_length, foot_reach, knee_extend) and forward_lean
+    pay only under this mask. `deadband` is a Python float.
+    """
+    return command[..., 0] > max(FWD_MIN_VX, deadband)
+
+
 # Per-foot gait clock offset, robot_spec.foot_sites order: antiphase (one
 # foot swings while the other stances), the only sensible clock for a biped:
 # a quadruped's walk/trot blend has no two-foot analogue.
@@ -100,6 +114,15 @@ def cmd_speed(command):
     return xp.linalg.vector_norm(command[..., :2], axis=-1) + YAW_SPEED_WEIGHT * xp.abs(
         command[..., 2]
     )
+
+
+def lift_scale(command, v_full, min_frac):
+    """Commanded speed as a fraction of `v_full`, clipped into [min_frac, 1].
+
+    `v_full` and `min_frac` are Python floats.
+    """
+    xp = xp_of(command)
+    return xp.clip(cmd_speed(command) / v_full, min_frac, 1.0)
 
 
 def clock_freq(speed, vmax, freq):
@@ -147,8 +170,14 @@ def gait_targets(phase, duty, swing_height):
 # enabling none leaves the base sampler untouched. The 0x100 offset is
 # explained at jax_command_draws in joystick.py.
 #
-# The index table is fixed. Index 0 is reserved and 6 up are free for future
-# draws. A new draw takes the next free index and never reuses one.
+# The index table is fixed. Index 0 is reserved, 1-6 are taken and 7 up are
+# free for future draws. A new draw takes the next free index and never reuses
+# one.
+#
+# straight's place in the order does not change the result. With pure_wz or
+# pure_vy it gives zeros in either order, because each zeroes what the other
+# keeps. With pure_slow, pure_fast or pure_back it commutes, because their
+# output already has vy = wz = 0.
 #
 # Every draw is gated on its probability, pure_wz and pure_vy included. A draw
 # that took its key out of the base split unconditionally would shift every
@@ -159,6 +188,7 @@ COMMAND_DRAWS = (
     ("pure_slow", 3, "pure_slow_prob", "slow_vx"),
     ("pure_fast", 4, "pure_fast_prob", "fast_vx"),
     ("pure_back", 5, "pure_back_prob", "back_vx"),
+    ("straight", 6, "straight_prob", None),
 )
 
 
@@ -167,10 +197,10 @@ def command_from_draws(draws, command_cfg):
 
     `draws` maps vx, vy, wz and zero_on, plus `<name>_on` (and `<name>_vx` for
     the ranged draws) for each enabled pure draw, to arrays of one batch shape.
-    Precedence is wz, vy, slow, fast, back, then standing still last. A draw
-    whose probability key is absent or 0 is skipped, so it needs no draws.
-    pure_wz keeps the drawn wz and pure_vy the drawn vy. The other axes are
-    +0.0.
+    Precedence is wz, vy, slow, fast, back, straight, then standing still
+    last. A draw whose probability key is absent or 0 is skipped, so it needs
+    no draws. pure_wz keeps the drawn wz and pure_vy the drawn vy. straight
+    keeps the vx left by the earlier draws. The other axes are +0.0.
     """
     xp = xp_of(draws["vx"])
     vel = xp.stack([draws["vx"], draws["vy"], draws["wz"]], axis=-1)
@@ -182,7 +212,42 @@ def command_from_draws(draws, command_cfg):
             clean = xp.stack([z, z, vel[..., 2]], axis=-1)
         elif name == "pure_vy":
             clean = xp.stack([z, vel[..., 1], z], axis=-1)
+        elif name == "straight":
+            clean = xp.stack([vel[..., 0], z, z], axis=-1)
         else:
             clean = xp.stack([draws[f"{name}_vx"], z, z], axis=-1)
         vel = xp.where(draws[f"{name}_on"][..., None], clean, vel)
     return xp.where(draws["zero_on"][..., None], xp.zeros_like(vel), vel)
+
+
+def ramp_on(command_cfg) -> bool:
+    """Whether the command ramp is on: either rate in command.ramp is > 0.
+
+    It reads config only. A partial config with no command block or no ramp
+    block reads as off.
+    """
+    if command_cfg is None or "ramp" not in command_cfg:
+        return False
+    ramp = command_cfg["ramp"]
+    return float(ramp.get("lin", 0.0)) > 0.0 or float(ramp.get("yaw", 0.0)) > 0.0
+
+
+def ramp_command(command, target, lin, yaw, dt):
+    """Move the served command toward target by at most rate * dt per axis.
+
+    `lin` is the rate limit on vx and vy in m/s^2. `yaw` is the rate limit on
+    wz in rad/s^2. `dt` is the control step in seconds. All three are Python
+    floats, so the clip bounds are Python floats too. Once the command reaches
+    the target it stays there.
+    """
+    xp = xp_of(command, target)
+    d = target - command
+    step = xp.stack(
+        [
+            xp.clip(d[..., 0], -lin * dt, lin * dt),
+            xp.clip(d[..., 1], -lin * dt, lin * dt),
+            xp.clip(d[..., 2], -yaw * dt, yaw * dt),
+        ],
+        axis=-1,
+    )
+    return command + step

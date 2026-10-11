@@ -22,6 +22,11 @@ inputs, (N,) for (N, k) inputs. Masking by task context (e.g. "* moving", "*
 ~moving") is the caller's job, not this library's: "moving" is a
 joystick-task concept, not a property of the reward math itself.
 
+The three landing terms (step_length, foot_reach, knee_extend) return a pair
+(pay, frac). pay has one value per world. frac is the per-foot fraction
+before the pair-min, shape (..., F). The caller records frac into its
+land_frac state and passes the previous one back as last_frac.
+
 This is a shared module: it imports only array_api_compat, numpy and other
 shared modules, and takes its array namespace from the data arguments
 (envs.constants.xp_of). The same code runs on JAX, Torch and NumPy. The op
@@ -36,7 +41,14 @@ forms below keep the JAX bits and also run under array_api_compat.torch:
 
 from __future__ import annotations
 
+import math
+
 from humanoid_lab.envs.constants import xp_of
+
+# Floors on the landing targets, in metres. A zero or tiny commanded step
+# would otherwise divide by zero or pay a full fraction for any step.
+STEP_LENGTH_MIN_TARGET = 0.05
+FOOT_REACH_MIN_TARGET = 0.02
 
 
 def tracking_err_lin(cmd_xy, linvel_xy):
@@ -425,3 +437,126 @@ def _pair_rel_sq(d, floor: float):
     armed = (d[..., 0] > 0.0) & (d[..., 1] > 0.0)
     mean = xp.clip(0.5 * (d[..., 0] + d[..., 1]), floor, None)
     return xp.square((d[..., 0] - d[..., 1]) / mean) * armed, armed
+
+
+# -- landing and lean terms ported from the Torch+MJWarp runner
+# (wtrain/wenv.py). Masking by the forward command (progress.fwd_mask) is the
+# caller's job.
+
+
+def _two_feet(name, x):
+    if x.shape[-1] != 2:
+        raise ValueError(f"{name} needs two feet, got {x.shape[-1]}")
+
+
+def _pair_min(frac, pair_min: bool, last_frac):
+    """frac, or the lower of frac and the OTHER foot's last_frac.
+
+    The pair-min exists so one leg's good step cannot carry a shuffling
+    partner. With it on, a landing pays no more than the other foot's last
+    landing earned.
+    """
+    if not pair_min:
+        return frac
+    xp = xp_of(frac, last_frac)
+    return xp.minimum(frac, xp.flip(last_frac, axis=-1))
+
+
+def step_length(foot_x, first_contact, target, power: float = 1.0, pair_min: bool = False, last_frac=None):
+    """Pay each landing for how far the landing foot is ahead of the other foot.
+
+    `foot_x` is each foot's x in the base frame, shape (..., 2). `target` is
+    the step length to aim for, one value per world. It is floored at
+    STEP_LENGTH_MIN_TARGET. The per-foot fraction is clip(ahead / target, 0,
+    1) ** power. A foot landing behind the other one earns 0. Power 1 pays the
+    same per second at any cadence for a given speed. Power 2 makes the pay
+    per second grow with the step itself.
+
+    Returns (pay, frac). pay sums the paid fraction over the feet landing this
+    step. frac is the fraction before the pair-min.
+    """
+    xp = xp_of(foot_x, first_contact, target, last_frac)
+    _two_feet("step_length", foot_x)
+    ahead = foot_x - xp.flip(foot_x, axis=-1)
+    t = xp.clip(target, STEP_LENGTH_MIN_TARGET, None)
+    frac = xp.clip(ahead / t[..., None], 0.0, 1.0) ** power
+    paid = _pair_min(frac, pair_min, last_frac)
+    return xp.sum(paid * first_contact, axis=-1), frac
+
+
+def foot_reach(
+    foot_x, first_contact, target, x_min: float = 0.0, power: float = 2.0, pair_min: bool = False, last_frac=None
+):
+    """Pay each landing for how far ahead of the base the foot lands.
+
+    `foot_x` is each foot's x in the base frame, shape (..., 2). `target` is
+    the reach to aim for, one value per world. It is floored at
+    FOOT_REACH_MIN_TARGET. The per-foot fraction is clip((foot_x - x_min) /
+    (target - x_min), 0, 1) ** power. A foot landing at x_min or further back
+    earns 0.
+
+    Returns (pay, frac), as step_length does. Only the pair-min needs two
+    feet. The term refuses any other foot count anyway, like its caller.
+    """
+    xp = xp_of(foot_x, first_contact, target, last_frac)
+    _two_feet("foot_reach", foot_x)
+    t = xp.clip(target, FOOT_REACH_MIN_TARGET, None)
+    frac = xp.clip((foot_x - x_min) / (t[..., None] - x_min), 0.0, 1.0) ** power
+    paid = _pair_min(frac, pair_min, last_frac)
+    return xp.sum(paid * first_contact, axis=-1), frac
+
+
+def knee_extend(
+    knee_q,
+    foot_x,
+    contact,
+    first_contact,
+    air_time,
+    flex_lo: float,
+    flex_hi: float,
+    x_split: float = 0.0,
+    td_min_air: float = 0.2,
+    td_mult: float = 0.0,
+    pair_min: bool = False,
+    last_frac=None,
+):
+    """Pay an open knee in late swing, plus an optional bonus at touchdown.
+
+    `knee_q` is each foot's knee angle, in foot order, shape (..., F). The
+    extension is 1 at flex_lo or straighter and 0 at flex_hi. It is clipped to
+    [0, 1]. Late swing means the foot is in the air and ahead of x_split in
+    the base frame. Paying extension there makes the foot reach forward by
+    opening the knee instead of driving the thigh.
+
+    The touchdown bonus pays td_mult times the extension on the landing step.
+    Only a real step earns it: a swing of at least td_min_air seconds that
+    lands ahead of the base. Without that gate a foot tapping in place farmed
+    the bonus.
+
+    Returns (pay, td_ext). td_ext is the touchdown extension before the
+    pair-min. A tap or a step landing behind records 0.
+    """
+    xp = xp_of(knee_q, foot_x, contact, first_contact, air_time, last_frac)
+    if pair_min:
+        _two_feet("knee_extend", knee_q)
+    ext = xp.clip((flex_hi - knee_q) / (flex_hi - flex_lo), 0.0, 1.0)
+    late = (~contact) & (foot_x > x_split)
+    real_td = first_contact & (air_time >= td_min_air) & (foot_x > 0.0)
+    td_ext = ext * real_td
+    paid = _pair_min(td_ext, pair_min, last_frac)
+    pay = xp.sum(ext * late, axis=-1) + td_mult * xp.sum(paid * first_contact, axis=-1)
+    return pay, td_ext
+
+
+def forward_lean(gravity_x, cmd_vx, max_deg: float, vx_max: float, sigma: float):
+    """Pay a forward lean that grows with the forward command.
+
+    `gravity_x` is the x of the body-frame gravity direction. It reads
+    +sin(pitch) for a nose-down lean. The target is
+    sin(radians(max_deg) * frac), with frac = clip(cmd_vx / vx_max, 0, 1).
+    The pay is exp(-(gravity_x - target)^2 / sigma), 1 at the target.
+    """
+    xp = xp_of(gravity_x, cmd_vx)
+    frac = xp.clip(cmd_vx / vx_max, 0.0, 1.0)
+    target = xp.sin(math.radians(max_deg) * frac)
+    return xp.exp(-xp.square(gravity_x - target) / sigma)

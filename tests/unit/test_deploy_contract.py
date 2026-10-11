@@ -64,6 +64,7 @@ def test_the_headline_classifications_are_the_documented_ones():
         "command.wz",
         "gait.freq",
         "command.deadband",
+        "gait.frozen_phase_obs",
     ):
         assert key in dc.CONSUMED_KEYS, f"{key} should reach the robot"
     for key in (
@@ -80,6 +81,11 @@ def test_the_headline_classifications_are_the_documented_ones():
         "gait.duty",
         "command.zero_prob",
         "command.pure_back_prob",
+        "command.straight_prob",
+        "command.ramp.lin",
+        "command.ramp.yaw",
+        "gait.lift.v_full",
+        "gait.lift.min_frac",
     ):
         assert key in dc.TRAINING_ONLY_KEYS, f"{key} should stay in training"
     for key in ("reward.scales.tracking_lin_vel", "reward.tracking_product"):

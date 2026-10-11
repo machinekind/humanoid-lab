@@ -10,7 +10,8 @@ recorded in the written json under `env_overrides`.
 Shape: load_checkpoint_policy -> rollout -> scenario_result -> run_battery.
 The env is rebuilt through this repo's env contract (registry.make_env with
 robot_dir/preset_name/task.env read back from run.json's hydra_config,
-mirroring sizing/collect.py's _load_run/make_env_for_run pattern).
+the same reconstruction as sizing/collect.py's make_env_for_run). run.json
+is read through run_record.load_run, which also migrates a legacy Torch run.
 
 There is no diagonal or lateral foot-pair correlation, no per-leg-joint-group
 splay or saturation, and no commanded-height concept: those are quadruped
@@ -385,27 +386,6 @@ def battery_scenarios(dt: float, command) -> dict:
 # -- checkpoint rollout (needs env + jax + a trained policy) ---------------
 
 
-def _load_run(run_dir: Path) -> dict:
-    run_json = run_dir / "run.json"
-    if not run_json.exists():
-        raise FileNotFoundError(
-            f"{run_json} not found -- is {run_dir} a completed run.sh train/smoke output dir?"
-        )
-    run = json.loads(run_json.read_text())
-
-    missing = [k for k in ("task", "hydra_config", "checkpoint_dir", "ppo_config") if k not in run]
-    if missing:
-        raise ValueError(f"{run_json} is missing required key(s) {missing}")
-
-    hydra = run["hydra_config"]
-    for section, key in (("robot", "dir"), ("actuators", "name")):
-        if section not in hydra or key not in hydra[section]:
-            raise ValueError(
-                f"{run_json}: hydra_config.{section}.{key} missing -- cannot rebuild the env"
-            )
-    return run
-
-
 def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
     ckpt_dir = Path(run["checkpoint_dir"])
     if not ckpt_dir.exists():
@@ -445,11 +425,19 @@ def _measurement_env_overrides(run: dict) -> dict:
 
     The symmetry augmentation is off too: a mirrored env would hand the
     policy a mirrored world, and every signal the battery records reads the
-    real one. Off, the env presents the real world to every scenario."""
+    real one. Off, the env presents the real world to every scenario.
+
+    The command ramp is off too. rollout() writes the scripted command into
+    info["command"], and a ramp would slew it back toward info["cmd_target"],
+    the random command drawn at reset."""
     hydra = run.get("hydra_config") or {}
     overrides = dict((hydra.get("task") or {}).get("env") or {})
     overrides["push"] = {**(overrides.get("push") or {}), "enable": False}
-    overrides["command"] = {**(overrides.get("command") or {}), "resample_steps": 10_000_000}
+    overrides["command"] = {
+        **(overrides.get("command") or {}),
+        "resample_steps": 10_000_000,
+        "ramp": {"lin": 0.0, "yaw": 0.0},
+    }
     overrides["no_progress"] = {**(overrides.get("no_progress") or {}), "enable": False}
     overrides["symmetry"] = {**(overrides.get("symmetry") or {}), "enable": False}
     return overrides
@@ -494,11 +482,11 @@ def load_checkpoint_policy(run_dir: Path, extra_env_overrides: dict | None = Non
 
     Returns (run, env, ckpt_path, inf) where inf = jax.jit(policy).
     """
-    from humanoid_lab import paths
+    from humanoid_lab import paths, run_record
     from humanoid_lab.policy_io import load_policy
     from humanoid_lab.registry import make_env
 
-    run = _load_run(run_dir)
+    run = run_record.load_run(run_dir)
     hydra = run["hydra_config"]
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]

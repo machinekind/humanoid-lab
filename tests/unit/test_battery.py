@@ -576,6 +576,26 @@ def test_mirroring_is_off_even_when_the_run_never_mentioned_it():
     assert overrides["symmetry"]["enable"] is False
 
 
+def test_a_run_trained_with_the_command_ramp_measures_with_it_off():
+    """rollout() writes the scripted command into info["command"]. A ramp
+    would slew it toward the random target drawn at reset. The run's other
+    command keys stay."""
+    overrides = _measurement_env_overrides(
+        _run({"command": {"ramp": {"lin": 0.5, "yaw": 1.0}, "zero_prob": 0.3, "vx": [-0.5, 1.0]}})
+    )
+
+    assert overrides["command"]["ramp"] == {"lin": 0.0, "yaw": 0.0}
+    assert overrides["command"]["zero_prob"] == 0.3
+    assert overrides["command"]["vx"] == [-0.5, 1.0]
+    assert overrides["command"]["resample_steps"] == 10_000_000
+
+
+def test_the_ramp_is_off_even_when_the_run_never_mentioned_it():
+    overrides = _measurement_env_overrides(_run({}))
+
+    assert overrides["command"]["ramp"] == {"lin": 0.0, "yaw": 0.0}
+
+
 # -- the CLI -----------------------------------------------------------------
 #
 # main() with run_battery stubbed out: the argparse wiring and the write

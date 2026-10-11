@@ -32,7 +32,7 @@ from humanoid_lab.envs import gait_state, progress, push, signals, symmetry
 from humanoid_lab.envs.base import HumanoidEnv
 from humanoid_lab.envs.constants import TaskConstants
 from humanoid_lab.envs.gait_state import gait_dur_ema_on  # also re-exported
-from humanoid_lab.rewards import compose
+from humanoid_lab.rewards import compose, terms
 
 
 def jax_command_draws(rng, command_cfg):
@@ -57,7 +57,8 @@ def jax_command_draws(rng, command_cfg):
     value. tests/integration/test_pure_command_draws.py pins this.
 
     r_b is unused by pure_wz and pure_vy: they keep the wz or vy the base draw
-    already made. The split still runs so all five draws have the same shape.
+    already made. straight has no range either. The split still runs so every
+    draw has the same shape.
     Giving them a range later can take r_b without moving r_a's stream.
     """
     c = command_cfg
@@ -302,6 +303,16 @@ def default_config() -> config_dict.ConfigDict:
             # refused by check_pure_draw_ranges below.
             pure_back_prob=0.0,
             back_vx=(-0.8, -0.2),
+            # Keep the drawn vx, zero vy and wz: straight walking. Draw
+            # index 6 (see progress.COMMAND_DRAWS).
+            straight_prob=0.0,
+            # Command ramp, a training curriculum. Rates in m/s^2 on vx and
+            # vy (lin) and rad/s^2 on wz (yaw). Both 0 is off. When on, both
+            # must be > 0 (check_command_ramp). At reset the command starts
+            # at 0 and slews toward the sampled info['cmd_target']. A respawn
+            # keeps the command. The battery, video, export and sizing envs
+            # force it off.
+            ramp=config_dict.create(lin=0.0, yaw=0.0),
         ),
         # Untuned starting values; re-derive per robot. Base kick: planar,
         # uniform direction, magnitude `vel`, every `interval_steps`.
@@ -369,6 +380,17 @@ def default_config() -> config_dict.ConfigDict:
             swing_height=0.08,  # target peak foot clearance, m
             duty=0.5,  # fixed stance fraction (biped: no walk/trot blend)
             air_time_cap=0.0,  # 0 = uncapped
+            # Speed-scaled lift. v_full 0 is off. When on,
+            # clip(cmd_speed / v_full, min_frac, 1) scales the feet_phase
+            # clearance target and the feet_apex target. A slow command then
+            # asks for small steps instead of a high-knee march in place.
+            lift=config_dict.create(v_full=0.0, min_frac=1.0),
+            # The phase observation of a frozen clock. It applies only when
+            # freq is (0, 0). "cos_sin" is the legacy observation: cos/sin of
+            # the frozen leg phases, [1, -1, 0, 0] for two feet. "zeros" emits
+            # zeros(2F), so a frozen clock gives no left/right marker. The key
+            # ships in the deploy contract as gait_clock.phase_obs.
+            frozen_phase_obs="cos_sin",
         ),
         reward=config_dict.create(
             tracking_sigma=0.25,
@@ -561,23 +583,71 @@ def default_config() -> config_dict.ConfigDict:
                 knee_stance=0.0,
                 gait_symmetry=0.0,
                 gait_symmetry_income=0.0,
+                # Landing and lean terms ported from the Torch+MJWarp
+                # runner, 0 = off. Gated like the style terms: at scale 0
+                # they add no info key, no reward/* metric and no reading.
+                # Their parameter blocks are below (step_length,
+                # foot_reach, knee_extend, forward_lean).
+                step_length=0.0,
+                foot_reach=0.0,
+                knee_extend=0.0,
+                forward_lean=0.0,
             ),
+            # Parameters of the four terms above. All four pay only while
+            # the command walks forward: cmd_vx > max(FWD_MIN_VX,
+            # command.deadband) (see progress.fwd_mask). A required
+            # parameter defaults to None, and the env refuses it at
+            # construction when its scale is nonzero.
+            #
+            # pair_min (the three landing terms): a landing pays the lower
+            # of its own fraction and the other foot's last landing
+            # fraction. One leg's good step then cannot carry a shuffling
+            # partner. The env keeps info["land_frac"] only while some
+            # landing term has it on.
+            #
+            # step_length pays each landing for how far the landing foot
+            # ends up ahead of the other foot. The target is
+            # cmd_vx / (2 * freq) for "clock", with freq the gait clock's
+            # frequency at the commanded speed. It is target_a + target_b
+            # * max(vx, 0) for "linear". Either target is clamped to at
+            # least 0.05 m.
+            step_length=config_dict.create(target="clock", target_a=None, target_b=None, power=1.0, pair_min=False),
+            # foot_reach pays each landing for how far ahead of the base the
+            # foot lands, from x_min (pays 0) up to the target (pays 1). The
+            # target is target_a + target_b * max(vx, 0), clamped to at least
+            # 0.02 m. x_min must stay below that floor.
+            foot_reach=config_dict.create(target_a=None, target_b=None, power=2.0, x_min=0.0, pair_min=False),
+            # knee_extend pays knee extension in late swing, when the foot is
+            # in the air and ahead of x_split. Extension is 1 at flex_lo or
+            # straighter and 0 at flex_hi (rad). A real touchdown (a swing of
+            # at least td_min_air s that lands ahead of the base) adds
+            # td_mult times the extension. Needs a 'knee' joint group.
+            knee_extend=config_dict.create(
+                flex_lo=None, flex_hi=None, x_split=0.0, td_min_air=0.2, td_mult=0.0, pair_min=False
+            ),
+            # forward_lean pays a body pitch near sin(radians(max_deg) *
+            # clip(vx / vx_max, 0, 1)), with a Gaussian of width sigma on the
+            # gravity x component.
+            forward_lean=config_dict.create(max_deg=None, vx_max=None, sigma=None),
         ),
     )
 
 
-# Scales keys whose reward is config-gated on a nonzero scale (see the
-# scales comment above): reset() seeds their reward/* metrics only when
-# armed, matching _compute_rewards, which computes them only when armed.
-# feet_apex_min's input, info["last_apex"], is carried at every scale.
+# Style terms: scales keys whose reward is config-gated on a nonzero scale
+# (see the scales comment above). feet_apex_min's input, info["last_apex"],
+# is carried at every scale.
 _STYLE_TERMS = ("knee_stance", "gait_symmetry", "gait_symmetry_income", "feet_apex_min")
+# Every config-gated scales key: the style terms plus the landing and lean
+# terms (compose.KEPT_TERMS). reset() seeds their reward/* metrics only when
+# armed, matching _compute_rewards, which computes them only when armed.
+_GATED_TERMS = _STYLE_TERMS + compose.KEPT_TERMS
 
 
 def _reward_metric_names(scales) -> list[str]:
     """The reward/* metric keys reset() seeds for these reward scales: every
-    scales key, less the style terms whose scale is 0. _compute_rewards
+    scales key, less the gated terms whose scale is 0. _compute_rewards
     emits exactly this set, which the scan-carry parity in reset() needs."""
-    return [f"reward/{k}" for k in scales if k not in _STYLE_TERMS or scales[k]]
+    return [f"reward/{k}" for k in scales if k not in _GATED_TERMS or scales[k]]
 
 
 def check_gait_symmetry_cap(reward) -> None:
@@ -636,6 +706,98 @@ def check_pure_draw_ranges(command) -> None:
             )
 
 
+def check_command_ramp(command) -> None:
+    """Refuse a command ramp with a negative rate or with only one rate set.
+
+    The ramp is off with both rates at 0 and on with both > 0. A ramp on one
+    axis group only would serve the other group's command at once, which is
+    not a ramp. A config with no ramp block passes.
+    """
+    ramp = command.get("ramp")
+    if ramp is None:
+        return
+    lin = float(ramp.get("lin", 0.0))
+    yaw = float(ramp.get("yaw", 0.0))
+    if lin < 0.0 or yaw < 0.0 or (lin > 0.0) != (yaw > 0.0):
+        raise ValueError(
+            f"command.ramp.lin = {lin} and command.ramp.yaw = {yaw}: set both "
+            f"to 0 to turn the ramp off, or both > 0 to turn it on"
+        )
+
+
+FROZEN_PHASE_OBS = ("cos_sin", "zeros")
+
+
+def check_frozen_phase_obs(gait) -> None:
+    """Refuse an unknown gait.frozen_phase_obs."""
+    mode = gait.get("frozen_phase_obs", "cos_sin")
+    if mode not in FROZEN_PHASE_OBS:
+        raise ValueError(
+            f"gait.frozen_phase_obs = {mode!r}: use one of {FROZEN_PHASE_OBS}"
+        )
+
+
+def check_kept_terms(reward, gait, n_feet) -> None:
+    """Refuse a landing or lean term whose configuration cannot run.
+
+    Only terms with a nonzero scale are checked, so the shipped all-off
+    defaults validate nothing. The knee group check for knee_extend lives in
+    Joystick._foot_ordered_group_qidx, which needs the robot spec.
+    """
+    scales = reward.scales
+
+    def on(term):
+        return bool(scales.get(term, 0.0))
+
+    def require(term, *keys):
+        block = reward.get(term) or {}
+        missing = [k for k in keys if block.get(k) is None]
+        if missing:
+            listed = ", ".join(f"reward.{term}.{k} = None" for k in missing)
+            raise ValueError(
+                f"reward.scales.{term} = {float(scales[term])} needs "
+                + " and ".join(f"reward.{term}.{k}" for k in missing)
+                + f" to be set; got {listed}"
+            )
+
+    if on("step_length"):
+        target = reward.step_length.get("target", "clock")
+        if target not in ("clock", "linear"):
+            raise ValueError(
+                f"reward.step_length.target = {target!r}: use \"clock\" or \"linear\""
+            )
+        if target == "linear":
+            require("step_length", "target_a", "target_b")
+        elif float(gait.freq[0]) == 0.0:
+            # The clock runs at freq[0] at rest, so freq[0] = 0 (all-zero
+            # freq included) makes the target 0/0 at a zero command.
+            raise ValueError(
+                f"reward.step_length.target = \"clock\" with gait.freq = {tuple(gait.freq)}: the "
+                "clock target is cmd_vx / (2 * freq), and freq is gait.freq[0] at a zero command, "
+                "so 0/0 gives NaN there. Set gait.freq[0] > 0, or use "
+                "reward.step_length.target = \"linear\""
+            )
+    if on("foot_reach"):
+        require("foot_reach", "target_a", "target_b")
+        x_min = float(reward.foot_reach.get("x_min", 0.0))
+        if x_min >= terms.FOOT_REACH_MIN_TARGET:
+            raise ValueError(
+                f"reward.foot_reach.x_min = {x_min} must be below the target floor "
+                f"{terms.FOOT_REACH_MIN_TARGET}: the fraction divides by target - x_min, "
+                "which would be zero or negative"
+            )
+    if on("knee_extend"):
+        require("knee_extend", "flex_lo", "flex_hi")
+    if on("forward_lean"):
+        require("forward_lean", "max_deg", "vx_max", "sigma")
+    for term in ("step_length", "foot_reach", "knee_extend"):
+        if on(term) and n_feet != 2:
+            raise ValueError(
+                f"reward.scales.{term} = {float(scales[term])} pairs the two feet and needs "
+                f"exactly two; this robot has {n_feet}"
+            )
+
+
 class Joystick(HumanoidEnv):
     def __init__(self, robot_dir, preset_name, config=None, config_overrides=None, actuator_overrides=None):
         super().__init__(
@@ -647,6 +809,7 @@ class Joystick(HumanoidEnv):
         # than the shipped back_vx range), so the defaults alone do not
         # settle it.
         check_pure_draw_ranges(self._config.command)
+        check_command_ramp(self._config.command)
 
         self._torque_cap = jp.array(self._mj_model.actuator_forcerange[:, 1])
         # Orientation tolerance cone as sin^2 of its half-angle, so it
@@ -695,8 +858,18 @@ class Joystick(HumanoidEnv):
         # The swing/stance duration EMAs both symmetry terms read.
         self._gait_dur_ema_on = gait_dur_ema_on(scales)
         check_gait_symmetry_cap(self._config.reward)
-        if self._knee_stance_on:
-            self._knee_qidx = self._foot_ordered_group_qidx("knee")
+        # Landing and lean term gates (compose.KEPT_TERMS), static like the
+        # style gates above.
+        self._step_length_on = bool(scales.get("step_length", 0.0))
+        self._foot_reach_on = bool(scales.get("foot_reach", 0.0))
+        self._knee_extend_on = bool(scales.get("knee_extend", 0.0))
+        self._forward_lean_on = bool(scales.get("forward_lean", 0.0))
+        self._land_frac_on = compose.land_frac_on(self._config.reward)
+        check_kept_terms(self._config.reward, self._config.gait, self._n_feet)
+        if self._knee_stance_on or self._knee_extend_on:
+            self._knee_qidx = self._foot_ordered_group_qidx(
+                "knee", "knee_stance" if self._knee_stance_on else "knee_extend"
+            )
 
         c = self._config.command
         self._cmd_vmax = self._cmd_speed(jp.array([max(abs(c.vx[0]), abs(c.vx[1])), 0.0, 0.0]))
@@ -721,6 +894,13 @@ class Joystick(HumanoidEnv):
         self._heading_obs = "heading_err" in (
             list(self._config.obs.state) + list(self._config.obs.privileged)
         )
+
+        # A frozen clock (gait.freq (0, 0)) observes zeros for the phase when
+        # gait.frozen_phase_obs is "zeros". Any other config keeps cos/sin.
+        check_frozen_phase_obs(self._config.gait)
+        self._frozen_phase_zeros = (
+            not any(float(f) for f in self._config.gait.freq)
+        ) and self._config.gait.frozen_phase_obs == "zeros"
 
         # Built before the mirror maps: _init_mirror_maps evaluates the obs
         # catalog, which reads the constants.
@@ -781,8 +961,15 @@ class Joystick(HumanoidEnv):
             gait_symmetry_on=self._gait_symmetry_on,
             gait_symmetry_income_on=self._gait_symmetry_income_on,
             feet_apex_min_on=self._feet_apex_min_on,
+            step_length_on=self._step_length_on,
+            foot_reach_on=self._foot_reach_on,
+            knee_extend_on=self._knee_extend_on,
+            forward_lean_on=self._forward_lean_on,
+            land_frac_on=self._land_frac_on,
+            frozen_phase_zeros=self._frozen_phase_zeros,
             naconmax_per_env=self._naconmax_per_env,
             njmax=self._njmax,
+            root_body=self._root_body,
         )
 
     def _init_mirror_maps(self):
@@ -849,11 +1036,12 @@ class Joystick(HumanoidEnv):
                 weights[joint_index[name]] = float(weight)
         return jp.array(weights)
 
-    def _foot_ordered_group_qidx(self, group: str):
+    def _foot_ordered_group_qidx(self, group: str, term: str = "knee_stance"):
         """Indices into the actuated-joint arrays for `group`'s joints,
         reordered so entry i belongs to the same leg as foot_sites[i].
 
-        knee_stance multiplies per-knee flexion by per-foot contact, so the
+        `term` names the reward that asked, reward.scales.{term} in the
+        errors. knee_stance multiplies per-knee flexion by per-foot contact, so the
         two arrays must agree on which side is which. Group order is not
         guaranteed to match foot_sites order, so both are matched on their
         "left"/"right" name token; a robot whose names carry no side token
@@ -863,7 +1051,7 @@ class Joystick(HumanoidEnv):
         joints = rs.joint_groups.get(group, ())
         if len(joints) != len(rs.foot_sites):
             raise ValueError(
-                f"reward.scales.knee_stance needs a '{group}' joint group "
+                f"reward.scales.{term} needs a '{group}' joint group "
                 f"with one joint per foot; got {len(joints)} joints for "
                 f"{len(rs.foot_sites)} feet"
             )
@@ -873,7 +1061,7 @@ class Joystick(HumanoidEnv):
             if len(tokens) != 1:
                 raise ValueError(
                     f"cannot infer a side from '{name}': reward.scales."
-                    f"knee_stance pairs {group} joints with feet by their "
+                    f"{term} pairs {group} joints with feet by their "
                     "'left'/'right' name token"
                 )
             return tokens[0]
@@ -1060,6 +1248,9 @@ class Joystick(HumanoidEnv):
 
     # -- rewards --------------------------------------------------------------
     def _compute_rewards(self, data, info, action, first_contact, contact):
-        return compose.compute_rewards(
+        """(rewards, fall). gait_state.update records the land_frac that
+        compose.compute_rewards also returns."""
+        rewards, fall, _land = compose.compute_rewards(
             signals.readings(data, self._consts), info, action, first_contact, contact, self._consts, self._config
         )
+        return rewards, fall

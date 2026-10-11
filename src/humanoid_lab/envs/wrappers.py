@@ -1,10 +1,11 @@
 """Training-time env wrappers layered on mujoco_playground's.
 
-Three respawn reseeds live here, one per layer of envs/gait_state.py: the
+Four respawn reseeds live here, one per layer of envs/gait_state.py: the
 no-progress meter's, applied only when `no_progress.enable` is on, the
 per-foot gait trackers', applied only when a gait-symmetry scale is nonzero,
-and the heading reference's, applied only when `heading_err` is an
-observation. With none on, `make_wrap_env_fn` hands back playground's own
+the heading reference's, applied only when `heading_err` is an
+observation, and the landing record's, applied only when a landing term has
+pair_min on. With none on, `make_wrap_env_fn` hands back playground's own
 function unchanged, so such a run takes the identical training path it
 always did. The clearing itself is `gait_state.clear_done`.
 """
@@ -119,10 +120,33 @@ class HeadingReseedWrapper(playground_wrapper.Wrapper):
         return state.replace(info=info)
 
 
+class LandReseedWrapper(playground_wrapper.Wrapper):
+    """Restart the landing record whenever an episode respawns.
+
+    `info['land_frac']` holds each foot's last landing fractions, and the
+    pair-min of foot_reach, step_length and knee_extend pays a landing no more
+    than the other foot's last one. The same
+    `BraxAutoResetWrapper(full_reset=False)` behavior as above lets that
+    record survive the respawn, so the new episode's first landing would be
+    capped by the dead episode's last one. Zeroing it to reset()'s value makes
+    the respawn a fresh episode for the pair-min.
+
+    Like the classes above this sits outside the vmap, and `done` broadcasts
+    over the foot and slot axes.
+    """
+
+    def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+        state = self.env.step(state, action)
+        done = state.done > 0.0
+        info = gait_state.clear_done(state.info, done, ("land",), {})
+        return state.replace(info=info)
+
+
 _LAYER_WRAPPERS = {
     "progress": ProgressReseedWrapper,
     "gait": GaitReseedWrapper,
     "heading": HeadingReseedWrapper,
+    "land": LandReseedWrapper,
 }
 
 

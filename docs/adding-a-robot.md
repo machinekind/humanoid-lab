@@ -123,7 +123,9 @@ are optional. Which ones apply depends on the actuator model.
 `soft_limit_factor` and `action_scale_factor` default to `0.9` and `0.3` if
 omitted. A `pd` preset may set `action_scale_rad` instead: a flat per-joint
 action scale in radians that replaces the `action_scale_factor` formula
-(roboto_origin's `deploy_pd` pins upstream's 0.25). See
+(roboto_origin's `deploy_pd` pins upstream's 0.25). A group may set its
+own `action_scale_rad`. Under `pd` it beats the preset value for that
+group's joints, and other models ignore it. See
 `docs/configuration.md`'s preset section for how this file relates to
 `configs/actuators/<name>.yaml`.
 

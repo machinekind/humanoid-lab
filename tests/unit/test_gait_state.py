@@ -35,6 +35,8 @@ def _info(xp):
             info[k] = xp.asarray([[0.3, 0.4]] * N, dtype=f32)
     # a (N, M, K) leaf checks the mask broadcast over two trailing axes
     info["air_dur_ema"] = xp.ones((N, 2, 2), dtype=f32)
+    # (N, F, 3): each foot's last landing fractions, LANDING_SLOTS order
+    info["land_frac"] = xp.reshape(xp.arange(1, N * 2 * 3 + 1, dtype=f32), (N, 2, 3)) / 10.0
     return info
 
 
@@ -92,6 +94,17 @@ def test_heading_rewrites_yaw_ref_of_done_rows_only(xp):
     _check_untouched_except(before, after, {"yaw_ref"})
 
 
+def test_land_zeroes_land_frac_of_done_rows_only(xp):
+    before = _info(xp)
+    after = clear_done(before, _done(xp), ("land",), {})
+    b, a = np.asarray(before["land_frac"]), np.asarray(after["land_frac"])
+    assert b[0].any() and b[2].any()
+    _same(a[0], np.zeros((2, 3), dtype=np.float32))
+    _same(a[2], np.zeros((2, 3), dtype=np.float32))
+    _same(a[1], b[1])
+    _check_untouched_except(before, after, {"land_frac"})
+
+
 def test_no_flags_changes_nothing_and_does_not_mutate_the_input(xp):
     before = _info(xp)
     keys = set(before)
@@ -108,6 +121,8 @@ def test_all_flags_together(xp):
     _same(after["steps_since_cmd"], [0, 6, 0])
     _same(np.asarray(after["feet_air_time"])[1], np.asarray(before["feet_air_time"])[1])
     _same(np.asarray(after["feet_air_time"])[0], [0.0, 0.0])
+    _same(np.asarray(after["land_frac"])[2], np.zeros((2, 3), dtype=np.float32))
+    _same(np.asarray(after["land_frac"])[1], np.asarray(before["land_frac"])[1])
 
 
 def test_nothing_done_changes_nothing(xp):
@@ -157,12 +172,32 @@ def test_privileged_only_heading_err_still_counts():
     assert reseed_flags(cfg) == ("heading",)
 
 
+@pytest.mark.parametrize("term", compose.LANDING_SLOTS)
+def test_land_flag_needs_a_nonzero_landing_scale_and_pair_min(term):
+    cfg = default_config()
+    cfg.reward.scales[term] = 0.5
+    assert reseed_flags(cfg) == ()
+    cfg.reward[term].pair_min = True
+    assert reseed_flags(cfg) == ("land",)
+    cfg.reward.scales[term] = 0.0
+    assert reseed_flags(cfg) == ()
+
+
+def test_forward_lean_never_asks_for_the_land_layer():
+    cfg = default_config()
+    cfg.reward.scales.forward_lean = 1.0
+    assert reseed_flags(cfg) == ()
+
+
 def test_flags_come_in_layer_order():
     cfg = default_config()
     cfg.obs.state = tuple(cfg.obs.state) + ("heading_err",)
     cfg.reward.scales.gait_symmetry = -1.0
     cfg.no_progress.enable = True
-    assert reseed_flags(cfg) == ("progress", "gait", "heading")
+    cfg.reward.scales.foot_reach = 1.0
+    cfg.reward.foot_reach.pair_min = True
+    assert reseed_flags(cfg) == ("progress", "gait", "heading", "land")
+    assert reseed_flags(cfg) == gait_state.LAYERS
 
 
 def test_partial_config_is_tolerated():
@@ -170,6 +205,9 @@ def test_partial_config_is_tolerated():
 
     assert reseed_flags(ml_collections.ConfigDict()) == ()
     assert reseed_flags({}) == ()
+    # a reward block without the landing parameter blocks
+    assert reseed_flags({"reward": {"scales": {"step_length": 1.0}}}) == ()
+    assert reseed_flags({"reward": {"scales": {"step_length": 1.0}, "step_length": {"pair_min": True}}}) == ("land",)
 
 
 # -- reset_state, reset_offset, pre_physics ------------------------------------
@@ -179,6 +217,7 @@ _NU, _NF = 4, 2
 
 def _cfg(**over):
     cfg = {
+        "command": {},
         "symmetry": {"enable": False, "mirror_prob": 0.5},
         "no_progress": {"enable": False},
         "push": {
@@ -234,13 +273,35 @@ def test_reset_state_gates():
     np.testing.assert_array_equal(info["yaw_ref"], yaw)
     assert info["air_dur_ema"].shape == (2, _NF) and not info["air_dur_ema"].any()
     base = gait_state.reset_state(cmd, toy_consts(), _cfg())
-    for k in ("yaw_ref", "air_dur_ema", "stance_dur_ema", "push_countdown", "mirror", "progress_ema"):
+    for k in (
+        "yaw_ref", "air_dur_ema", "stance_dur_ema", "push_countdown", "mirror", "progress_ema",
+        "cmd_target",
+    ):
         assert k not in base
+    off = gait_state.reset_state(cmd, toy_consts(), _cfg(command={"ramp": {"lin": 0.0, "yaw": 0.0}}))
+    assert "cmd_target" not in off
+    _same(off["command"], cmd)
     cd = np.array([4, 6], np.int32)
     info = gait_state.reset_state(cmd, toy_consts(), _cfg(), push_countdown=cd)
     np.testing.assert_array_equal(info["push_countdown"], cd)
     info = gait_state.reset_state(cmd, toy_consts(), _cfg(no_progress={"enable": True}))
     np.testing.assert_allclose(info["progress_ema"], progress.cmd_speed(cmd))
+
+
+_RAMP = {"ramp": {"lin": 0.5, "yaw": 1.0}}
+
+
+def test_reset_state_with_the_ramp_serves_zero_and_keeps_the_sample_as_the_target():
+    cmd = _commands((3,))
+    info = gait_state.reset_state(cmd, toy_consts(), _cfg(command=_RAMP))
+    assert list(info)[:2] == ["command", "cmd_target"]
+    _same(info["command"], np.zeros_like(cmd))
+    _same(info["cmd_target"], cmd)
+    info = gait_state.reset_state(
+        cmd, toy_consts(), _cfg(command=_RAMP, no_progress={"enable": True})
+    )
+    # The meter seeds from the served command, zero at reset.
+    _same(info["progress_ema"], np.zeros(3, np.float32))
 
 
 def test_reset_state_mirror_is_u_below_prob():
@@ -637,3 +698,149 @@ def test_the_timers_and_histories_advance():
     _same(out["last_action"], vals["action"])
     _same(out["last_torque"], vals["r.actuator_force"])
     _same(out["step_count"], vals["i.step_count"] + 1)
+
+
+def _ramp_ucfg(on=False):
+    cfg = _ucfg(on)
+    cfg.command.ramp.lin = 0.5
+    cfg.command.ramp.yaw = 1.0
+    return cfg
+
+
+def test_update_with_the_ramp_resamples_into_cmd_target_and_slews_every_row():
+    """World 0 is due for a resample and world 1 is not. The target changes
+    on world 0 only. The command moves toward the target on both."""
+    vals = _update_inputs((2,), False)
+    vals["i.steps_since_cmd"] = np.array([_RESAMPLE - 1, 0], np.int32)
+    vals["i.command"] = np.array([[0.0, 0.0, 0.0], [0.3, -0.2, 0.1]], np.float32)
+    old_target = np.array([[0.5, 0.5, 0.5], [-0.6, 0.2, 0.1001]], np.float32)
+    vals["i.cmd_target"] = old_target
+    cfg, consts = _ramp_ucfg(), _uconsts()
+    info, r, action, draws = _split(vals)
+    out, _, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
+    new = progress.command_from_draws(draws["command"], cfg.command)
+    _same(out["cmd_target"][0], new[0])
+    _same(out["cmd_target"][1], old_target[1])
+    lim = np.array([0.5, 0.5, 1.0], np.float32) * consts.dt
+    want = vals["i.command"] + np.clip(out["cmd_target"] - vals["i.command"], -lim, lim)
+    np.testing.assert_allclose(out["command"], want, rtol=1e-6, atol=1e-7)
+    # World 1's wz is within one step of its target and lands on it.
+    np.testing.assert_allclose(out["command"][1, 2], old_target[1, 2], rtol=1e-6)
+    _same(out["steps_since_cmd"], [0, 1])
+
+
+def test_the_ramp_reseeds_progress_ema_from_the_slewed_command():
+    vals = _update_inputs((2,), True)
+    vals["i.steps_since_cmd"] = np.array([_RESAMPLE - 1, 0], np.int32)
+    vals["i.cmd_target"] = vals["i.command"] * 0.5
+    cfg, consts = _ramp_ucfg(True), _uconsts("numpy", True)
+    out, _, _, _ = _update(vals, consts, cfg)
+    _same(out["progress_ema"][0], progress.cmd_speed(out["command"])[0])
+
+
+def test_update_with_the_ramp_keeps_the_reset_keys():
+    consts, cfg = _uconsts(), _ramp_ucfg()
+    vals = _update_inputs((3,), False)
+    _, r, action, draws = _split(vals)
+    info = gait_state.reset_state(vals["i.command"], consts, cfg)
+    out, _, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
+    assert list(out) == list(info)
+    assert "cmd_target" in out
+    for k in info:
+        assert out[k].shape == info[k].shape and out[k].dtype == info[k].dtype, k
+
+
+# -- land_frac -------------------------------------------------------------------
+
+_LAND_FLAGS = {
+    "knee_qidx": np.array([0, 1]),
+    "step_length_on": True,
+    "foot_reach_on": True,
+    "knee_extend_on": True,
+    "forward_lean_on": True,
+    "land_frac_on": True,
+}
+
+
+def _land_ucfg():
+    """_ucfg with the four kept terms on and pair_min on the three landing terms."""
+    cfg = _ucfg()
+    rcfg = cfg.reward
+    for t in compose.KEPT_TERMS:
+        rcfg.scales[t] = 1.0
+    rcfg.step_length.pair_min = True
+    rcfg.foot_reach.update(target_a=0.05, target_b=0.15, pair_min=True)
+    rcfg.knee_extend.update(flex_lo=0.1, flex_hi=0.6, td_min_air=0.1, td_mult=0.5, pair_min=True)
+    rcfg.forward_lean.update(max_deg=5.0, vx_max=1.0, sigma=0.05)
+    assert compose.land_frac_on(rcfg)
+    return cfg
+
+
+def _land_uconsts(xp_name="numpy"):
+    return toy_replace(toy_consts(xp_name), **_LAND_FLAGS)
+
+
+def _land_inputs(batch, seed=7):
+    """_update_inputs plus the feet's base-frame position and a previous land_frac."""
+    vals = _update_inputs(batch, False, seed)
+    rng = np.random.default_rng(seed + 1)
+    vals["r.foot_pos_base"] = rng.uniform(-0.2, 0.4, batch + (_NF, 3)).astype(np.float32)
+    vals["i.land_frac"] = rng.uniform(0.0, 1.0, batch + (_NF, 3)).astype(np.float32)
+    vals["i.command"][..., 0] = np.abs(vals["i.command"][..., 0])  # mostly forward
+    return vals
+
+
+def test_reset_state_seeds_land_frac_only_when_on():
+    cmd = _commands((3,))
+    info = gait_state.reset_state(cmd, _land_uconsts(), _land_ucfg())
+    assert info["land_frac"].shape == (3, _NF, 3) and info["land_frac"].dtype == np.float32
+    assert not info["land_frac"].any()
+    info = gait_state.reset_state(jp.asarray(cmd), _land_uconsts("jax"), _land_ucfg())
+    assert info["land_frac"].dtype == jp.float32
+    # The terms on without pair_min: no land_frac.
+    no_pair = toy_replace(_land_uconsts(), land_frac_on=False)
+    assert "land_frac" not in gait_state.reset_state(cmd, no_pair, _ucfg())
+    assert "land_frac" not in gait_state.reset_state(cmd, toy_consts(), _ucfg())
+
+
+def test_update_records_land_only_on_first_contact_feet():
+    vals = _land_inputs((4,))
+    vals["i.feet_air_time"] = np.array([[0.3, 0.0], [0.3, 0.3], [0.0, 0.0], [0.0, 0.3]], np.float32)
+    vals["r.contact"] = np.array([[True, True], [False, True], [True, True], [True, False]])
+    vals["i.last_contact"] = np.zeros((4, _NF), bool)
+    first_contact = np.array([[True, False], [False, True], [False, False], [False, False]])
+    consts, cfg = _land_uconsts(), _land_ucfg()
+    info, r, action, draws = _split(vals)
+    _, _, land = compose.compute_rewards(r, info, action, first_contact, r["contact"], consts, cfg)
+    out, rewards, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
+    want = np.where(first_contact[..., None], land, vals["i.land_frac"])
+    _same(out["land_frac"], want)
+    assert not np.array_equal(want, vals["i.land_frac"])
+    assert list(rewards)[-4:] == list(compose.KEPT_TERMS)
+
+
+def test_update_with_land_keeps_the_reset_keys():
+    consts, cfg = _land_uconsts(), _land_ucfg()
+    vals = _land_inputs((3,))
+    _, r, action, draws = _split(vals)
+    info = gait_state.reset_state(vals["i.command"], consts, cfg)
+    out, _, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
+    assert list(out) == list(info)
+    for k in info:
+        assert out[k].shape == info[k].shape and out[k].dtype == info[k].dtype, k
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("batch", BATCHES, ids=str)
+def test_update_land_batched_equals_stacked(batch, mode):
+    if mode == "jax" and tuple(batch) != (3,):
+        pytest.skip("eager jax runs at (3,) only; test_shared_math_jit covers jit at (2, 3)")
+    vals = _land_inputs(batch)
+    names = sorted(vals)
+    consts = _land_uconsts("numpy" if mode == "numpy" else "jax")
+    cfg = _land_ucfg()
+
+    def fn(*arrays):
+        return _update(dict(zip(names, arrays)), consts, cfg)
+
+    assert_batched_matches_stacked(fn, [vals[k] for k in names], batch, mode, atol=1e-5)

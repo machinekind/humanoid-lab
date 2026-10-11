@@ -9,8 +9,9 @@ for the preset's model.
 load_actuator_preset's `overrides` (cfg.actuators.overrides, or a CLI --set
 parsed by parse_set_overrides) is deep-merged onto the loaded yaml dict
 before validation: a top-level key (model/soft_limit_factor/
-action_scale_factor) replaces that preset field, `groups.<group>.<param>`
-patches one per-group value in place. This is the ONE choke point overrides
+action_scale_factor/action_scale_rad) replaces that preset field,
+`groups.<group>.<param>` patches one per-group value in place. A group may
+carry its own action_scale_rad. This is the ONE choke point overrides
 flow through, so every consumer (train, eval, sizing, build/check CLIs)
 resolves identical values.
 """
@@ -80,8 +81,9 @@ class ActuatorPreset:
 
     action_scale_rad, when set, is a flat action scale in radians for every
     joint. It replaces the action_scale_factor formula for the pd model.
-    Other models ignore it, as they ignore action_scale_factor: their ctrl
-    is not an angle.
+    A group's own action_scale_rad replaces the preset-wide value for that
+    group's joints. Other models ignore both, as they ignore
+    action_scale_factor: their ctrl is not an angle.
     """
 
     model: str
@@ -172,9 +174,10 @@ def resolve(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, JointAct
 def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, float]:
     """The per-joint action_scale for this preset's model.
 
-    pd: action_scale_factor * effort_limit / kp, or the flat
-    action_scale_rad when set. ideal_torque: effort_limit; it ignores both
-    scale fields. See ActuatorModel.action_scale.
+    pd takes the first that is set: the joint's group action_scale_rad,
+    then the preset action_scale_rad, then
+    action_scale_factor * effort_limit / kp. ideal_torque uses effort_limit
+    and ignores all three. See ActuatorModel.action_scale.
     """
     params_by_joint = resolve(preset, robot_spec)
     if preset.model == "pd":

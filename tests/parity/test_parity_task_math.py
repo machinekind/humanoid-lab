@@ -8,8 +8,9 @@ float Torch output must be float32. Bool and int outputs must match exactly,
 dtype included.
 
 The inputs come from one JAX env with every optional gate on: symmetry, the
-no-progress cut, heading_err, the ranged push with every knob, and the four
-style terms plus both distance terms. A jitted single-world rollout gives 8
+no-progress cut, heading_err, the ranged push with every knob, the four
+style terms plus both distance terms, and the four landing and lean terms
+with pair_min on. A jitted single-world rollout gives 8
 snapshots of data and info, stacked into a batch of 8 worlds. The draws come
 from the JAX draw adapters. A few inputs are set by hand so that both sides
 of a branch occur in the batch. Each function gets identical inputs on both
@@ -81,8 +82,10 @@ FLAGS = np.array([True, False, True, False, False, True, True, False])
 # Shared-module functions that take no data arrays: they build maps, masks,
 # tables or flags from config and names. They have nothing to compare.
 ARRAY_FREE = {
+    "compose.land_frac_on",
     "gait_state.gait_dur_ema_on",
     "gait_state.reseed_flags",
+    "progress.ramp_on",
     "push.push_draw_names",
     "push.push_ranges",
     "symmetry.axis_mirror_sign",
@@ -196,11 +199,26 @@ def _env():
         "deploy_pd",
         {
             "sim": {"backend": "jax"},
+            "command": {"ramp": {"lin": 0.5, "yaw": 1.0}},
+            "gait": {"lift": {"v_full": 0.5, "min_frac": 0.25}},
             "symmetry": {"enable": True},
             "no_progress": {"enable": True},
             "obs": {"state": state},
             "push": {"interval_steps_range": (5, 15), "vel_z": 0.3, "ang_vel_rp": 0.5, "ang_vel_yaw": 0.7},
-            "reward": {"scales": STYLE_SCALES},
+            "reward": {
+                "scales": {
+                    **STYLE_SCALES,
+                    "step_length": 1.0,
+                    "foot_reach": 1.0,
+                    "knee_extend": 0.5,
+                    "forward_lean": 0.5,
+                },
+                # roboto's home knee is 0.3 rad, and flexion is positive.
+                "step_length": {"pair_min": True},
+                "foot_reach": {"target_a": 0.05, "target_b": 0.15, "pair_min": True},
+                "knee_extend": {"flex_lo": 0.1, "flex_hi": 0.6, "td_mult": 0.5, "pair_min": True},
+                "forward_lean": {"max_deg": 5.0, "vx_max": 1.0, "sigma": 0.05},
+            },
         },
     )
 
@@ -254,6 +272,13 @@ def _term_arrays(rng, batch, nu, nf):
         "cap": np.full(nu, 30.0, np.float32),
         "lo": np.full(nu, -1.0, np.float32),
         "hi": np.full(nu, 1.0, np.float32),
+        "target": f(lo=-0.1, hi=0.4),
+        "feet_x": f(nf, lo=-0.3, hi=0.4),
+        "frac": f(nf, lo=0.0, hi=1.0),
+        "contact_c": rng.uniform(size=batch + (nf,)) > 0.5,
+        "knee": f(nf, lo=0.0, hi=1.2),
+        "gx": f(lo=-0.3, hi=0.3),
+        "vx": f(lo=-0.5, hi=1.2),
     }
 
 
@@ -311,7 +336,7 @@ def world():
     actor = list(env.actor_obs_names)
     noise = jax.random.uniform(keys[0], signals.gather(cat, actor).shape, minval=-1.0, maxval=1.0)
     action = jp.asarray(np_rng.uniform(-1.0, 1.0, (N, nu)).astype(np.float32))
-    rewards, _fall = compose.compute_rewards(r, info, action, first_contact, contact, consts, cfg)
+    rewards, _fall, _land = compose.compute_rewards(r, info, action, first_contact, contact, consts, cfg)
 
     pure_cfg = _all_pure(cfg.command)
     command_draws = jax.vmap(lambda k: jax_command_draws(k, pure_cfg))(jax.random.split(keys[1], 256))
@@ -377,6 +402,20 @@ def world():
         "terms": to_jax(terms_a),
         "dr": {name: (to_jax(b), to_jax(m), d) for name, (b, m, d) in _dr_inputs(env, keys).items()},
     }
+    # compose with landings: the rollout's random policy lands few feet ahead
+    # of the base, so the landing terms get hand-set foot positions, landing
+    # flags, air times and a previous land_frac. The commands mix fwd on and
+    # off. Drawn last, so every input above keeps its values.
+    jax_in["land_r"] = {
+        **r,
+        "foot_pos_base": jp.asarray(np_rng.uniform(-0.2, 0.4, (N, nf, 3)).astype(np.float32)),
+    }
+    jax_in["land_info"] = {
+        **update_info,
+        "feet_air_time": jp.asarray(np_rng.uniform(0.0, 0.5, (N, nf)).astype(np.float32)),
+        "land_frac": jp.asarray(np_rng.uniform(0.0, 1.0, (N, nf, 3)).astype(np.float32)),
+    }
+    jax_in["land_first_contact"] = jp.asarray(np_rng.uniform(size=(N, nf)) > 0.4)
     torch_in = {k: to_torch(v) for k, v in jax_in.items()}
     jax_in["data"] = types.SimpleNamespace(**jax_in["data"])
     torch_in["data"] = types.SimpleNamespace(**torch_in["data"])
@@ -454,6 +493,11 @@ case("signals.foot_linvel")(
         b.consts.foot_dof_mask,
     )
 )
+case("signals.foot_pos_base")(
+    lambda b: signals.foot_pos_base(
+        b.data.site_xpos, b.data.xpos, b.consts.foot_site_ids, b.consts.root_body, b.r["quat"]
+    )
+)
 case("signals.body_y_sep")(lambda b: signals.body_y_sep(b.data.xpos, b.consts.ankle_pair, b.r["quat"]))
 case("signals.fall")(
     lambda b: signals.fall(
@@ -464,6 +508,9 @@ case("signals.readings")(lambda b: signals.readings(b.data, b.consts))
 case("signals.catalog")(lambda b: signals.catalog(b.r, b.info, b.consts))
 case("signals.catalog:no_heading")(
     lambda b: signals.catalog(b.r, {k: v for k, v in b.info.items() if k != "yaw_ref"}, b.consts)
+)
+case("signals.catalog:frozen_zeros")(
+    lambda b: signals.catalog(b.r, b.info, dataclasses.replace(b.consts, frozen_phase_zeros=True))
 )
 case("signals.gather")(lambda b: signals.gather(b.cat, b.actor))
 case("signals.noise_scales")(lambda b: signals.noise_scales(b.cat, b.actor, b.cfg.obs_noise))
@@ -501,6 +548,9 @@ case("progress.gait_targets")(
     lambda b: progress.gait_targets(b.phase, b.cfg.gait.duty, b.cfg.gait.swing_height)
 )
 case("progress.command_from_draws")(lambda b: progress.command_from_draws(b.command_draws, b.pure_cfg))
+case("progress.ramp_command")(lambda b: progress.ramp_command(b.commands, b.vec3, 0.5, 1.0, b.consts.dt))
+case("progress.fwd_mask")(lambda b: progress.fwd_mask(b.commands, b.consts.deadband))
+case("progress.lift_scale")(lambda b: progress.lift_scale(b.commands, 0.5, 0.25))
 
 # terms, on random inputs with batch shape (2, 3)
 _TERM_ARGS = {
@@ -539,6 +589,17 @@ _TERM_ARGS = {
     "knee_stance": lambda a: (a["feet"], a["contact_f"], 0.3),
     "gait_symmetry": lambda a: (a["dur"], a["dur_b"], 0.1, 1.0),
     "gait_symmetry_income": lambda a: (a["dur"], a["dur_b"], a["contact_b"], 0.1, 1.0),
+    "step_length": lambda a: (a["feet_x"], a["contact_b"], a["target"], 1.5),
+    "step_length:pair": lambda a: (a["feet_x"], a["contact_b"], a["target"], 1.0, True, a["frac"]),
+    "foot_reach": lambda a: (a["feet_x"], a["contact_b"], a["target"], -0.05, 2.0),
+    "foot_reach:pair": lambda a: (a["feet_x"], a["contact_b"], a["target"], 0.0, 2.0, True, a["frac"]),
+    "knee_extend": lambda a: (
+        a["knee"], a["feet_x"], a["contact_c"], a["contact_b"], a["dur"], 0.2, 1.0, 0.0, 0.2, 0.5
+    ),
+    "knee_extend:pair": lambda a: (
+        a["knee"], a["feet_x"], a["contact_c"], a["contact_b"], a["dur"], 0.2, 1.0, 0.05, 0.2, 0.5, True, a["frac"]
+    ),
+    "forward_lean": lambda a: (a["gx"], a["vx"], 8.0, 1.0, 0.05),
 }
 for _name, _args in _TERM_ARGS.items():
     _fname = _name.split(":")[0]
@@ -548,12 +609,17 @@ for _name, _args in _TERM_ARGS.items():
 case("compose.compute_rewards")(
     lambda b: compose.compute_rewards(b.r, b.info, b.action, b.first_contact, b.contact, b.consts, b.cfg)
 )
+case("compose.compute_rewards:landing")(
+    lambda b: compose.compute_rewards(
+        b.land_r, b.land_info, b.action, b.land_first_contact, b.contact, b.consts, b.cfg
+    )
+)
 case("compose.total_reward")(
     lambda b: compose.total_reward(b.rewards, b.cfg.reward.scales, b.consts.dt)
 )
 
 # gait_state
-for _flags in (("progress",), ("gait",), ("heading",), gait_state.LAYERS):
+for _flags in (("progress",), ("gait",), ("heading",), ("land",), gait_state.LAYERS):
     case(f"gait_state.clear_done:{'+'.join(_flags)}")(
         lambda b, flags=_flags: gait_state.clear_done(
             b.info,

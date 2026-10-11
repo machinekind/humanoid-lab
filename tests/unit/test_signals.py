@@ -126,11 +126,28 @@ class TestBatchedEqualsStacked:
         h, g = d["qpos"][..., 2], d["qpos"][..., 0]
         _check(lambda a, b: signals.fall(a, b, 0.0, 0.3), (h, g), batch, mode)
 
+    def test_foot_pos_base(self, batch, mode):
+        c, d = _consts(mode), _data(batch)
+        q = d["sensordata"][..., 3:7]
+
+        def fn(s, x, qq):
+            return signals.foot_pos_base(s, x, c.foot_site_ids, c.root_body, qq)
+
+        assert np.shape(fn(d["site_xpos"], d["xpos"], q)) == batch + (c.n_feet, 3)
+        _check(fn, (d["site_xpos"], d["xpos"], q), batch, mode)
+
     @pytest.mark.parametrize("pairs", [False, True])
     def test_readings(self, batch, mode, pairs):
         c = _consts(mode)
         if pairs:
             c = toy_replace(c, ankle_pair=(1, 2), knee_pair=(3, 4))
+        d = _data(batch)
+        _check(lambda *a: signals.readings(_ns(*a), c), [d[k] for k in signals.DATA_FIELDS], batch, mode)
+
+    def test_readings_foot_pos_base(self, batch, mode):
+        if mode == "jax" and tuple(batch) != (3,):
+            pytest.skip("eager jax runs at (3,) only; test_shared_math_jit covers jit at (2, 3)")
+        c = toy_replace(_consts(mode), foot_reach_on=True)
         d = _data(batch)
         _check(lambda *a: signals.readings(_ns(*a), c), [d[k] for k in signals.DATA_FIELDS], batch, mode)
 
@@ -147,6 +164,39 @@ class TestBatchedEqualsStacked:
 
         _check(fn, [d[k] for k in signals.DATA_FIELDS] + [info[k] for k in keys], batch, mode)
 
+    def test_catalog_frozen_phase_zeros(self, batch, mode):
+        if mode == "jax" and tuple(batch) != (3,):
+            pytest.skip("eager jax runs at (3,) only; test_shared_math_jit covers jit at (2, 3)")
+        c = toy_replace(_consts(mode), frozen_phase_zeros=True)
+        d, info = _data(batch), _info(batch)
+        keys = sorted(info)
+
+        def fn(*a):
+            n = len(signals.DATA_FIELDS)
+            r = signals.readings(_ns(*a[:n]), c)
+            return signals.catalog(r, dict(zip(keys, a[n:])), c)
+
+        _check(fn, [d[k] for k in signals.DATA_FIELDS] + [info[k] for k in keys], batch, mode)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_frozen_phase_is_zeros_with_frozen_phase_zeros(mode):
+    c = _consts(mode)
+    d, info = _data((3,)), _info((3,))
+    xp = jnp if mode == "jax" else np
+    a = lambda x: xp.asarray(x)
+    r = signals.readings(_ns(*[a(d[k]) for k in signals.DATA_FIELDS]), c)
+    info = {k: a(v) for k, v in info.items()}
+    zeros = signals.catalog(r, info, toy_replace(c, frozen_phase_zeros=True))["phase"]
+    assert zeros.shape == (3, 2 * c.n_feet)
+    assert zeros.dtype == xp.float32
+    assert np.array_equal(np.asarray(zeros), np.zeros((3, 2 * c.n_feet), np.float32))
+    cos_sin = np.asarray(signals.catalog(r, info, c)["phase"])
+    leg = np.asarray(info["phase"])[..., None] + np.array([0.0, np.pi], np.float32)
+    leg = np.fmod(leg + np.pi, 2 * np.pi) - np.pi
+    np.testing.assert_allclose(cos_sin, np.concatenate([np.cos(leg), np.sin(leg)], -1), atol=1e-6)
+    assert np.abs(cos_sin).max() > 0.1
+
 
 def test_the_identity_rotation_sees_gravity_straight_down():
     q = np.array([1.0, 0.0, 0.0, 0.0], np.float32)
@@ -162,6 +212,20 @@ def test_a_quarter_turn_about_z():
     np.testing.assert_allclose(signals.quat_rotate_inv(q, np.array([0.0, 1.0, 0.0], np.float32)), [1, 0, 0], atol=1e-6)
     # a yaw turn leaves gravity alone
     np.testing.assert_allclose(signals.gravity_body(q), [0, 0, -1], atol=1e-6)
+
+
+def test_foot_pos_base_reads_the_site_in_the_base_frame():
+    # base yawed 90 degrees: a site one metre along world +y sits straight ahead
+    h = np.sqrt(0.5, dtype=np.float32)
+    q = np.array([h, 0.0, 0.0, h], np.float32)
+    xpos = np.zeros((3, 3), np.float32)
+    xpos[1] = [0.5, -0.2, 0.8]  # the root body
+    site_xpos = np.zeros((4, 3), np.float32)
+    site_xpos[2] = xpos[1] + [0.0, 1.0, 0.0]
+    site_xpos[3] = xpos[1] + [-1.0, 0.0, 0.1]
+    got = signals.foot_pos_base(site_xpos, xpos, np.array([2, 3]), 1, q)
+    assert got.shape == (2, 3)
+    np.testing.assert_allclose(got, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.1]], atol=1e-6)
 
 
 def test_a_tilt_moves_gravity_into_the_body_axes():
@@ -212,6 +276,20 @@ def test_readings_keys_follow_the_pairs():
     both = signals.readings(d, toy_replace(c, ankle_pair=(1, 2), knee_pair=(3, 4)))
     assert set(both) == base | {"feet_sep", "knee_sep"}
     assert both["feet_sep"].shape == both["knee_sep"].shape == ()
+
+
+@pytest.mark.parametrize("flag", ["step_length_on", "foot_reach_on", "knee_extend_on"])
+def test_readings_have_foot_pos_base_only_with_a_landing_term(flag):
+    c, data = toy_consts("numpy"), _data((3,))
+    d = _ns(*[data[k] for k in signals.DATA_FIELDS])
+    assert "foot_pos_base" not in signals.readings(d, c)
+    # forward_lean reads no foot position.
+    assert "foot_pos_base" not in signals.readings(d, toy_replace(c, forward_lean_on=True))
+    on = signals.readings(d, toy_replace(c, **{flag: True}))
+    assert set(on) == set(signals.readings(d, c)) | {"foot_pos_base"}
+    want = signals.foot_pos_base(data["site_xpos"], data["xpos"], c.foot_site_ids, c.root_body, on["quat"])
+    np.testing.assert_array_equal(on["foot_pos_base"], want)
+    assert on["foot_pos_base"].shape == (3, c.n_feet, 3)
 
 
 def test_the_catalog_keys_and_shapes():

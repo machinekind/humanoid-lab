@@ -19,6 +19,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from humanoid_lab.actuators.models import ACTUATOR_MODELS
+from humanoid_lab.dr.randomize import _find_base_body_id
 from humanoid_lab.envs import signals
 from humanoid_lab.envs.backend import make_data_fn, resolve_backend
 from humanoid_lab.robot.build import build_spec, compile_spec
@@ -240,6 +241,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # Free-joint (floating base) qpos/qvel addresses: fallback obs path
         # plus fall/push logic that needs the base height or planar qvel.
         self._base_qadr, self._base_vadr = _free_joint_addr(m)
+        self._root_body = _find_base_body_id(m)
 
         # Reward/reset anchor (see real_pose_ref in the task's default_config).
         # Off, these ARE the keyframe arrays -- the same objects, so the
