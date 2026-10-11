@@ -83,6 +83,10 @@ CONSUMED_KEYS = frozenset(
         # Frequency band of the gait clock the actor observes as `phase`.
         # Ships in `gait_clock`; the runtime integrates the same clock.
         "gait.freq",
+        # Speed at or below which a command is a stand command. It sets where
+        # the actor-observed gait clock freezes. Ships resolved in
+        # `gait_clock.speed_deadband`.
+        "command.deadband",
     }
 )
 
@@ -331,10 +335,11 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
             "freq_low": float(gait.freq[0]),
             "freq_high": float(gait.freq[1]),
             # |v_xy| + turn_weight * |wz|, normalized by cmd_speed_max, is
-            # the speed fraction the frequency lerps over. Shipped from the
-            # env's own constants (envs/progress.py), never re-typed here.
+            # the speed fraction the frequency lerps over. turn_weight ships
+            # from envs/progress.py. speed_deadband ships the env's resolved
+            # command.deadband. Neither is re-typed here.
             "turn_weight": progress.YAW_SPEED_WEIGHT,
-            "speed_deadband": progress.SPEED_DEADBAND,
+            "speed_deadband": float(env._deadband),
             "cmd_speed_max": float(env._cmd_vmax),
         },
     }

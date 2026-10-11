@@ -11,12 +11,15 @@ is the property the deploy side relies on when it re-derives nothing.
 from __future__ import annotations
 
 import jax
+import jax.numpy as jp
 import numpy as np
 import pytest
 
 from humanoid_lab import deploy_contract as dc
 from humanoid_lab import paths
+from humanoid_lab.envs import progress
 from humanoid_lab.envs.joystick import Joystick, default_config
+from humanoid_lab.export import runtime
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 
@@ -152,7 +155,51 @@ def test_the_gait_clock_parameters_travel_with_the_policy(ideal_env, ideal_contr
     assert clock["freq_high"] == ideal_env._config.gait.freq[1]
     assert np.allclose(clock["cmd_speed_max"], float(ideal_env._cmd_vmax))
     assert len(clock["offsets"]) == ideal_env._n_feet
+    assert clock["speed_deadband"] == ideal_env._deadband
+    assert clock["turn_weight"] == progress.YAW_SPEED_WEIGHT
     assert ideal_contract["ctrl_dt"] == ideal_env._config.ctrl_dt
+
+
+def test_a_wider_deadband_freezes_the_clock_in_the_env_and_in_the_runtime():
+    env = build_env(
+        "sizing_ideal",
+        **{"command.deadband": 0.15, "command.resample_steps": 10000, "push.enable": False},
+    )
+    contract = dc.build_contract(env, run_for(env), "ckpt/000000001024")
+    assert contract["gait_clock"]["speed_deadband"] == 0.15
+
+    assert float(env._phase_dt(jp.array([0.1, 0.0, 0.0]))) == 0.0
+    assert float(env._phase_dt(jp.array([0.2, 0.0, 0.0]))) > 0.0
+
+    state = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    state.info["command"] = jp.array([0.1, 0.0, 0.0])
+    step = jax.jit(env.step)
+    action = jp.zeros(env.action_size)
+    for _ in range(5):
+        state = step(state, action)
+        assert float(state.info["phase"]) == 0.0
+
+    obs_size, nu = contract["obs_size"], contract["action_size"]
+    weights = {
+        "norm_mean": np.zeros(obs_size, np.float32),
+        "norm_std": np.ones(obs_size, np.float32),
+        "hidden_0_kernel": np.zeros((obs_size, 4), np.float32),
+        "hidden_0_bias": np.zeros(4, np.float32),
+        "hidden_1_kernel": np.zeros((4, 2 * nu), np.float32),
+        "hidden_1_bias": np.zeros(2 * nu, np.float32),
+    }
+    policy = runtime.DeployPolicy(weights, contract)
+    policy.reset()
+    reading = {
+        "gyro": np.zeros(3),
+        "gravity": np.array([0.0, 0.0, -1.0]),
+        "joint_pos": np.asarray(contract["default_pose"]),
+        "joint_vel": np.zeros(nu),
+        "command": np.array([0.1, 0.0, 0.0]),
+    }
+    for _ in range(5):
+        policy.step(**reading)
+    assert policy.phase == 0.0
 
 
 def test_an_ideal_torque_preset_anchors_on_zero_torque():

@@ -172,6 +172,18 @@ def test_the_clock_is_frozen_below_the_command_deadband():
     assert policy.phase == 0.0
 
 
+def test_the_clock_freezes_at_a_wider_deadband_and_runs_above_it():
+    meta = toy_meta()
+    meta["gait_clock"]["speed_deadband"] = 0.15
+    policy = runtime.DeployPolicy(toy_weights(), meta)
+    policy.reset()
+    for _ in range(5):
+        policy.step(**sensors(command=np.array([0.1, 0.0, 0.0])))
+    assert policy.phase == 0.0
+    policy.step(**sensors(command=np.array([0.2, 0.0, 0.0])))
+    assert policy.phase > 0.0
+
+
 def test_the_clock_advances_at_the_speed_scaled_frequency():
     policy = toy_policy()
     policy.reset()

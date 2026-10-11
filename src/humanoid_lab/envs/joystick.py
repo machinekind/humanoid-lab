@@ -19,22 +19,133 @@ Deferred (not built yet):
 
 from __future__ import annotations
 
+import dataclasses
+
 import jax
 import jax.numpy as jp
 import numpy as np
-from brax import math as brax_math
 from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
-from humanoid_lab.envs import progress, symmetry
+from humanoid_lab.envs import gait_state, progress, push, signals, symmetry
 from humanoid_lab.envs.base import HumanoidEnv
-from humanoid_lab.rewards import terms
+from humanoid_lab.envs.constants import TaskConstants
+from humanoid_lab.envs.gait_state import gait_dur_ema_on  # also re-exported
+from humanoid_lab.rewards import compose
 
-# Per-foot gait clock offset, robot_spec.foot_sites order: antiphase (one
-# foot swings while the other stances), the only sensible clock for a biped:
-# a quadruped's walk/trot blend has no two-foot analogue.
-_PHASE_OFFSETS = (0.0, np.pi)
+
+def jax_command_draws(rng, command_cfg):
+    """The JAX random draws behind one command, per env (vmap me).
+
+    progress.command_from_draws turns these into the command. The key scheme
+    is fixed, because the golden files and the reference fixtures pin it: the
+    base vx, vy, wz and zero draws take r1..r4 of `split(rng, 4)`. Each
+    enabled pure draw keys off `fold_in(rng, 0x100 + idx)`, splits it into
+    r_a (the bernoulli) and r_b (the range draw, if it has one). An off draw
+    makes no call, so enabling one moves no other draw's samples.
+    (tests/integration/test_golden_baseline.py is the gate.)
+
+    0x100 is why that holds. `fold_in(key, i)` is bit-identical to
+    `split(key, n)[i]` for every i < n, so a draw folding in a small
+    index would key off one of the base split keys above -- index 1
+    would BE r2, the vy uniform key. Offsetting the domain puts every
+    draw's key out of reach of any split of `rng`, however wide that
+    split later grows. Re-splitting the folded key is not enough on its
+    own: a draw that sampled straight off an un-offset folded key would
+    get a selector that is a deterministic function of another axis's
+    value. tests/integration/test_pure_command_draws.py pins this.
+
+    r_b is unused by pure_wz and pure_vy: they keep the wz or vy the base draw
+    already made. The split still runs so all five draws have the same shape.
+    Giving them a range later can take r_b without moving r_a's stream.
+    """
+    c = command_cfg
+    r1, r2, r3, r4 = jax.random.split(rng, 4)
+    draws = {
+        "vx": jax.random.uniform(r1, minval=c.vx[0], maxval=c.vx[1]),
+        "vy": jax.random.uniform(r2, minval=c.vy[0], maxval=c.vy[1]),
+        "wz": jax.random.uniform(r3, minval=c.wz[0], maxval=c.wz[1]),
+    }
+    for name, idx, prob_key, range_key in progress.COMMAND_DRAWS:
+        p = c.get(prob_key, 0.0)
+        if p:
+            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + idx))
+            draws[f"{name}_on"] = jax.random.bernoulli(r_a, p)
+            if range_key:
+                draws[f"{name}_vx"] = jax.random.uniform(
+                    r_b, minval=c[range_key][0], maxval=c[range_key][1]
+                )
+    draws["zero_on"] = jax.random.bernoulli(r4, c.zero_prob)
+    return draws
+
+
+def jax_push_draws(r_push, push_cfg):
+    """The JAX random draws behind one push, per env (vmap me).
+
+    The direction uses r_push itself. The other draws use
+    `fold_in(r_push, 0x100 + idx)` with the indices in push.PUSH_DRAWS, for
+    the reason jax_command_draws gives. An off knob makes no call. The ranges
+    come from push.push_ranges, and push.push_kick turns the draws into the
+    kick.
+    """
+    ranges = push.push_ranges(push_cfg)
+    draws = {"dir": jax.random.uniform(r_push, (2,), minval=-1.0, maxval=1.0)}
+    for name, idx, shape, _ in push.PUSH_DRAWS:
+        if name == "dir" or name not in ranges:
+            continue
+        key = jax.random.fold_in(r_push, 0x100 + idx)
+        lo, hi = ranges[name]
+        if name == "next_countdown":
+            draws[name] = jax.random.randint(key, shape, lo, hi + 1)
+        elif name == "ang":
+            draws[name] = jax.random.uniform(key, shape, minval=jp.array(lo), maxval=jp.array(hi))
+        else:
+            draws[name] = jax.random.uniform(key, shape, minval=lo, maxval=hi)
+    return draws
+
+
+def jax_reset_draws(rng, cfg, action_size):
+    """The JAX random draws behind one reset, per env (vmap me).
+
+    Keys: `rng, r_cmd, r_pose = split(rng, 3)`, then one more split for the
+    first push gap when the schedule is ranged, then one for the mirror flag
+    when symmetry is on. 'rng' is the key left for the step.
+    """
+    rng, r_cmd, r_pose = jax.random.split(rng, 3)
+    draws = {
+        "command": jax_command_draws(r_cmd, cfg.command),
+        "pose_noise": jax.random.uniform(r_pose, (action_size,), minval=-1.0, maxval=1.0),
+    }
+    if cfg.push.enable and cfg.push.get("interval_steps_range", None):
+        lo, hi = (int(v) for v in cfg.push.interval_steps_range)
+        rng, r_cd = jax.random.split(rng)
+        draws["push_countdown"] = jax.random.randint(r_cd, (), lo, hi + 1)
+    if cfg.symmetry.enable:
+        rng, r_mirror = jax.random.split(rng)
+        draws["mirror_u"] = jax.random.uniform(r_mirror)
+    draws["rng"] = rng
+    return draws
+
+
+def jax_step_draws(rng, cfg):
+    """The JAX random draws behind one step, per env (vmap me).
+
+    A 4-way split, or a 5-way split when the no-progress cut is on. 'rng' is
+    the key left for the next step.
+    """
+    if cfg.no_progress.enable:
+        rng, r_noise, r_cmd, r_push, r_term = jax.random.split(rng, 5)
+    else:
+        rng, r_noise, r_cmd, r_push = jax.random.split(rng, 4)
+        r_term = None
+    return {
+        "rng": rng,
+        "noise_key": r_noise,
+        "command": jax_command_draws(r_cmd, cfg.command),
+        "push": jax_push_draws(r_push, cfg.push) if cfg.push.enable else None,
+        "u_term": jax.random.uniform(r_term) if r_term is not None else None,
+    }
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -110,7 +221,7 @@ def default_config() -> config_dict.ConfigDict:
         # (see base.py's _build_obs).
         obs_noise=config_dict.create(gyro=0.01, joint_pos=0.01, joint_vel=0.1),
         # Declarative observation spec: ordered lists of catalog names (see
-        # HumanoidEnv._obs_catalog + this env's command/phase additions).
+        # envs/signals.catalog).
         # `state` is the actor (only signals a real robot has -- no
         # world-frame linvel), `privileged` the critic.
         obs=config_dict.create(
@@ -147,9 +258,8 @@ def default_config() -> config_dict.ConfigDict:
             # Velocity zeroes with this prob (stand training). An untuned
             # starting value for a biped.
             zero_prob=0.15,
-            # Speed below which a command is a stand command (clock frozen,
-            # stepping rewards off); progress.SPEED_DEADBAND is the original.
-            deadband=0.05,
+            # Commanded speed at or below which a command is a stand command (see Joystick.__init__).
+            deadband=progress.SPEED_DEADBAND,
             # Pure command draws (see _sample_command). Each redraws the
             # base uniform sample into a CLEAN single-axis command with the
             # given probability, all off by default.
@@ -249,7 +359,7 @@ def default_config() -> config_dict.ConfigDict:
         # max_tilt_gz is the gravity_body z component: near -1 upright,
         # rising toward 0 and positive as the robot tips over.
         fall=config_dict.create(min_height=0.45, max_tilt_gz=-0.4),
-        # Two-foot antiphase gait clock (see _PHASE_OFFSETS). freq/
+        # Two-foot antiphase gait clock (see progress.PHASE_OFFSETS). freq/
         # swing_height/duty are untuned starting values: only the SHAPE
         # (speed-scaled clock frequency, sinusoidal swing profile, fixed
         # stance duty) carries over from the quadruped predecessor. The
@@ -316,7 +426,7 @@ def default_config() -> config_dict.ConfigDict:
             # standing pays nothing for lifting legs. Gated set:
             # feet_air_time, feet_air_time_biped, feet_apex, feet_apex_min
             # and gait_symmetry_income. Not feet_phase, and not the
-            # feet_landing penalty -- see _compute_rewards.
+            # feet_landing penalty -- see rewards/compose.py.
             shaping_tracking_gate=False,
             phase_sigma=0.002,
             # feet_air_time_biped clamp, s (upstream feet_air_time_positive_
@@ -470,13 +580,6 @@ def _reward_metric_names(scales) -> list[str]:
     return [f"reward/{k}" for k in scales if k not in _STYLE_TERMS or scales[k]]
 
 
-def gait_dur_ema_on(scales) -> bool:
-    """Whether the per-foot swing/stance duration EMAs exist: either
-    symmetry scale is nonzero. reset() seeds them and step() updates them
-    only then, and envs/wrappers.py restarts them on respawn only then."""
-    return bool(scales.get("gait_symmetry", 0.0) or scales.get("gait_symmetry_income", 0.0))
-
-
 def check_gait_symmetry_cap(reward) -> None:
     """Raise unless reward.gait_symmetry_cap > 0 whenever the income is on.
     gait_symmetry_income divides by the cap, so cap 0 would be NaN on every
@@ -605,23 +708,82 @@ class Joystick(HumanoidEnv):
             jp.zeros(self.action_size), self._default_pose, self._action_scale
         )
 
-        # Heading-error observation: the policy sees yaw RATE only, so an
-        # unbidden turn accumulates unseen. With "heading_err" on an obs list,
-        # info carries yaw_ref -- the heading to hold. It follows the actual yaw
-        # while a turn is commanded (|wz| above the deadband) and freezes the
-        # moment the command is straight; the observation is the clipped
-        # wrapped difference yaw_ref - yaw, in radians.
-        # command.deadband: below this planar+yaw speed a command is a stand
-        # command (clock frozen, stand_still pays, the stepping rewards are
-        # off). Default progress.SPEED_DEADBAND; a larger value stops the
-        # step-in-place at the start of a walk, where the command is still ~0.
-        self._deadband = float(self._config.command.get("deadband", progress.SPEED_DEADBAND))
+        # A command is a stand command when its speed, |v_xy| + YAW_SPEED_WEIGHT * |wz|,
+        # is at or below command.deadband. Then the gait clock freezes, stand_still pays
+        # and the stepping rewards switch off. The no-progress cut uses the same threshold.
+        # A larger value such as 0.15 stops the robot stepping in place while a walk
+        # command is still near zero.
+        self._deadband = float(self._config.command.deadband)
+        # The policy observes only the yaw rate, so heading drift goes unseen.
+        # With heading_err on an obs list, info['yaw_ref'] holds the heading to keep.
+        # yaw_ref follows the measured yaw while |commanded wz| > progress.TURN_WZ_THRESHOLD
+        # and holds otherwise. The observation is wrap(yaw_ref - yaw), clipped to +-1 rad.
         self._heading_obs = "heading_err" in (
             list(self._config.obs.state) + list(self._config.obs.privileged)
         )
 
+        # Built before the mirror maps: _init_mirror_maps evaluates the obs
+        # catalog, which reads the constants.
+        self._consts = self._task_constants()
         if self._config.symmetry.enable:
             self._init_mirror_maps()
+            self._consts = dataclasses.replace(
+                self._consts,
+                act_perm=self._act_perm,
+                act_sign=self._act_sign,
+                state_perm=self._state_perm,
+                state_sign=self._state_sign,
+                priv_perm=self._priv_perm,
+                priv_sign=self._priv_sign,
+            )
+
+    def _task_constants(self) -> TaskConstants:
+        """The resolved constants as one record. The private attributes stay
+        as aliases of the same objects."""
+        return TaskConstants(
+            dt=float(self.dt),
+            action_size=self.action_size,
+            n_feet=self._n_feet,
+            qadr=self._qadr,
+            vadr=self._vadr,
+            base_qadr=self._base_qadr,
+            base_vadr=self._base_vadr,
+            sensor_adr=self._sensor_adr,
+            default_pose=self._default_pose,
+            pose_anchor=self._pose_anchor,
+            reset_qpos=self._reset_qpos,
+            pose_weight=self._pose_weight,
+            pose_l1_weight=self._pose_l1_weight,
+            action_scale=self._action_scale,
+            actuator_model=self._actuator_model,
+            neutral_ctrl=self._neutral_ctrl,
+            ctrl_lo=self._ctrl_lo,
+            ctrl_hi=self._ctrl_hi,
+            soft_lo=self._soft_lo_j,
+            soft_hi=self._soft_hi_j,
+            torque_cap=self._torque_cap,
+            foot_site_ids=self._foot_site_ids,
+            foot_site_sole_offset=self._foot_site_sole_offset,
+            foot_root_body=self._foot_root_body,
+            foot_dof_mask=self._foot_dof_mask,
+            foot_geom_ids=self._foot_geom_ids,
+            foot_geom_radius=self._foot_geom_radius,
+            foot_geom_member=self._foot_geom_member,
+            ankle_pair=self._ankle_pair,
+            knee_pair=self._knee_pair,
+            knee_qidx=getattr(self, "_knee_qidx", None),
+            cmd_vmax=self._cmd_vmax,
+            deadband=self._deadband,
+            orientation_tol=self._orientation_tol,
+            heading_obs=self._heading_obs,
+            gait_dur_ema_on=self._gait_dur_ema_on,
+            knee_stance_on=self._knee_stance_on,
+            gait_symmetry_on=self._gait_symmetry_on,
+            gait_symmetry_income_on=self._gait_symmetry_income_on,
+            feet_apex_min_on=self._feet_apex_min_on,
+            naconmax_per_env=self._naconmax_per_env,
+            njmax=self._njmax,
+        )
 
     def _init_mirror_maps(self):
         """Assemble the symmetry augmentation's (perm, sign) maps from the
@@ -630,8 +792,9 @@ class Joystick(HumanoidEnv):
         rs = self._robot_spec
         joints = list(rs.actuated_joints)
         feet = list(rs.foot_sites)
-        act_perm, act_sign = symmetry.joint_mirror(joints, rs.name)
-        state_perm, state_sign = symmetry.obs_mirror(self.actor_obs_names, joints, feet, rs.name)
+        state_perm, state_sign, act_perm, act_sign = symmetry.policy_mirror_maps(
+            rs, self.actor_obs_names
+        )
         priv_perm, priv_sign = symmetry.obs_mirror(self._config.obs.privileged, joints, feet, rs.name)
         # Shapes only: the catalog evaluated abstractly on a fresh jax-impl
         # data, so nothing is allocated on the training backend.
@@ -663,11 +826,9 @@ class Joystick(HumanoidEnv):
             return obs
         m = info["mirror"]
         return {
-            "state": jp.where(m, self._state_sign * obs["state"][self._state_perm], obs["state"]),
-            "privileged_state": jp.where(
-                m,
-                self._priv_sign * obs["privileged_state"][self._priv_perm],
-                obs["privileged_state"],
+            "state": symmetry.mirror(obs["state"], m, self._state_perm, self._state_sign),
+            "privileged_state": symmetry.mirror(
+                obs["privileged_state"], m, self._priv_perm, self._priv_sign
             ),
         }
 
@@ -734,124 +895,41 @@ class Joystick(HumanoidEnv):
 
     def _body_y_separation(self, data, pair):
         """|y| distance between two bodies, base frame."""
-        delta = data.xpos[pair[0]] - data.xpos[pair[1]]
-        return jp.abs(brax_math.rotate(delta, brax_math.quat_inv(self._quat(data)))[1])
+        return signals.body_y_sep(data.xpos, pair, self._quat(data))
 
     # -- command / gait clock ------------------------------------------------
     def _sample_command(self, rng):
-        r1, r2, r3, r4 = jax.random.split(rng, 4)
         c = self._config.command
-        vel = jp.array(
-            [
-                jax.random.uniform(r1, minval=c.vx[0], maxval=c.vx[1]),
-                jax.random.uniform(r2, minval=c.vy[0], maxval=c.vy[1]),
-                jax.random.uniform(r3, minval=c.wz[0], maxval=c.wz[1]),
-            ]
-        )
-        # Pure command draws, in order: wz, vy, slow, fast, back. Each
-        # rewrites the base sample into a clean single-axis command with its
-        # own probability, and a later draw overwrites an earlier one. What
-        # they are for is in default_config's command block.
-        #
-        # Two rules make them free while off. Each block is gated on a static
-        # config probability, so `if p:` is a Python branch and a preset with
-        # the prob at 0 does not put the block in the trace at all. Each block
-        # keys off `fold_in(rng, 0x100 + idx)` with an index of its own rather
-        # than taking keys from the split above, so every draw owns an
-        # independent stream: enabling one draw moves no other draw's samples,
-        # and enabling none leaves the base sampler untouched
-        # (tests/integration/test_golden_baseline.py is the gate).
-        #
-        # 0x100 is why that holds. `fold_in(key, i)` is bit-identical to
-        # `split(key, n)[i]` for every i < n, so a draw folding in a small
-        # index would key off one of the base split keys above -- index 1
-        # would BE r2, the vy uniform key. Offsetting the domain puts every
-        # draw's key out of reach of any split of `rng`, however wide that
-        # split later grows. Re-splitting the folded key (which every block
-        # below does) is not enough on its own: a block that sampled straight
-        # off an un-offset folded key would get a selector that is a
-        # deterministic function of another axis's value.
-        # tests/integration/test_pure_command_draws.py pins this.
-        #
-        # The index table is fixed: 1 wz, 2 vy, 3 slow, 4 fast, 5 back. 0 is
-        # reserved and 6 up are free for future draws. A new draw takes the
-        # next free index and never reuses one.
-        #
-        # Every draw is fold_in-gated, pure_wz and pure_vy included. A draw
-        # that took its key out of the base split unconditionally would shift
-        # every other sample whenever it was switched off.
-        wz_p = c.get("pure_wz_prob", 0.0)
-        if wz_p:
-            # r_b is unused: pure_wz keeps the wz the base draw already made
-            # and only zeroes the linear part. The split still runs so all
-            # five draws have the same shape -- giving wz a dedicated range
-            # later can take r_b without moving r_a's bernoulli stream.
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 1))
-            vel = jp.where(jax.random.bernoulli(r_a, wz_p), vel.at[:2].set(0.0), vel)
-        vy_p = c.get("pure_vy_prob", 0.0)
-        if vy_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 2))  # r_b unused, see above
-            vel = jp.where(
-                jax.random.bernoulli(r_a, vy_p), jp.array([0.0, vel[1], 0.0]), vel
-            )
-        slow_p = c.get("pure_slow_prob", 0.0)
-        if slow_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 3))
-            vx = jax.random.uniform(r_b, minval=c.slow_vx[0], maxval=c.slow_vx[1])
-            vel = jp.where(jax.random.bernoulli(r_a, slow_p), jp.array([vx, 0.0, 0.0]), vel)
-        fast_p = c.get("pure_fast_prob", 0.0)
-        if fast_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 4))
-            vx = jax.random.uniform(r_b, minval=c.fast_vx[0], maxval=c.fast_vx[1])
-            vel = jp.where(jax.random.bernoulli(r_a, fast_p), jp.array([vx, 0.0, 0.0]), vel)
-        back_p = c.get("pure_back_prob", 0.0)
-        if back_p:
-            r_a, r_b = jax.random.split(jax.random.fold_in(rng, 0x100 + 5))
-            vx = jax.random.uniform(r_b, minval=c.back_vx[0], maxval=c.back_vx[1])
-            vel = jp.where(jax.random.bernoulli(r_a, back_p), jp.array([vx, 0.0, 0.0]), vel)
-
-        # Last word: standing still overrides every draw above.
-        zero = jax.random.bernoulli(r4, c.zero_prob)
-        return jp.where(zero, jp.zeros(3), vel)
+        return progress.command_from_draws(jax_command_draws(rng, c), c)
 
     def _yaw(self, data):
-        q = self._quat(data)
-        return jp.arctan2(2.0 * (q[0] * q[3] + q[1] * q[2]), 1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2))
+        return signals.base_yaw(self._quat(data))
 
     def _heading_err(self, data, info):
-        err = info["yaw_ref"] - self._yaw(data)
-        return jp.clip(jp.arctan2(jp.sin(err), jp.cos(err)), -1.0, 1.0)
+        return signals.heading_err(info["yaw_ref"], self._yaw(data))
 
     def _cmd_speed(self, command):
         """Planar speed the gait clock should serve; turning counts too."""
-        return jp.linalg.norm(command[:2]) + progress.YAW_SPEED_WEIGHT * jp.abs(command[2])
+        return progress.cmd_speed(command)
 
     def _leg_phases(self, info):
-        phase = info["phase"] + jp.array(_PHASE_OFFSETS)
-        return jp.fmod(phase + jp.pi, 2 * jp.pi) - jp.pi
+        return progress.leg_phases(info["phase"])
 
     def _gait_targets(self, info):
         """(target foot clearance, stance mask) from the duty-aware clock."""
         g = self._config.gait
-        duty = g.duty
-        theta = jp.fmod(self._leg_phases(info) + 2 * jp.pi, 2 * jp.pi) / (2 * jp.pi)
-        swing_frac = 1.0 - duty
-        in_swing = theta < swing_frac
-        rz = g.swing_height * jp.sin(jp.pi * theta / swing_frac) * in_swing
-        return rz, ~in_swing
+        return progress.gait_targets(info["phase"], g.duty, g.swing_height)
 
     def _phase_dt(self, command):
         """Clock increment: speed-scaled; frozen when told to stand."""
-        g = self._config.gait
-        speed = self._cmd_speed(command)
-        frac = jp.clip(speed / self._cmd_vmax, 0.0, 1.0)
-        freq = g.freq[0] + (g.freq[1] - g.freq[0]) * frac
-        return jp.where(speed > self._deadband, 2 * jp.pi * self.dt * freq, 0.0)
+        return progress.phase_dt(
+            command, self._cmd_vmax, self._config.gait.freq, self.dt, self._deadband
+        )
 
     # -- reset / step -------------------------------------------------------
     def reset(self, rng: jax.Array) -> mjx_env.State:
-        rng, r_cmd, r_pose = jax.random.split(rng, 3)
-        command = self._sample_command(r_cmd)
+        d = jax_reset_draws(rng, self._config, self.action_size)
+        command = progress.command_from_draws(d["command"], self._config.command)
 
         # Reset pose noise: uniform +-reset_noise (rad) on
         # every actuated joint's qpos. reset_noise=0.0 degenerates to the
@@ -865,60 +943,35 @@ class Joystick(HumanoidEnv):
         # control steps. ctrl still holds the ctrl-space neutral, which the
         # anchor never moves: the pose anchor and the ctrl anchor are
         # separate by design (see envs/base.py).
-        reset_noise = self._config.get("reset_noise", 0.0)
-        pose_noise = jax.random.uniform(r_pose, (self.action_size,), minval=-1.0, maxval=1.0)
-        qpos = self._reset_qpos.at[self._qadr].add(pose_noise * reset_noise)
+        qpos = self._reset_qpos.at[self._qadr].add(
+            gait_state.reset_offset(d["pose_noise"], self._config.get("reset_noise", 0.0))
+        )
 
         data = self._make_data()
         data = data.replace(qpos=qpos, qvel=jp.zeros(self._mj_model.nv), ctrl=self._neutral_ctrl)
         data = mjx.forward(self._mjx_model, data)
 
+        # The gait trackers and the config-gated keys (push_countdown, mirror,
+        # air_dur_ema, progress_ema) are seeded by gait_state.reset_state. The
+        # trackers are seeded unconditionally, like feet_air_time: the info
+        # pytree must not change shape with the reward scales, and
+        # envs/wrappers.py's GaitReseedWrapper restarts them on every
+        # in-place respawn. The EMAs, the push countdown and the mirror flag
+        # are config-gated: off, no key is split and the pytree is unchanged.
+        # progress_ema starts at ratio 1, so the hazard can only come from
+        # measured shortfall, never from the seed (see no_progress in
+        # default_config).
         info = {
-            "rng": rng,
-            "command": command,
-            "last_action": jp.zeros(self.action_size),
-            "last_last_action": jp.zeros(self.action_size),
-            "last_torque": jp.zeros(self.action_size),
-            "feet_air_time": jp.zeros(self._n_feet),
-            # Stance-dwell mirror of feet_air_time, for feet_air_time_biped.
-            "feet_contact_time": jp.zeros(self._n_feet),
-            # Per-swing peak clearance, for feet_apex (see step()). Seeded
-            # unconditionally, like feet_air_time: the info pytree must not
-            # change shape with the reward scales.
-            "swing_apex": jp.zeros(self._n_feet),
-            # Each foot's peak over its last completed swing, for
-            # feet_apex_min. Seeded unconditionally like swing_apex, so
-            # envs/wrappers.py's GaitReseedWrapper can restart it whatever
-            # the scales.
-            "last_apex": jp.zeros(self._n_feet),
-            "last_contact": jp.zeros(self._n_feet, dtype=bool),
-            "phase": jp.array(0.0),
-            "step_count": jp.array(0),
-            "steps_since_cmd": jp.array(0),
-            **({"yaw_ref": self._yaw(data)} if self._heading_obs else {}),
+            "rng": d["rng"],
+            **gait_state.reset_state(
+                command,
+                self._consts,
+                self._config,
+                yaw=self._yaw(data) if self._heading_obs else None,
+                push_countdown=d.get("push_countdown"),
+                mirror_u=d.get("mirror_u"),
+            ),
         }
-        if self._gait_dur_ema_on:
-            # Per-foot EMAs of completed swing/stance durations, for
-            # gait_symmetry and gait_symmetry_income. Config-gated like
-            # push_countdown: while both terms are off the info pytree is
-            # unchanged. In training they, and the per-foot mode timers
-            # that feed them, restart on every in-place respawn through
-            # envs/wrappers.py's GaitReseedWrapper; this reset() covers only
-            # an env's first episode there.
-            info["air_dur_ema"] = jp.zeros(self._n_feet)
-            info["stance_dur_ema"] = jp.zeros(self._n_feet)
-        if self._config.push.enable and self._config.push.get("interval_steps_range", None):
-            # Seed the random push schedule. Config-gated: the extra split
-            # exists only when the schedule is armed.
-            lo, hi = (int(v) for v in self._config.push.interval_steps_range)
-            info["rng"], r_cd = jax.random.split(info["rng"])
-            info["push_countdown"] = jax.random.randint(r_cd, (), lo, hi + 1)
-        if self._config.symmetry.enable:
-            # The mirror flag (see symmetry in default_config). Config-gated
-            # like push_countdown: off, no key is split and the info pytree
-            # is unchanged.
-            info["rng"], r_mirror = jax.random.split(info["rng"])
-            info["mirror"] = jax.random.bernoulli(r_mirror, self._config.symmetry.mirror_prob)
         # CRITICAL for scan-carry parity: every reward/* key present here
         # must also be present after every step() (see step()'s metric
         # merge below), or brax's training scan chokes on a changing
@@ -932,7 +985,6 @@ class Joystick(HumanoidEnv):
             # seed (see no_progress in default_config). Both metrics are
             # seeded here for the scan-carry parity the comment above
             # demands: step() writes them on every step when the cut is on.
-            info["progress_ema"] = self._cmd_speed(command)
             metrics["no_progress_cut"] = jp.zeros(())
             metrics["progress_ratio_per_step"] = jp.zeros(())
         obs = self._mirror_obs(self._build_obs(data, info), info)
@@ -940,184 +992,42 @@ class Joystick(HumanoidEnv):
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         info = dict(state.info)
-        if self._config.no_progress.enable:
-            # The extra key is split off only when the cut is on, so the
-            # default trajectory keeps the stock 4-way split and the whole
-            # RNG stream is unchanged while the feature is off
-            # (tests/integration/test_golden_baseline.py is the gate).
-            rng, r_noise, r_cmd, r_push, r_term = jax.random.split(info["rng"], 5)
-        else:
-            rng, r_noise, r_cmd, r_push = jax.random.split(info["rng"], 4)
-            r_term = None
-        info["rng"] = rng
+        # jax_step_draws splits off the cut's key only when the cut is on, so
+        # the default trajectory keeps the stock 4-way split and the whole RNG
+        # stream is unchanged while the feature is off
+        # (tests/integration/test_golden_baseline.py is the gate).
+        draws = jax_step_draws(info["rng"], self._config)
+        info["rng"] = draws["rng"]
 
         # Symmetry augmentation: a mirrored env's policy acted on mirrored
-        # observations, so its action is in the mirrored frame. Map it back
-        # before anything reads it (motor targets, the action rewards,
-        # last_action): everything below stays in the real frame. The stored
-        # real-frame last_action reaches the policy through _mirror_obs,
-        # which maps it back to the action the policy emitted, since the
-        # mirror is an involution.
-        if self._config.symmetry.enable:
-            action = jp.where(info["mirror"], self._act_sign * action[self._act_perm], action)
-
-        motor_targets = jp.clip(
-            self._actuator_model.ctrl_from_action(action, self._default_pose, self._action_scale),
-            self._ctrl_lo,
-            self._ctrl_hi,
+        # observations, so its action is in the mirrored frame.
+        # pre_physics maps it back before anything reads it (motor targets,
+        # the action rewards, last_action): everything below stays in the
+        # real frame. The stored real-frame last_action reaches the policy
+        # through the observation mirror (_mirror_obs), which maps it back to the
+        # action the policy emitted, since the mirror is an involution.
+        info, action, motor_targets, kick = gait_state.pre_physics(
+            info, action, self._consts, self._config, draws["push"]
         )
 
         data = state.data
-        if self._config.push.enable:
-            pc = self._config.push
-            # Each knob is config-gated and draws off fold_in(r_push,
-            # 0x100 + i), the offset rule of _sample_command. An off knob
+        if kick is not None:
+            # Each push knob is config-gated and draws off fold_in(r_push,
+            # 0x100 + i), the offset rule of the command draws. An off knob
             # does not change the trace.
-            interval_range = pc.get("interval_steps_range", None)
-            if interval_range:
-                # The countdown fires at zero, then redraws the gap.
-                lo, hi = (int(v) for v in interval_range)
-                push_now = info["push_countdown"] <= 0
-                next_cd = jax.random.randint(
-                    jax.random.fold_in(r_push, 0x100 + 1), (), lo, hi + 1
-                )
-                info["push_countdown"] = jp.where(
-                    push_now, next_cd, info["push_countdown"] - 1
-                )
-            else:
-                push_now = (info["step_count"] % pc.interval_steps) == (
-                    pc.interval_steps - 1
-                )
-            push = jax.random.uniform(r_push, (2,), minval=-1.0, maxval=1.0)
-            push = push / (jp.linalg.norm(push) + 1e-6) * pc.vel
-            qvel = data.qvel.at[self._base_vadr : self._base_vadr + 2].add(
-                jp.where(push_now, push, jp.zeros(2))
-            )
-            if pc.get("vel_z", 0.0):
-                kick_z = jax.random.uniform(
-                    jax.random.fold_in(r_push, 0x100 + 2),
-                    minval=-pc.vel_z,
-                    maxval=pc.vel_z,
-                )
-                qvel = qvel.at[self._base_vadr + 2].add(jp.where(push_now, kick_z, 0.0))
-            ang_rp = pc.get("ang_vel_rp", 0.0)
-            ang_yaw = pc.get("ang_vel_yaw", 0.0)
-            if ang_rp or ang_yaw:
-                bound = jp.array([ang_rp, ang_rp, ang_yaw])
-                kick_ang = jax.random.uniform(
-                    jax.random.fold_in(r_push, 0x100 + 3), (3,), minval=-bound, maxval=bound
-                )
-                qvel = qvel.at[self._base_vadr + 3 : self._base_vadr + 6].add(
-                    jp.where(push_now, kick_ang, jp.zeros(3))
-                )
+            bv = self._base_vadr
+            qvel = data.qvel.at[bv : bv + 2].add(kick["planar"])
+            if kick["z"] is not None:
+                qvel = qvel.at[bv + 2].add(kick["z"])
+            if kick["ang"] is not None:
+                qvel = qvel.at[bv + 3 : bv + 6].add(kick["ang"])
             data = data.replace(qvel=qvel)
 
         data = mjx_env.step(self._mjx_model, data, motor_targets, self.n_substeps)
-        if self._heading_obs:
-            info["yaw_ref"] = jp.where(jp.abs(info["command"][2]) > 0.05, self._yaw(data), info["yaw_ref"])
-
-        contact = self._foot_contact(data)
-        contact_filt = contact | info["last_contact"]
-        first_contact = (info["feet_air_time"] > 0) & contact_filt
-
-        # Swing-apex tracker for feet_apex, bracketing the reward call. On
-        # the way up it takes the running maximum of each airborne foot's
-        # clearance; on the step a foot lands, contact_filt is already true,
-        # so this update skips and the term reads the peak the completed
-        # swing actually reached. After the reward, a landing foot's peak is
-        # recorded in last_apex (feet_apex_min reads the other foot's), and
-        # only then does the zeroing arm the next swing. All of it runs
-        # whatever the scales are: the trackers are info state, not
-        # rewards, and their shape must not depend on the config.
-        info["swing_apex"] = jp.where(
-            ~contact_filt,
-            jp.maximum(info["swing_apex"], self._foot_clearance(data)),
-            info["swing_apex"],
-        )
-
-        rewards, fall = self._compute_rewards(data, info, action, first_contact, contact)
-
-        if self._gait_dur_ema_on:
-            # Fold each completed mode duration into its foot's EMA on the
-            # event step: a landing closes a swing, a liftoff closes a
-            # stance. Runs after the reward call (which reads the previous
-            # step's EMAs) and before the mode-time resets below, which
-            # erase the completed durations.
-            alpha = self._config.reward.gait_symmetry_alpha
-            lift_off = (info["feet_contact_time"] > 0) & ~contact_filt
-            info["air_dur_ema"] = jp.where(
-                first_contact,
-                (1.0 - alpha) * info["air_dur_ema"] + alpha * info["feet_air_time"],
-                info["air_dur_ema"],
-            )
-            info["stance_dur_ema"] = jp.where(
-                lift_off,
-                (1.0 - alpha) * info["stance_dur_ema"] + alpha * info["feet_contact_time"],
-                info["stance_dur_ema"],
-            )
-
-        info["last_apex"] = jp.where(first_contact, info["swing_apex"], info["last_apex"])
-        info["swing_apex"] = jp.where(contact_filt, 0.0, info["swing_apex"])
-        info["feet_air_time"] = jp.where(contact_filt, 0.0, info["feet_air_time"] + self.dt)
-        info["feet_contact_time"] = jp.where(contact_filt, info["feet_contact_time"] + self.dt, 0.0)
-        info["last_contact"] = contact
-        info["last_last_action"] = info["last_action"]
-        info["last_action"] = action
-        info["last_torque"] = data.actuator_force
-        info["step_count"] = info["step_count"] + 1
-
-        phase = info["phase"] + self._phase_dt(info["command"])
-        info["phase"] = jp.fmod(phase + jp.pi, 2 * jp.pi) - jp.pi
-
-        info["steps_since_cmd"] = info["steps_since_cmd"] + 1
-
-        # No-progress cut (see no_progress in default_config): an env that
-        # keeps ignoring its command dies with a probability that grows with
-        # the shortfall. Evaluated here, after the steps_since_cmd increment
-        # and before the resample below, so it scores the command that
-        # actually drove this step. A true termination: it only flips `done`,
-        # it attaches no reward term, and rewards["termination"] stays
-        # fall-only. Losing the rest of the episode is the whole penalty.
-        done = fall
-        if self._config.no_progress.enable:
-            npg = self._config.no_progress
-            cmd = info["command"]
-            demand = self._cmd_speed(cmd)
-            served = progress.served(self._local_linvel(data)[:2], self._gyro(data)[2], cmd)
-            alpha = self.dt / npg.ema_sec
-            info["progress_ema"] = (1.0 - alpha) * info["progress_ema"] + alpha * served
-            progress_ratio = info["progress_ema"] / jp.maximum(demand, 1e-6)
-            hazard = progress.hazard(progress_ratio, npg.risk_below, npg.p_max)
-            armed = progress.armed(demand, info["steps_since_cmd"], self.dt, npg.grace_sec)
-            no_progress_cut = jax.random.bernoulli(r_term, jp.where(armed, hazard, 0.0))
-            done = done | no_progress_cut
-
-        resample = info["steps_since_cmd"] >= self._config.command.resample_steps
-        info["command"] = jp.where(resample, self._sample_command(r_cmd), info["command"])
-        info["steps_since_cmd"] = jp.where(resample, 0, info["steps_since_cmd"])
-        if self._config.no_progress.enable:
-            # A fresh command restarts the meter at ratio 1: the EMA is
-            # reseeded to the new demand, and steps_since_cmd going back to 0
-            # keeps the hazard at zero for grace_sec while the robot turns
-            # the gait around.
-            #
-            # This is the only reseed site INSIDE the env. It is not the only
-            # one that has to exist: `info` survives every respawn, because
-            # the trainer's wrap_for_brax_training ends in
-            # BraxAutoResetWrapper(full_reset=False), which restores data and
-            # obs from the cached first state and leaves info alone. A cut
-            # env would otherwise come back with the dead episode's shortfall
-            # and a steps_since_cmd well past grace, and die again inside
-            # what should have been its grace window. envs/wrappers.py's
-            # ProgressReseedWrapper does that reseed, and train.py layers it
-            # on whenever this flag is set. Any other wrapper that restarts an
-            # episode in place owns the same reseed.
-            info["progress_ema"] = jp.where(
-                resample, self._cmd_speed(info["command"]), info["progress_ema"]
-            )
-
-        reward = sum(rewards[k] * self._config.reward.scales[k] for k in rewards)
-        reward = jp.clip(reward * self.dt, -100.0, 100.0)
+        r = signals.readings(data, self._consts)
+        # The step order is stated once, in gait_state.update's docstring.
+        info, rewards, done, aux = gait_state.update(info, r, action, self._consts, self._config, draws)
+        reward = compose.total_reward(rewards, self._config.reward.scales, self.dt)
 
         # Merge over the incoming metrics rather than replacing them: brax's
         # EvalWrapper injects extra keys (e.g. "reward") into state.metrics
@@ -1133,29 +1043,15 @@ class Joystick(HumanoidEnv):
             # ended on the cut. The ratio does carry the suffix, so brax
             # reports its mean, and it is clipped so over-delivery on a slow
             # command cannot hide shortfall elsewhere in the average.
-            metrics["no_progress_cut"] = no_progress_cut.astype(jp.float32)
-            metrics["progress_ratio_per_step"] = jp.clip(progress_ratio, 0.0, 2.0)
+            metrics["no_progress_cut"] = aux["cut"].astype(jp.float32)
+            metrics["progress_ratio_per_step"] = jp.clip(aux["progress_ratio"], 0.0, 2.0)
 
-        obs = self._mirror_obs(self._build_obs(data, info, r_noise), info)
+        obs = self._mirror_obs(self._observe(signals.catalog(r, info, self._consts), draws["noise_key"]), info)
         return mjx_env.State(data, obs, reward, done.astype(jp.float32), metrics, info)
 
     # -- observations -------------------------------------------------------
     def _obs_catalog(self, data, info):
-        catalog = super()._obs_catalog(data, info)
-        catalog["command"] = info["command"]
-        catalog["heading_err"] = (
-            self._heading_err(data, info)[None] if "yaw_ref" in info else jp.zeros(1)
-        )
-        if not any(float(f) for f in self._config.gait.freq):
-            # A frozen clock (gait.freq [0, 0]) carries no timing, but its
-            # (0, pi) leg offsets would still hand the actor a constant
-            # [1, -1, 0, 0]: a permanent left/right marker that lets the policy
-            # specialize one leg and that no mirrored state ever matches.
-            catalog["phase"] = jp.zeros(2 * self._n_feet)
-            return catalog
-        leg_phase = self._leg_phases(info)
-        catalog["phase"] = jp.concatenate([jp.cos(leg_phase), jp.sin(leg_phase)])
-        return catalog
+        return signals.catalog(signals.readings(data, self._consts), info, self._consts)
 
     def _catalog_probe_info(self):
         """This task's own `info` inputs to the catalog: the command and the
@@ -1164,216 +1060,6 @@ class Joystick(HumanoidEnv):
 
     # -- rewards --------------------------------------------------------------
     def _compute_rewards(self, data, info, action, first_contact, contact):
-        cmd = info["command"]
-        linvel = self._local_linvel(data)
-        gyro = self._gyro(data)
-        gravity = self._gravity_body(data)
-        cfg = self._config.reward
-        moving = self._cmd_speed(cmd) > self._deadband
-
-        qpos_act = data.qpos[self._qadr]
-        qvel_act = data.qvel[self._vadr]
-
-        foot_clearance = self._foot_clearance(data)
-        target_clearance, _stance_mask = self._gait_targets(info)
-        foot_vel = self._foot_linvel(data)
-
-        base_height = data.qpos[self._base_qadr + 2]
-        fall = (base_height < self._config.fall.min_height) | (gravity[2] > self._config.fall.max_tilt_gz)
-
-        # Velocity tracking kernels: absolute or command-relative, optionally
-        # blended with a wider far-field exponential, optionally gating each
-        # other. Every switch below is static config read here at trace time
-        # under a plain Python if, so all-off compiles to exactly the two
-        # legacy absolute kernels.
-        err_lin = terms.tracking_err_lin(cmd[:2], linvel[:2])
-        err_ang = terms.tracking_err_ang(cmd[2], gyro[2])
-
-        far_w = cfg.get("tracking_far_weight", 0.0)
-
-        def _far_blend(kernel, err_sq):
-            """The far-field mix-in (see tracking_far_weight in
-            default_config). far_w is static config, so weight 0 returns the
-            bare kernel untouched rather than a numerically-equal blend."""
-            if not far_w:
-                return kernel
-            return terms.tracking_far_blend(kernel, err_sq, far_w, cfg.tracking_far_sigma)
-
-        if cfg.get("tracking_relative", False):
-            k_lin = terms.tracking_kernel(
-                err_lin,
-                terms.tracking_rel_sigma(
-                    jp.linalg.norm(cmd[:2]), cfg.tracking_rel_sigma, cfg.tracking_rel_floor_lin
-                ),
-            )
-            k_ang = terms.tracking_kernel(
-                err_ang,
-                terms.tracking_rel_sigma(
-                    jp.abs(cmd[2]), cfg.tracking_rel_sigma, cfg.tracking_rel_floor_ang
-                ),
-            )
-        else:
-            k_lin = terms.tracking_kernel(err_lin, cfg.tracking_sigma)
-            k_ang = terms.tracking_kernel(err_ang, cfg.tracking_sigma)
-        # Both branches blend, and both pass the raw squared error: the far
-        # kernel is absolute either way.
-        k_lin = _far_blend(k_lin, err_lin)
-        k_ang = _far_blend(k_ang, err_ang)
-        if cfg.get("tracking_product", False):
-            # Gate each term by the other's kernel: tracking pays only for
-            # tracking the whole command (see tracking_product in
-            # default_config). The reassignment is simultaneous, so both
-            # sides read the pre-product kernels and both come out equal to
-            # the same product.
-            k_lin, k_ang = k_lin * k_ang, k_ang * k_lin
-
-        # Gait-shaping gate (see shaping_tracking_gate in default_config):
-        # the positive gait terms follow the linear tracking kernel, after
-        # the product gate when that is on. Gated set: feet_air_time,
-        # feet_air_time_biped, feet_apex, and gait_symmetry_income and
-        # feet_apex_min (below).
-        # feet_phase stays ungated on purpose -- it is the clock-following
-        # gradient, and it has to survive at zero tracking because stepping
-        # is how tracking starts.
-        shape_gate = k_lin if cfg.get("shaping_tracking_gate", False) else 1.0
-
-        # sin^2 of the tilt from vertical, less the tolerance cone (see
-        # reward.orientation_tol_deg). The cone is a construct-time float, so
-        # the default 0 leaves the legacy expression exactly as it was.
-        orientation = terms.orientation(gravity[:2])
-        if self._orientation_tol:
-            orientation = jp.maximum(orientation - self._orientation_tol, 0.0)
-
-        rewards = {
-            "tracking_lin_vel": k_lin,
-            "tracking_ang_vel": k_ang,
-            "lin_vel_z": terms.lin_vel_z(linvel[2]),
-            "ang_vel_xy": terms.ang_vel_xy(gyro[:2]),
-            "orientation": orientation,
-            "torques": terms.torques(data.actuator_force),
-            "torque_rate": terms.torque_rate(data.actuator_force, info["last_torque"]),
-            "action_rate": terms.action_rate(action, info["last_action"]),
-            "action_accel": terms.action_accel(action, info["last_action"], info["last_last_action"]),
-            "energy": terms.energy(qvel_act, data.actuator_force),
-            # Both pose terms score the deviation from _pose_anchor, which is
-            # _default_pose itself unless real_pose_ref settled one (see
-            # default_config). The anchor is a REWARD reference only: the
-            # action still centers on _default_pose.
-            "pose": terms.pose(qpos_act, self._pose_anchor, self._pose_weight),
-            "feet_air_time": terms.feet_air_time(info["feet_air_time"], first_contact, self._config.gait.air_time_cap)
-            * moving
-            * shape_gate,
-            "feet_slip": terms.feet_slip(foot_vel[:, :2], contact) * moving,
-            "feet_phase": terms.feet_phase(foot_clearance, target_clearance, cfg.phase_sigma) * moving,
-            "stand_still": terms.stand_still(
-                qpos_act, self._pose_anchor, qvel_act,
-                cfg.get("stand_still_vel_weight", 0.2),
-            ) * (~moving),
-            "termination": terms.termination(fall),
-            "torque_limit": terms.torque_limit(data.actuator_force, self._torque_cap, cfg.torque_limit_frac),
-            # Appended at the END on purpose: the scaled sum below adds the
-            # terms in dict order, so a key inserted mid-dict shifts every
-            # later float addition and breaks the recorded goldens.
-            #
-            # feet_apex is in the shape_gate's set (see above): a tall swing
-            # while the command goes unserved is the same stand-and-lift
-            # income the gate exists to remove. feet_landing is NOT -- it is
-            # a penalty, and gating a penalty on the tracking kernel would
-            # relax it exactly when tracking is failing, which is when feet
-            # are being slammed into the floor.
-            "feet_apex": terms.feet_apex(info["swing_apex"], first_contact, cfg.apex_target)
-            * moving
-            * shape_gate,
-            "feet_landing": terms.feet_landing(foot_vel[:, 2], foot_clearance, cfg.glide_height)
-            * moving,
-            # Ported robolab terms, after the pre-port set for the same
-            # order reason as feet_apex.
-            "pose_l1": terms.pose_l1(qpos_act, self._pose_anchor, self._pose_l1_weight),
-            "joint_pos_limits": terms.joint_pos_limits(
-                qpos_act, self._soft_lo_j, self._soft_hi_j
-            ),
-            "joint_vel": terms.joint_vel(qvel_act),
-            "joint_acc": terms.joint_acc(data.qacc[self._vadr]),
-            "upward": terms.upward(gravity[2]),
-            "feet_distance": terms.distance_band(
-                self._body_y_separation(data, self._ankle_pair), *cfg.feet_distance_range
-            )
-            if self._ankle_pair
-            else jp.zeros(()),
-            "knee_distance": terms.distance_band(
-                self._body_y_separation(data, self._knee_pair), *cfg.knee_distance_range
-            )
-            if self._knee_pair
-            else jp.zeros(()),
-            # Zero-command mask, like stand_still. Upstream gates on
-            # |cmd| < 0.01; ~moving uses the shared deadband.
-            "feet_contact_without_cmd": terms.feet_contact_without_cmd(contact, gravity[2])
-            * (~moving),
-            # The mode times read the pre-update info on purpose: the
-            # bookkeeping above runs after the reward call (the landing-event
-            # feet_air_time needs the completed swing's time), so this term
-            # sees each dwell one control step late. A dt lag against a 0.4 s
-            # clamp does not change the shape. Gated by `moving`, not
-            # upstream's |cmd_xy| > 0.1: our pure-spin commands need steps
-            # too. In the shape_gate set with the other positive gait terms,
-            # since single-stance dwell is stand-and-lift income by
-            # definition.
-            "feet_air_time_biped": terms.feet_air_time_biped(
-                info["feet_air_time"],
-                info["feet_contact_time"],
-                contact | info["last_contact"],
-                cfg.get("biped_air_time_threshold", 0.4),
-            )
-            * moving
-            * shape_gate,
-        }
-        # Style terms, config-gated (see __init__): absent at scale 0, so
-        # the goldens' metric set and float-add order are untouched.
-        # knee_stance and gait_symmetry are penalties, so neither joins the
-        # shape_gate set (the feet_landing rationale above);
-        # gait_symmetry_income is a positive gait term and does, since a
-        # symmetric single stance while the command goes unserved is
-        # stand-and-lift income like feet_air_time_biped's. knee_stance is
-        # masked by `moving`: at a zero command stand_still and pose_l1
-        # anchor the knees on the home keyframe's 0.3 rad, and an unmasked
-        # cone would fight that anchor into exactly the standing dither it
-        # must not add.
-        if self._knee_stance_on:
-            rewards["knee_stance"] = (
-                terms.knee_stance(
-                    qpos_act[self._knee_qidx], contact, cfg.knee_stance_tol
-                )
-                * moving
-            )
-        if self._gait_symmetry_on:
-            rewards["gait_symmetry"] = (
-                terms.gait_symmetry(
-                    info["air_dur_ema"],
-                    info["stance_dur_ema"],
-                    cfg.gait_symmetry_floor,
-                    cfg.get("gait_symmetry_cap", 1.0),
-                )
-                * moving
-            )
-        if self._gait_symmetry_income_on:
-            rewards["gait_symmetry_income"] = (
-                terms.gait_symmetry_income(
-                    info["air_dur_ema"],
-                    info["stance_dur_ema"],
-                    contact,
-                    cfg.gait_symmetry_floor,
-                    cfg.get("gait_symmetry_cap", 1.0),
-                )
-                * moving
-                * shape_gate
-            )
-        if self._feet_apex_min_on:
-            # In the shape_gate set for feet_apex's reason.
-            rewards["feet_apex_min"] = (
-                terms.feet_apex_min(
-                    info["swing_apex"], info["last_apex"], first_contact, cfg.apex_target
-                )
-                * moving
-                * shape_gate
-            )
-        return rewards, fall
+        return compose.compute_rewards(
+            signals.readings(data, self._consts), info, action, first_contact, contact, self._consts, self._config
+        )

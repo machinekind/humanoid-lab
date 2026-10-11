@@ -53,6 +53,11 @@ from humanoid_lab.export import runtime
 TOLERANCE = 1e-4
 # Random observations per validation.
 SAMPLES = 32
+# Offset from the speed deadband for the scripted commands. Well above
+# float32 rounding at a deadband of 0.15.
+DEADBAND_PROBE = 1e-3
+# Steps each scripted command is held.
+SCRIPTED_HOLD = 3
 
 # What the numpy runtime implements. A checkpoint trained with anything
 # else fails validation one anyway; refusing here says why.
@@ -162,6 +167,9 @@ def load_for_export(run_dir) -> Loaded:
     run, env, checkpoint, inference = battery.load_checkpoint_policy(
         run_dir, extra_env_overrides={"sim": {"backend": "auto", "num_envs": 1}}
     )
+    # run.json's env_config can be stale (a wtrain run keeps its source
+    # run's), so the rebuilt env's own config is checked too.
+    check_config_covered(env._config.to_dict())
     meta = build_contract(env, run, checkpoint)
 
     obs_key = ((run.get("ppo_config") or {}).get("network_factory") or {}).get(
@@ -206,9 +214,18 @@ def validate_runtime_vs_env(env, out_dir, inference, privileged_size, steps: int
     the action through the env's own actuator model and clip bounds. Both
     see the same sensor stream, and each carries its own last action and
     clock, so any drift compounds over the run instead of cancelling.
+
+    The phase observation comes from the env's own catalog. The run starts
+    with scripted commands: standing still, and a speed and a turn rate just
+    below and just above the env's speed deadband, each held for a few
+    steps. They make a wrong deadband in the written meta show up as a
+    different clock. Scripted commands outside the command box are skipped.
+    Then `steps` random commands follow.
     """
     import jax
     import jax.numpy as jp
+
+    from humanoid_lab.envs import progress
 
     policy = runtime.DeployPolicy.load(out_dir)
     policy.reset()
@@ -220,20 +237,41 @@ def validate_runtime_vs_env(env, out_dir, inference, privileged_size, steps: int
     low = np.array([command.vx[0], command.vy[0], command.wz[0]])
     high = np.array([command.vx[1], command.vy[1], command.wz[1]])
 
+    db = float(env._deadband)
+    scripted = [
+        [0.0, 0.0, 0.0],
+        [db - DEADBAND_PROBE, 0.0, 0.0],
+        [db + DEADBAND_PROBE, 0.0, 0.0],
+        [0.0, 0.0, (db - DEADBAND_PROBE) / progress.YAW_SPEED_WEIGHT],
+        [0.0, 0.0, (db + DEADBAND_PROBE) / progress.YAW_SPEED_WEIGHT],
+    ]
+    commands = [
+        np.array(c)
+        for c in scripted
+        if np.all(np.array(c) >= low) and np.all(np.array(c) <= high)
+        for _ in range(SCRIPTED_HOLD)
+    ]
+
     rng = np.random.default_rng(0)
     key = jax.random.PRNGKey(0)
     blind = np.zeros(privileged_size, np.float32)
     last_action = np.zeros(nu, np.float32)
+    data0 = env._make_data()
     phase = 0.0
     worst = 0.0
-    for _ in range(steps):
+    for i in range(len(commands) + steps):
         gyro = rng.uniform(-2.0, 2.0, 3)
         gravity = rng.uniform(-1.0, 1.0, 3)
         joint_pos = default_pose + rng.uniform(-0.4, 0.4, nu)
         joint_vel = rng.uniform(-6.0, 6.0, nu)
-        cmd = rng.uniform(low, high)
+        random_cmd = rng.uniform(low, high)
+        cmd = commands[i] if i < len(commands) else random_cmd
 
-        legs = np.asarray(env._leg_phases({"phase": jp.array(phase)}))
+        info = {
+            **env._catalog_probe_info(),
+            "phase": jp.asarray(phase, jp.float32),
+            "command": jp.asarray(cmd, jp.float32),
+        }
         parts = {
             "gyro": gyro,
             "gravity": gravity,
@@ -241,7 +279,7 @@ def validate_runtime_vs_env(env, out_dir, inference, privileged_size, steps: int
             "joint_vel": joint_vel,
             "last_action": last_action,
             "command": cmd,
-            "phase": np.concatenate([np.cos(legs), np.sin(legs)]),
+            "phase": np.asarray(env._obs_catalog(data0, info)["phase"]),
         }
         obs = np.concatenate([parts[name] for name in names]).astype(np.float32)
         action, _ = inference({"state": obs, "privileged_state": blind}, key)

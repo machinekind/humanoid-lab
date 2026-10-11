@@ -1,20 +1,22 @@
 """Training-time env wrappers layered on mujoco_playground's.
 
-Two respawn reseeds live here: the no-progress meter's, applied only when
-`no_progress.enable` is on, and the per-foot gait trackers', applied only
-when a gait-symmetry scale is nonzero. With neither on, `make_wrap_env_fn`
-hands back playground's own function unchanged, so such a run takes the
-identical training path it always did.
+Three respawn reseeds live here, one per layer of envs/gait_state.py: the
+no-progress meter's, applied only when `no_progress.enable` is on, the
+per-foot gait trackers', applied only when a gait-symmetry scale is nonzero,
+and the heading reference's, applied only when `heading_err` is an
+observation. With none on, `make_wrap_env_fn` hands back playground's own
+function unchanged, so such a run takes the identical training path it
+always did. The clearing itself is `gait_state.clear_done`.
 """
 
 from __future__ import annotations
 
 import jax
-import jax.numpy as jp
 from mujoco_playground import wrapper as playground_wrapper
 from mujoco_playground._src import mjx_env
 
-from humanoid_lab.envs.joystick import gait_dur_ema_on
+from humanoid_lab.envs import gait_state, progress, signals
+from humanoid_lab.envs.gait_state import GAIT_TRACKER_KEYS  # noqa: F401  (re-exported)
 
 
 class ProgressReseedWrapper(playground_wrapper.Wrapper):
@@ -35,7 +37,7 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
     burns its samples on a cascade of one-second episodes.
 
     Reseeding to `_cmd_speed(command)` puts the meter at ratio 1, exactly
-    what a command resample does (envs/joystick.py's step). Zeroing
+    what a command resample does (step 10 of envs/gait_state.update). Zeroing
     `steps_since_cmd` restores the grace window on top. Reseeding only the
     EMA and carrying the counter over would re-arm the cut on the respawn's
     first step. The command itself is
@@ -51,24 +53,13 @@ class ProgressReseedWrapper(playground_wrapper.Wrapper):
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         state = self.env.step(state, action)
         done = state.done > 0.0
-        info = dict(state.info)
-        demand = jax.vmap(self.unwrapped._cmd_speed)(info["command"])
-        info["progress_ema"] = jp.where(done, demand, info["progress_ema"])
-        info["steps_since_cmd"] = jp.where(done, 0, info["steps_since_cmd"])
+        info = gait_state.clear_done(
+            state.info,
+            done,
+            ("progress",),
+            {"progress_ema": progress.cmd_speed(state.info["command"])},
+        )
         return state.replace(info=info)
-
-
-# Per-foot gait trackers GaitReseedWrapper restarts on respawn. reset()
-# seeds every one of them to zeros (False for last_contact).
-GAIT_TRACKER_KEYS = (
-    "feet_air_time",
-    "feet_contact_time",
-    "swing_apex",
-    "last_apex",
-    "last_contact",
-    "air_dur_ema",
-    "stance_dur_ema",
-)
 
 
 class GaitReseedWrapper(playground_wrapper.Wrapper):
@@ -99,28 +90,50 @@ class GaitReseedWrapper(playground_wrapper.Wrapper):
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         state = self.env.step(state, action)
         done = state.done > 0.0
-        info = dict(state.info)
-        for k in GAIT_TRACKER_KEYS:
-            v = info[k]
-            mask = jp.reshape(done, done.shape + (1,) * (v.ndim - done.ndim))
-            info[k] = jp.where(mask, jp.zeros_like(v), v)
+        info = gait_state.clear_done(state.info, done, ("gait",), {})
         return state.replace(info=info)
+
+
+class HeadingReseedWrapper(playground_wrapper.Wrapper):
+    """Restart the heading reference whenever an episode respawns.
+
+    `info['yaw_ref']` is the heading the policy is asked to keep, and
+    `heading_err` observes wrap(yaw_ref - yaw). The same
+    `BraxAutoResetWrapper(full_reset=False)` behavior as above applies:
+    `info` survives the respawn while `data` goes back to the first state.
+    A robot that died mid-turn carries a yaw_ref far from the respawn's yaw,
+    so the new episode starts with a large heading error that no command
+    explains. The policy is then trained to correct a heading offset it
+    never earned.
+
+    `state.data` of a done env is already the restored first data, so the
+    fresh reference is the yaw of that data. This sits outside the vmap, and
+    `_quat` is batch-safe.
+    """
+
+    def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+        state = self.env.step(state, action)
+        done = state.done > 0.0
+        yaw = signals.base_yaw(self.unwrapped._quat(state.data))
+        info = gait_state.clear_done(state.info, done, ("heading",), {"yaw_ref": yaw})
+        return state.replace(info=info)
+
+
+_LAYER_WRAPPERS = {
+    "progress": ProgressReseedWrapper,
+    "gait": GaitReseedWrapper,
+    "heading": HeadingReseedWrapper,
+}
 
 
 def make_wrap_env_fn(env_config):
     """The `wrap_env_fn` train.py hands brax's ppo.train.
 
-    With the no-progress cut off and both gait-symmetry scales at 0 this IS
+    With every reseed flag off this IS
     `mujoco_playground.wrapper.wrap_for_brax_training`, the same object, so
-    no run that uses neither changes shape.
+    no run that needs none changes shape.
     """
-    layers = []
-    no_progress = env_config.get("no_progress")
-    if no_progress is not None and no_progress.enable:
-        layers.append(ProgressReseedWrapper)
-    reward = env_config.get("reward")
-    if reward is not None and gait_dur_ema_on(reward.get("scales", {})):
-        layers.append(GaitReseedWrapper)
+    layers = [_LAYER_WRAPPERS[f] for f in gait_state.reseed_flags(env_config)]
     if not layers:
         return playground_wrapper.wrap_for_brax_training
 

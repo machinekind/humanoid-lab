@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import json
+import shutil
 from pathlib import Path
 
 import jax
@@ -212,6 +213,39 @@ def test_a_corrupted_anchor_is_caught_by_the_second_validation(loaded, tmp_path)
         )
 
     assert not out_dir.exists()
+
+
+def test_a_corrupted_speed_deadband_is_caught_by_the_second_validation(loaded, tmp_path):
+    """Only the scripted commands near the deadband can see this one."""
+    out_dir = tmp_path / "bad_deadband"
+    meta = dict(loaded.meta)
+    meta["gait_clock"] = {**meta["gait_clock"], "speed_deadband": 0.15}
+
+    with pytest.raises(export.ExportValidationError, match="deploy runtime"):
+        export.write_validated(
+            loaded.env, meta, loaded.weights, out_dir, loaded.inference, loaded.privileged_size
+        )
+
+    assert not out_dir.exists()
+
+
+def test_a_stale_env_config_cannot_bypass_the_ledger(run_dir, tmp_path, monkeypatch):
+    """run.json's env_config can lag the rebuilt env's, as in a wtrain run."""
+    from humanoid_lab import deploy_contract
+
+    copy = tmp_path / "stale_run"
+    shutil.copytree(run_dir, copy)
+    run = json.loads((copy / "run.json").read_text())
+    del run["env_config"]["command"]["deadband"]
+    (copy / "run.json").write_text(json.dumps(run))
+    monkeypatch.setattr(
+        deploy_contract,
+        "CONSUMED_KEYS",
+        frozenset(deploy_contract.CONSUMED_KEYS - {"command.deadband"}),
+    )
+
+    with pytest.raises(ValueError, match="command.deadband"):
+        export.load_for_export(copy)
 
 
 def test_a_failed_export_leaves_an_earlier_good_export_in_place(loaded, run_dir, tmp_path):

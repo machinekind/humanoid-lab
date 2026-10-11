@@ -38,14 +38,18 @@ the right thigh_roll pivot sits 1.5 mm from the left one's image along the
 roll axis itself, and right_arm_pitch_link sits 1 mm lower than the left
 one.
 
-Everything here is plain numpy on names and sizes (no model, no env), so
-tests/unit covers it. The env validates the assembled maps against its real
-observation sizes at construction.
+The maps are plain numpy on names and sizes (no model, no env), so
+tests/unit covers them. `mirror` applies a map to an array of any namespace.
+This is a shared module (see envs/constants.py for its import rule). The env
+validates the assembled maps against its real observation sizes at
+construction.
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+from humanoid_lab.envs.constants import xp_of
 
 _LEFT = "left_"
 _RIGHT = "right_"
@@ -153,8 +157,7 @@ def foot_mirror(foot_names=DEFAULT_FEET):
 def component_mirror(name, joint_names, foot_names=DEFAULT_FEET, robot: str = DEFAULT_ROBOT):
     """(perm, sign) arrays mirroring one observation catalog component.
 
-    Covers HumanoidEnv._obs_catalog plus the joystick task's command and
-    phase. An unknown component raises KeyError naming it.
+    Covers every entry of envs/signals.catalog. An unknown component raises KeyError naming it.
     """
     n_feet = len(foot_names)
 
@@ -172,6 +175,9 @@ def component_mirror(name, joint_names, foot_names=DEFAULT_FEET, robot: str = DE
     if name == "command":
         # (vx, vy, wz)
         return ident(3, [1.0, -1.0, -1.0])
+    if name == "heading_err":
+        # a yaw angle: a rotation about z, so it flips like command wz and gyro z
+        return ident(1, [-1.0])
     if name == "phase":
         # cos(leg phases) ++ sin(leg phases), foot_sites order. Swapping the
         # feet swaps their clock offsets; the master clock is unchanged.
@@ -185,6 +191,15 @@ def component_mirror(name, joint_names, foot_names=DEFAULT_FEET, robot: str = DE
         f"no mirror map for obs component {name!r}; add it to "
         "humanoid_lab.envs.symmetry before training with symmetry on"
     )
+
+
+def mirror(x, flag, perm, sign):
+    """x mirrored where flag is set: sign * x[..., perm], else x unchanged.
+
+    flag has the batch shape of x. perm and sign index the last axis.
+    """
+    xp = xp_of(x)
+    return xp.where(flag[..., None], sign * x[..., perm], x)
 
 
 def obs_mirror(names, joint_names, foot_names=DEFAULT_FEET, robot: str = DEFAULT_ROBOT):
@@ -202,3 +217,12 @@ def obs_mirror(names, joint_names, foot_names=DEFAULT_FEET, robot: str = DEFAULT
     if not perms:
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
     return np.concatenate(perms), np.concatenate(signs)
+
+
+def policy_mirror_maps(robot_spec, obs_names):
+    """(obs_perm, obs_sign, act_perm, act_sign) for the actor's observation and action."""
+    joints = list(robot_spec.actuated_joints)
+    feet = list(robot_spec.foot_sites)
+    obs_perm, obs_sign = obs_mirror(obs_names, joints, feet, robot_spec.name)
+    act_perm, act_sign = joint_mirror(joints, robot_spec.name)
+    return obs_perm, obs_sign, act_perm, act_sign

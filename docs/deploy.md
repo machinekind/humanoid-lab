@@ -59,8 +59,8 @@ until someone classifies it. `tests/unit/test_deploy_contract.py` walks
 commit time rather than at export time.
 
 The consumed set is small: `ctrl_dt`, `action_scale`, `reset_keyframe`,
-`obs.state`, `obs.include`, the three command box ranges, and `gait.freq`.
-Everything else shapes training only.
+`obs.state`, `obs.include`, the three command box ranges, `gait.freq` and
+`command.deadband`. Everything else shapes training only.
 
 Two classifications carry an argument.
 
@@ -70,6 +70,14 @@ commanded speed fraction, so it ships in `gait_clock` and the runtime
 integrates it. A clock that blended a walk and a trot over speed would have
 no faithful runtime copy, and a phase-observing policy would have to be
 refused.
+
+`command.deadband` is consumed for the same reason. The clock freezes when
+the commanded speed is at or below the deadband, so the runtime needs the
+value. It ships resolved as `gait_clock.speed_deadband`. The env compares a
+float32 speed with `>` and the runtime compares a float64 speed with `<=`.
+The two agree for any command farther from the deadband than float32
+rounding.
+
 `gait.swing_height`, `gait.duty` and `gait.air_time_cap` feed the reward's
 clearance targets, and the observation reads none of them.
 
@@ -132,6 +140,12 @@ over 32 steps of a random sensor stream. The observation assembly order, the
 gait clock, the anchor, the scale and the clip bounds all round-trip. Each
 side carries its own last action and its own clock, so a drift compounds
 over the run instead of cancelling.
+
+The run starts with scripted commands, each held for 3 steps: standing
+still, and a speed and a turn rate just below and just above the deadband.
+A wrong `speed_deadband` in the written meta makes the two clocks diverge
+there. A scripted command outside the command box is skipped. The phase
+observation on the env side comes from the env's own observation catalog.
 
 Both bound the error at 1e-4 and raise `ExportValidationError` above it,
 carrying the measured error and the bound. The check is an explicit raise

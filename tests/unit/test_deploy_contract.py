@@ -63,6 +63,7 @@ def test_the_headline_classifications_are_the_documented_ones():
         "command.vy",
         "command.wz",
         "gait.freq",
+        "command.deadband",
     ):
         assert key in dc.CONSUMED_KEYS, f"{key} should reach the robot"
     for key in (

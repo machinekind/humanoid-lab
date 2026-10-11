@@ -15,11 +15,11 @@ import jax
 import jax.numpy as jp
 import mujoco
 import numpy as np
-from brax import math as brax_math
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from humanoid_lab.actuators.models import ACTUATOR_MODELS
+from humanoid_lab.envs import signals
 from humanoid_lab.envs.backend import make_data_fn, resolve_backend
 from humanoid_lab.robot.build import build_spec, compile_spec
 from humanoid_lab.robot.presets import action_scale as preset_action_scale
@@ -214,6 +214,24 @@ class HumanoidEnv(mjx_env.MjxEnv):
         np.minimum.at(sole_z, foot_idx, geom_bottom)
         self._foot_site_sole_offset = jp.array(site_z - sole_z)
 
+        # Tables the shared foot signals read. The dof mask marks, per foot,
+        # the dofs that move the foot site: the site body and its ancestors.
+        site_body_np = np.asarray(m.site_bodyid[self._foot_site_ids])
+        self._foot_root_body = np.asarray(m.body_rootid[site_body_np])
+        dof_mask = np.zeros((self._n_feet, m.nv), np.float32)
+        for f, b in enumerate(site_body_np):
+            chain = set()
+            while True:
+                chain.add(int(b))
+                if b == 0:
+                    break
+                b = m.body_parentid[b]
+            dof_mask[f] = [1.0 if int(m.dof_bodyid[i]) in chain else 0.0 for i in range(m.nv)]
+        self._foot_dof_mask = jp.asarray(dof_mask, jp.float32)
+        member = np.zeros((len(foot_idx), self._n_feet), bool)
+        member[np.arange(len(foot_idx)), foot_idx] = True
+        self._foot_geom_member = member
+
         # Sensor addresses declared by robot.yaml's `sensors` map (gyro,
         # quat, linvel, acc); absent keys fall back to a qpos/qvel-derived
         # computation (see the obs helpers below).
@@ -402,33 +420,21 @@ class HumanoidEnv(mjx_env.MjxEnv):
         return self._robot_spec
 
     # -- obs helpers ----------------------------------------------------------
+    # Thin wrappers over envs/signals.py, which both backends share.
     def _quat(self, data):
-        if "quat" in self._sensor_adr:
-            adr = self._sensor_adr["quat"]
-            return data.sensordata[adr : adr + 4]
-        return data.qpos[self._base_qadr + 3 : self._base_qadr + 7]
+        return signals.quat(data.sensordata, data.qpos, self._sensor_adr, self._base_qadr)
 
     def _gyro(self, data):
-        if "gyro" in self._sensor_adr:
-            adr = self._sensor_adr["gyro"]
-            return data.sensordata[adr : adr + 3]
-        # A free joint's angular velocity is already expressed in the body's
-        # local frame, matching a body-mounted gyro.
-        return data.qvel[self._base_vadr + 3 : self._base_vadr + 6]
+        return signals.gyro(data.sensordata, data.qvel, self._sensor_adr, self._base_vadr)
 
     def _gravity_body(self, data):
-        return brax_math.rotate(jp.array([0.0, 0.0, -1.0]), brax_math.quat_inv(self._quat(data)))
+        return signals.gravity_body(self._quat(data))
 
     def _local_linvel(self, data):
-        if "linvel" in self._sensor_adr:
-            adr = self._sensor_adr["linvel"]
-            return data.sensordata[adr : adr + 3]
-        world_linvel = data.qvel[self._base_vadr : self._base_vadr + 3]
-        return brax_math.rotate(world_linvel, brax_math.quat_inv(self._quat(data)))
-
+        return signals.linvel(data.sensordata, data.qvel, self._quat(data), self._sensor_adr, self._base_vadr)
 
     def _foot_site_pos(self, data):
-        return data.site_xpos[self._foot_site_ids]
+        return data.site_xpos[..., self._foot_site_ids, :]
 
     def _foot_clearance(self, data):
         """Per-foot sole height above the floor: site z minus the measured
@@ -441,47 +447,30 @@ class HumanoidEnv(mjx_env.MjxEnv):
         capsule foot geoms (geom_size[0] is the radius), the same
         assumption `_foot_contact` makes.
         """
-        return self._foot_site_pos(data)[:, 2] - self._foot_site_sole_offset
+        return signals.foot_clearance(data.site_xpos, self._foot_site_ids, self._foot_site_sole_offset)
 
     def _foot_linvel(self, data):
         """Per-foot linear velocity at the foot_sites points (world frame)."""
-
-        def one(point, body_id):
-            jacp, _ = mjx.jac(self._mjx_model, data, point, body_id)
-            return jacp.T @ data.qvel
-
-        return jax.vmap(one)(self._foot_site_pos(data), self._foot_site_body)
+        return signals.foot_linvel(
+            data.site_xpos,
+            data.subtree_com,
+            data.cdof,
+            data.qvel,
+            self._foot_site_ids,
+            self._foot_root_body,
+            self._foot_dof_mask,
+        )
 
     def _foot_contact(self, data):
         """Per-foot contact bool, aggregated (OR) over every geom on that foot."""
-        z = data.geom_xpos[self._foot_geom_ids][:, 2]
-        per_geom = (z < self._foot_geom_radius + 0.005).astype(jp.float32)
-        return jp.zeros(self._n_feet).at[self._foot_geom_foot_idx].max(per_geom) > 0
-
-    def _noisy(self, rng, clean, scales):
-        noise = jax.random.uniform(rng, clean.shape, minval=-1.0, maxval=1.0)
-        return clean + noise * scales
+        return signals.foot_contact(
+            data.geom_xpos, self._foot_geom_ids, self._foot_geom_radius, self._foot_geom_member
+        )
 
     def _obs_catalog(self, data, info):
-        """name -> observation vector. Task envs extend with their signals.
-
-        Only gyro/gravity/joint_pos/joint_vel/last_action are signals a real
-        robot can expose; the rest (linvel, height, actuator_force, contacts)
-        are sim-only and belong on the privileged (critic) list, never on
-        the actor's.
-        """
-        return {
-            "gyro": self._gyro(data),
-            "gravity": self._gravity_body(data),
-            "joint_pos": data.qpos[self._qadr] - self._default_pose,
-            "joint_vel": data.qvel[self._vadr],
-            "last_action": info["last_action"],
-            # Sim-only signals, meant for the privileged critic list:
-            "linvel": self._local_linvel(data),
-            "height": data.qpos[self._base_qadr + 2 : self._base_qadr + 3],
-            "actuator_force": data.actuator_force,
-            "contacts": self._foot_contact(data).astype(jp.float32),
-        }
+        """name -> observation vector. The task env defines its constants and
+        calls signals.catalog, the one catalog both backends share."""
+        raise NotImplementedError
 
     @property
     def actor_obs_names(self):
@@ -496,22 +485,20 @@ class HumanoidEnv(mjx_env.MjxEnv):
         of catalog names. Actor noise scales come from `obs_noise` by
         component name (no entry = noise-free).
         """
-        catalog = self._obs_catalog(data, info)
+        return self._observe(self._obs_catalog(data, info), rng)
 
-        def gather(names):
-            missing = [n for n in names if n not in catalog]
-            if missing:
-                raise KeyError(f"unknown obs component(s) {missing}; available: {sorted(catalog)}")
-            return jp.concatenate([catalog[n] for n in names])
-
-        state_names = self.actor_obs_names
-        state = gather(state_names)
+    def _observe(self, cat, rng=None):
+        """signals.observe on a catalog. Actor noise is drawn on rng when one
+        is given. Joystick.step passes the catalog it built from its own
+        readings."""
+        noise = None
         if rng is not None:
-            noise = self._config.obs_noise
-            scales = jp.concatenate([jp.full(catalog[n].shape, noise.get(n, 0.0)) for n in state_names])
-            state = self._noisy(rng, state, scales)
-        return {
-            "state": state,
-            "privileged_state": gather(self._config.obs.privileged),
-        }
-
+            shape = signals.gather(cat, self.actor_obs_names).shape
+            noise = jax.random.uniform(rng, shape, minval=-1.0, maxval=1.0)
+        return signals.observe(
+            cat,
+            self.actor_obs_names,
+            self._config.obs.privileged,
+            noise=noise,
+            obs_noise=self._config.obs_noise,
+        )

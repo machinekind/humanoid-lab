@@ -173,6 +173,7 @@ def main(cfg: DictConfig) -> None:
     from brax.training.agents.ppo import train as ppo
 
     from humanoid_lab.dr.randomize import make_domain_randomize
+    from humanoid_lab.dr.transform import check_dr_enabled
     from humanoid_lab.envs.wrappers import make_wrap_env_fn
     from humanoid_lab.registry import make_env
     from humanoid_lab.robot.presets import effective_gains, load_actuator_preset
@@ -269,13 +270,7 @@ def main(cfg: DictConfig) -> None:
             env.mj_model, env.robot_spec, dr_cfg
         )
     else:
-        enabled = [k for k, v in dr_cfg.items() if isinstance(v, dict) and v.get("enable")]
-        if enabled:
-            raise ValueError(
-                f"domain_rand=false disables the whole dr block, but "
-                f"cfg.dr fields {enabled} have enable=true; either set "
-                f"domain_rand=true or disable those fields too"
-            )
+        check_dr_enabled(cfg.domain_rand, dr_cfg)
 
     wb = None
     if cfg.wandb.enable:
