@@ -1,4 +1,4 @@
-"""run_record.load_run, model-free.
+"""run_record: load_run, build_run_record and write_run, model-free.
 
 Every test writes a run.json under tmp_path. Nothing builds a model.
 """
@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import copy
 import json
+import math
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from ml_collections import config_dict
 
-from humanoid_lab import deploy_contract, registry, run_record
+from humanoid_lab import deploy_contract, paths, registry, run_record
 from humanoid_lab.envs import joystick
 
 TRAINER = "wtrain/train.py (torch+MJWarp)"
@@ -52,18 +56,23 @@ def _task_env(run):
     return run["hydra_config"]["task"]["env"]
 
 
+def _resolved(run):
+    """`run` as load_run returns it: the relative checkpoint_dir resolved."""
+    return {**run, "checkpoint_dir": str(paths.PROJECT_DIR / "runs/fixture/checkpoints")}
+
+
 # -- Brax runs and the required keys ------------------------------------------
 
 
 def test_a_brax_run_loads_unchanged(tmp_path):
     run = _brax_run({"command": {"deadband": 0.1}})
-    assert _load(tmp_path, run) == run
+    assert _load(tmp_path, run) == _resolved(run)
 
 
 def test_a_brax_run_with_a_frozen_clock_loads(tmp_path):
     """A Brax run with freq [0, 0] trained on cos/sin, the default."""
     run = _brax_run({"gait": {"freq": [0.0, 0.0]}})
-    assert _load(tmp_path, run) == run
+    assert _load(tmp_path, run) == _resolved(run)
 
 
 def test_a_missing_run_json_is_a_file_not_found(tmp_path):
@@ -341,3 +350,213 @@ def test_the_sizing_report_reads_through_load_run(tmp_path):
     _write(tmp_path, run)
     with pytest.raises(ValueError, match=r"hydra_config\.robot\.dir missing"):
         report.build_report(tmp_path)
+
+
+# -- build_run_record and write_run ---------------------------------------------
+
+JOINTS = ["hip", "knee", "ankle"]
+
+
+def _env():
+    return SimpleNamespace(
+        mj_model=SimpleNamespace(
+            actuator_gainprm=np.array([[40.0, 0, 0], [60.0, 0, 0], [20.0, 0, 0]]),
+            actuator_biasprm=np.array([[0, -40.0, -1.0], [0, -60.0, -2.0], [0, -20.0, -0.5]]),
+        ),
+        robot_spec=SimpleNamespace(actuated_joints=JOINTS),
+    )
+
+
+def _hydra(restore=None, **env):
+    return {
+        "run_name": "built",
+        "seed": 0,
+        "restore": restore,
+        "robot": {"dir": "robots/roboto_origin"},
+        "actuators": {"name": "deploy_pd", "overrides": None},
+        "task": {"name": "joystick", "env": env},
+        "ppo": {"sym_coef": 0.5},
+    }
+
+
+def _ppo_params():
+    return config_dict.ConfigDict(
+        {"num_timesteps": 1000, "num_envs": 8, "sym_coef": 0.5, "network_factory": {"policy_obs_key": "state"}}
+    )
+
+
+def _record(hydra=None, checkpoint_dir=None, results=None, warm_start=None):
+    env = _env()
+    hydra = hydra or _hydra()
+    return run_record.build_run_record(
+        env,
+        hydra,
+        _ppo_params(),
+        run_name="built",
+        checkpoint_dir=checkpoint_dir or paths.PROJECT_DIR / "runs" / "built" / "checkpoints",
+        contacts={"backend": "jax"},
+        env_config={"episode_length": 1000},
+        actuator_gains=run_record.actuator_gains(env, hydra),
+        trainer=run_record.trainer_block("brax_ppo", "jax", "cpu"),
+        results=results or {"early_stopped": False, "stopped_at_steps": 1000, "final_reward": 1.5},
+        warm_start=warm_start,
+    )
+
+
+def test_the_record_has_origin_mains_keys_plus_trainer_and_warm_start():
+    record = _record()
+    assert tuple(record) == run_record.RECORD_KEYS
+    assert run_record.RECORD_KEYS[: len(run_record.ORIGIN_MAIN_KEYS)] == run_record.ORIGIN_MAIN_KEYS
+    assert not [k for k in record if k.startswith("warp_")]
+    assert record["ppo_config"]["sym_coef"] == 0.5
+    assert record["task"] == "joystick"
+    assert record["num_timesteps"] == 1000
+    assert record["actuators"] == {"name": "deploy_pd", "overrides": None}
+    assert record["actuator_gains"]["joints"] == JOINTS
+    assert record["actuator_gains"]["kp"] == [40.0, 60.0, 20.0]
+    assert record["actuator_gains"]["kd"] == [1.0, 2.0, 0.5]
+    assert record["actuator_gains"]["preset"] == "deploy_pd"
+    assert record["trainer"]["name"] == "brax_ppo"
+    assert record["trainer"]["device"] == "cpu"
+    assert record["warm_start"] is None
+
+
+def test_results_must_carry_all_three_keys():
+    with pytest.raises(ValueError, match="final_reward"):
+        _record(results={"early_stopped": False, "stopped_at_steps": None})
+
+
+def test_null_results_are_allowed():
+    record = _record(results={"early_stopped": None, "stopped_at_steps": None, "final_reward": None})
+    assert (record["early_stopped"], record["stopped_at_steps"], record["final_reward"]) == (None,) * 3
+
+
+def test_paths_are_relative_posix_inside_the_project_and_absolute_outside(tmp_path):
+    inside = paths.PROJECT_DIR / "runs" / "x" / "checkpoints"
+    assert run_record.portable_path(inside) == "runs/x/checkpoints"
+    # A relative input is relative to the project dir, not the cwd.
+    assert run_record.portable_path(Path("runs") / "x" / ".." / "y") == "runs/y"
+    outside = tmp_path / "ckpts"
+    assert run_record.portable_path(outside) == outside.resolve().as_posix()
+    assert Path(run_record.portable_path(outside)).is_absolute()
+    assert _record(checkpoint_dir=inside)["checkpoint_dir"] == "runs/x/checkpoints"
+
+
+def test_resolve_path():
+    assert run_record.resolve_path(None) is None
+    assert run_record.resolve_path("runs/x") == str(paths.PROJECT_DIR / "runs/x")
+    absolute = str(paths.PROJECT_DIR / "elsewhere")
+    assert run_record.resolve_path(absolute) == str(Path(absolute))
+
+
+def test_load_run_resolves_a_relative_checkpoint_dir(tmp_path):
+    run = _brax_run()
+    loaded = _load(tmp_path, run)
+    assert loaded["checkpoint_dir"] == str(paths.PROJECT_DIR / "runs/fixture/checkpoints")
+    # The file on disk is not rewritten.
+    on_disk = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
+    assert on_disk["checkpoint_dir"] == "runs/fixture/checkpoints"
+    absolute = str(tmp_path / "abs" / "checkpoints")
+    run["checkpoint_dir"] = absolute
+    assert _load(tmp_path, run)["checkpoint_dir"] == absolute
+
+
+def test_restore_is_stored_portably():
+    restore = str(paths.PROJECT_DIR / "runs" / "src" / "checkpoints" / "000000000100")
+    hydra = _hydra(restore=restore)
+    record = _record(hydra=hydra)
+    assert record["hydra_config"]["restore"] == "runs/src/checkpoints/000000000100"
+    # The caller's dict is not changed.
+    assert hydra["restore"] == restore
+    assert _record()["hydra_config"]["restore"] is None
+
+
+def test_config_diff_lists_changed_added_and_removed_leaves():
+    old = _hydra(gait={"freq": [1.0, 1.5]}, reward={"scales": {"a": 1.0, "gone": 2.0}})
+    new = _hydra(gait={"freq": (1.0, 2.0)}, reward={"scales": {"a": 1.0, "new": 3.0}})
+    new["actuators"] = {"name": "deploy_pd", "overrides": {"kp": 50}}
+    new["ppo"] = {"sym_coef": 0.5}
+    new["seed"] = 7  # outside the compared sections
+    diff = run_record.config_diff(old, new)
+    assert diff == {
+        # overrides was a null leaf on the old side and is a block on the new.
+        "actuators.overrides": [None, None],
+        "actuators.overrides.kp": [None, 50],
+        "task.env.gait.freq": [[1.0, 1.5], [1.0, 2.0]],
+        "task.env.reward.scales.gone": [2.0, None],
+        "task.env.reward.scales.new": [None, 3.0],
+    }
+    assert list(diff) == sorted(diff)
+    assert run_record.config_diff(old, copy.deepcopy(old)) == {}
+    # Equal lists and tuples are no change.
+    assert run_record.config_diff(_hydra(gait={"freq": [1.0]}), _hydra(gait={"freq": (1.0,)})) == {}
+
+
+def _source_run(tmp_path):
+    run_dir = tmp_path / "src_run"
+    ckpt = run_dir / "checkpoints" / "000000000100"
+    ckpt.mkdir(parents=True)
+    run = _brax_run({"gait": {"freq": [1.0, 1.5]}})
+    run.update(final_reward=12.5, stopped_at_steps=100, early_stopped=False, num_timesteps=200)
+    _write(run_dir, run)
+    return run_dir, ckpt
+
+
+def test_warm_start_block_reads_the_source_run(tmp_path):
+    run_dir, ckpt = _source_run(tmp_path)
+    composed = _hydra(gait={"freq": [1.0, 2.0]})
+    for strict in (True, False):
+        block = run_record.warm_start_block(ckpt, composed, strict=strict)
+        assert set(block) == {"checkpoint", "source_run", "source_results", "config_diff"}
+        assert block["checkpoint"] == ckpt.resolve().as_posix()
+        assert block["source_run"] == run_dir.resolve().as_posix()
+        assert block["source_results"] == {
+            "final_reward": 12.5,
+            "stopped_at_steps": 100,
+            "early_stopped": False,
+            "num_timesteps": 200,
+        }
+        assert block["config_diff"]["task.env.gait.freq"] == [[1.0, 1.5], [1.0, 2.0]]
+
+
+def test_warm_start_block_without_a_source_run(tmp_path):
+    no_run = tmp_path / "gone" / "checkpoints" / "000000000100"
+    no_run.mkdir(parents=True)
+    not_a_step = tmp_path / "loose_ckpt"
+    not_a_step.mkdir()
+    for ckpt in (no_run, not_a_step):
+        with pytest.raises(ValueError, match=str(ckpt.name)):
+            run_record.warm_start_block(ckpt, _hydra(), strict=True)
+        block = run_record.warm_start_block(ckpt, _hydra(), strict=False)
+        assert block == {
+            "checkpoint": ckpt.resolve().as_posix(),
+            "source_run": None,
+            "source_results": None,
+            "config_diff": None,
+        }
+
+
+def test_versions_names_the_six_packages():
+    v = run_record.versions()
+    assert set(v) == {"brax", "jax", "torch", "warp-lang", "mujoco", "mujoco-mjx"}
+    assert all(x is None or isinstance(x, str) for x in v.values())
+    assert v["jax"] is not None
+    block = run_record.trainer_block("torch_warp_ppo", "warp", "cuda:0", sym_coef=1.0)
+    assert block == {
+        "name": "torch_warp_ppo",
+        "physics": "warp",
+        "versions": v,
+        "device": "cuda:0",
+        "sym_coef": 1.0,
+    }
+
+
+def test_write_run_replaces_the_file_atomically(tmp_path):
+    (tmp_path / "run.json").write_text("old", encoding="utf-8")
+    record = _record(results={"early_stopped": False, "stopped_at_steps": 0, "final_reward": float("nan")})
+    out = run_record.write_run(tmp_path, record)
+    assert out == tmp_path / "run.json"
+    assert [p.name for p in tmp_path.iterdir()] == ["run.json"]
+    back = json.loads(out.read_text(encoding="utf-8"))
+    assert math.isnan(back["final_reward"])
+    assert list(back) == list(run_record.RECORD_KEYS)

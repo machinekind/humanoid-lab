@@ -230,7 +230,7 @@ def test_a_corrupted_speed_deadband_is_caught_by_the_second_validation(loaded, t
 
 
 def test_a_stale_env_config_cannot_bypass_the_ledger(run_dir, tmp_path, monkeypatch):
-    """run.json's env_config can lag the rebuilt env's, as in a wtrain run."""
+    """run.json's env_config can lag the rebuilt env's, as in a legacy Torch run."""
     from humanoid_lab import deploy_contract
 
     copy = tmp_path / "stale_run"

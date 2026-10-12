@@ -166,13 +166,14 @@ CI before it costs GPU time.
 | `run_name` | `null` | Output goes to `runs/<run_name>`. Unset resolves to `<task>_<timestamp>`, prefixed `smoke_` under `smoke=true`. |
 | `seed` | `0` | PPO random seed. |
 | `smoke` | `false` | Shrinks PPO to a tiny CPU-sized budget (100k steps, 64 envs) and caps episode length at 200 steps. `run.sh smoke` also forces `JAX_PLATFORMS=cpu` and `wandb.enable=false`. |
-| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. |
+| `restore` | `null` | Checkpoint directory to warm-start from. Relative paths resolve against the repo root. `run.json` stores it relative to the project dir, in POSIX form, and records the source run in its `warm_start` block (see [run.json](#runjson)). |
 | `domain_rand` | `false` | Gates the whole `dr` block. `false` with any `dr.*.enable=true` raises at startup rather than silently ignoring the request. |
 | `contact_preflight` | `true` | Measure the warp contact/constraint peaks on a short probe before training and record them in `run.json`. Skipped automatically under `smoke=true`. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
 | `wandb.enable` | `true` | Log to Weights & Biases if import/login succeeds. |
 | `wandb.project` | `humanoid-lab` | W&B project name. |
 | `wandb.group` | `null` | W&B run group. Defaults to the selected experiment's name, or stays `null` if no experiment is selected. An explicit value wins over that default. |
-| `ppo` | `{}` | Global PPO overrides, applied after the task's own `task.ppo` block. CLI `ppo.foo=...` wins over both. |
+| `ppo` | `{sym_coef: 0.0}` | Global PPO overrides, applied after the task's own `task.ppo` block. CLI `++ppo.foo=...` wins over both. Repo-owned keys (`sym_coef`) are popped before brax's `ppo.train`. |
+| `ppo.sym_coef` | `0.0` | Weight of the mirror-symmetry loss on the policy mean, `mean((loc(M s) - M loc(s))^2)`. The maps come from `envs/symmetry.policy_mirror_maps`. The Brax trainer patches brax's PPO loss only while the value is nonzero, and the eval line then prints `sym <loss>`. The Torch trainer applies the same loss. A robot without a `JOINT_SIGNS` entry refuses a nonzero value. This differs from `task.env.symmetry.enable`, the env-side mirroring (see [Mirror augmentation](#mirror-augmentation-taskenvsymmetry)). |
 | `early_stop.enable` | `false` | End the run once the eval reward has plateaued. See [Early stopping](#early-stopping-early_stop). |
 | `early_stop.min_evals` | `10` | No stop verdict before this many evals exist. |
 | `early_stop.patience` | `6` | Consecutive evals with no new best that end the run. |
@@ -1174,14 +1175,136 @@ the run never stops. The defaults are uncalibrated starting numbers:
 measure the eval noise first by evaluating one checkpoint repeatedly, and
 raise `patience` for overnight runs.
 
+## run.json
+
+Every training run writes `runs/<run_name>/run.json`. Both trainers build it
+with `run_record.build_run_record` and write it with `run_record.write_run`.
+Every tool that reads it goes through `run_record.load_run`.
+
+**Keys**, in order: `run_name`, `task`, `num_timesteps`, `early_stopped`,
+`stopped_at_steps`, `final_reward`, `checkpoint_dir`, `contacts`,
+`env_config`, `ppo_config`, `hydra_config`, `actuators`, `actuator_gains`,
+`trainer`, `warm_start`. The first thirteen are the keys origin/main wrote.
+
+- `hydra_config` is the composed, resolved config of this run.
+- `env_config` comes from the built env.
+- `ppo_config` holds the PPO params, `network_factory` and the repo-owned
+  keys such as `sym_coef`.
+- `contacts` is described in [The `contacts` block](#the-contacts-block).
+- `actuators` and `actuator_gains` are described in
+  [The `actuator_gains` block](#the-actuator_gains-block-runjson).
+
+**The `trainer` block.**
+
+| Field | Meaning |
+|---|---|
+| `name` | `brax_ppo` or `torch_warp_ppo`. |
+| `physics` | The physics backend the run stepped: `jax` or `warp` for Brax, `warp` for Torch. |
+| `versions` | The installed versions of brax, jax, torch, warp-lang, mujoco and mujoco-mjx. A package that is not installed reads `null`. |
+| `device` | The device the trainer ran on, for example `TFRT_CPU_0` or `cuda:0`. |
+
+The Torch trainer adds its own fields: the `torch_warp` block (critic
+warm-up, checkpoint cadence, `max_minutes`), live contact peaks,
+`train_reward_last` and `resumes`. See
+[Torch trainer](#torch-trainer-configstorch_warpyaml).
+
+**The `warm_start` block.** It is `null` for a run without `restore`.
+Otherwise it holds:
+
+| Field | Meaning |
+|---|---|
+| `checkpoint` | The restored checkpoint, as a portable path. |
+| `source_run` | The run dir above `checkpoints/<step>`, as a portable path. |
+| `source_results` | The source run's `final_reward`, `stopped_at_steps`, `early_stopped` and `num_timesteps`. |
+| `config_diff` | The leaves of `task.env`, `actuators` and `ppo` that differ from the source run's `hydra_config`, as `{"<dotted key>": [old, new]}`. A leaf on one side only reads `null` on the other. |
+
+When the source run cannot be read, the Brax trainer still trains and sets
+`source_run`, `source_results` and `config_diff` to `null`.
+
+**Results.** `early_stopped`, `stopped_at_steps` and `final_reward` describe
+this run only.
+
+- Brax reads them from the last eval. `final_reward` is brax's
+  `eval/episode_reward`. `stopped_at_steps` is the last eval's step count.
+  `early_stopped` is true when [early stopping](#early-stopping-early_stop)
+  cut the run.
+- Torch has no eval, so `final_reward` is `null`. `stopped_at_steps` is its
+  last training step. `early_stopped` is true when `max_minutes` or Ctrl+C
+  ended the run.
+
+**Write timing.**
+
+- Brax writes run.json once, at the end of training or after an early stop.
+  `jobs/train_chain.sh` reads a fresh run.json as proof that phase A
+  finished.
+- Torch writes it at start with null results and again at the end.
+
+Both write `run.json.tmp` and move it over `run.json` with `os.replace`, so
+a reader never sees a half-written file.
+
+**Paths.** `checkpoint_dir` and `hydra_config.restore` are stored relative to
+the project dir, in POSIX form, when they lie inside it. A path outside it
+is stored absolute, still in POSIX form. `load_run` resolves a relative
+`checkpoint_dir` against the project dir. The file on disk is not rewritten.
+
+**No `warp_*` keys.** Neither trainer writes a top-level `warp_*` key. Every
+env knob lives under `hydra_config.task.env`. A run written by the old Torch
+trainer carries `warp_*` keys, and `load_run` migrates them into
+`hydra_config.task.env` (see [Export](deploy.md#the-export)).
+
+## Torch trainer (`configs/torch_warp.yaml`)
+
+The Torch trainer in `src/humanoid_lab/torch_warp/` composes
+`configs/torch_warp.yaml`. That file is `config.yaml` plus two Torch-only
+blocks. Every other key, every config group and every `experiment=` preset
+works as it does for the Brax trainer. `config.yaml` rejects both blocks, so
+the Brax trainer never sees them.
+
+**The `torch_warp` block.**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `device` | `cuda:0` | The Torch and warp device. A CPU run happens only with `cpu` set, and it is slow. |
+| `ckpt_minutes` | `10` | Wall-clock minutes between checkpoints. |
+| `max_minutes` | `null` | Stop after a checkpoint once this many minutes have passed. `null` runs to `ppo.num_timesteps`. |
+| `critic_warmup_iters` | `0` | Iterations at the start that train only the value network. |
+| `resume` | `false` | Continue `runs/<run_name>` from its `trainer_state.pt`. |
+
+**The `bench` block.** Only `python -m humanoid_lab.torch_warp.bench`
+(`./run.sh bench-warp`) reads it.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `iters` | `3` | Timed PPO iterations. |
+| `physics_steps` | `100` | Timed physics-only steps. |
+| `out` | `null` | The JSON output path. `null` writes `runs/bench/bench_<timestamp>.json`. |
+
+The [package README](../src/humanoid_lab/torch_warp/README.md) covers the
+Windows install, the train, warm-start and resume commands, the refusal
+ledger for the `ppo` and `network` keys, and the parity suite.
+
+**run.json.** A Torch run writes the same keys as a Brax run (see
+[run.json](#runjson)). It differs in these ways:
+
+- `trainer.name` is `torch_warp_ppo` and `trainer.physics` is `warp`.
+- The trainer block adds `torch_warp`, `constants_env_overrides`, `ignored`,
+  `budget_peaks`, `train_reward_last` and `resumes`.
+- run.json is written at start with null results and again at the end.
+- `final_reward` is `null`, because the Torch trainer has no eval loop.
+- `env_config` records `sim.backend: warp` and the run's `sim.num_envs`.
+
 ## `run.sh` verbs
 
-Read from `run.sh` as it stands today:
+Read from `run.sh` as it stands today. `python` below is `.venv/bin/python`.
+When that is missing and `.venv/Scripts/python.exe` exists, as in a Windows
+venv under Git Bash, run.sh uses that one.
 
 | Verb | Runs | Notes |
 |---|---|---|
 | `train` | `python -m humanoid_lab.train` | Full Hydra CLI available after it. |
 | `smoke` | `JAX_PLATFORMS=cpu python -m humanoid_lab.train smoke=true wandb.enable=false` | CPU pipeline check. |
+| `train-warp` | `python -m humanoid_lab.torch_warp.ppo` | The Torch+MJWarp trainer. It composes `configs/torch_warp.yaml`, which is `config.yaml` plus the `torch_warp` and `bench` blocks. Full Hydra CLI available after it. Needs the `torch_warp` extra. See `src/humanoid_lab/torch_warp/README.md`. |
+| `bench-warp` | `python -m humanoid_lab.torch_warp.bench` | Times the Torch+MJWarp env and PPO loop and writes one JSON file to `bench.out`, or `runs/bench/bench_<timestamp>.json` when it is null. Same config as `train-warp`. |
 | `build` | `python -m humanoid_lab.build_model` | `--robot NAME --preset NAME [--out PATH] [--set PATH=VALUE ...]`. Writes `robots/<robot>/mjx/<preset>.xml`. `--set` requires `--out`, so an ad-hoc override build never overwrites the canonical preset build. |
 | `check` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_model` | `--robot NAME --preset NAME [--steps N] [--xml PATH] [--skip-mjx] [--max-qvel N] [--set PATH=VALUE ...]`. Gate-checks every keyframe for NaN and for `|qvel|` blowup. `--set` forces an in-memory build even if a prebuilt XML exists, and is mutually exclusive with `--xml`. |
 | `check-contacts` | `JAX_PLATFORMS=cpu python -m humanoid_lab.check_contacts` | `--robot NAME --preset NAME [--steps N] [--seeds N] [--seed N] [--out PATH]`. Measures the per-world contact and constraint-row peaks over three regimes and prints the budgets they need. See [Warp contact budgets](#warp-contact-budgets-taskenvsim). |
@@ -1199,15 +1322,15 @@ Read from `run.sh` as it stands today:
 
 ## Configs compose only from the editable install
 
-`train.py` uses `@hydra.main(config_path="../../configs", ...)`. Hydra
-resolves that path relative to `train.py`'s own file location on disk. The
-wheel only packages `src/humanoid_lab`, per `pyproject.toml`'s
-`tool.hatch.build.targets.wheel.packages`. `configs/` never ships inside a
-built wheel. Config discovery only works from an editable install
-(`pip install -e .`) of a full checkout. Only then does `../../configs`,
-relative to the installed module, resolve back to the repo root's
-`configs/`. A wheel installed somewhere else will fail to find any config
-group.
+`train.py` uses `@hydra.main(config_path="../../configs", ...)`.
+`torch_warp/ppo.py` and `torch_warp/bench.py` use `"../../../configs"`, one
+level deeper. Hydra resolves that path relative to the module's own file
+location on disk. The wheel only packages `src/humanoid_lab`, per
+`pyproject.toml`'s `tool.hatch.build.targets.wheel.packages`. `configs/`
+never ships inside a built wheel. Config discovery only works from an
+editable install (`pip install -e .`) of a full checkout. Only then does the
+relative path resolve back to the repo root's `configs/`. A wheel installed
+somewhere else will fail to find any config group.
 
 ## Verified command examples
 

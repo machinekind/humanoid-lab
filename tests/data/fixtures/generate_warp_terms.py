@@ -10,25 +10,34 @@ port to the code that trained v40.
 
 Run it from the repo root:
 
-    JAX_PLATFORMS=cpu .venv/bin/python tests/data/fixtures/generate_warp_terms.py
+    JAX_PLATFORMS=cpu .venv/bin/python tests/data/fixtures/generate_warp_terms.py --out PATH
+
+--out defaults to the committed fixture. Write to another path and compare
+the arrays with the committed file. Never overwrite the fixture in place.
 
 It needs torch (CPU is enough) and warp-lang, because wenv.py imports both at
-module level. wtrain/wenv.py must equal its PR-head version (SOURCE_SHA). The
-script checks with `git diff --quiet SOURCE_SHA -- wtrain/wenv.py` and refuses
-otherwise. No warp physics runs and no graph is captured: a stub env built
-with object.__new__ carries only the attributes the recorded code paths read,
-and the signal methods return the recorded inputs.
+module level. wtrain/ is gone from the tree, so the script reads wenv.py from
+git with `git show SOURCE_SHA:wtrain/wenv.py` into a temporary directory. It
+checks the git blob hash of that file against the wenv_blob recorded in the
+committed warp_terms.npz's _meta and refuses on a mismatch. The temporary
+directory goes first on sys.path, so `import wenv` loads the PR-head code.
+No warp physics runs and no graph is captured: a stub env built with
+object.__new__ carries only the attributes the recorded code paths read, and
+the signal methods return the recorded inputs.
 
 It is not a `test_*.py` file, so pytest never collects it.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import math
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -101,15 +110,23 @@ RAMP = {
 }
 
 
-def check_source():
+def recorded_blob():
+    """The wenv.py blob hash in the committed fixture's _meta."""
+    with np.load(OUT) as f:
+        return json.loads(str(f["_meta"]))["wenv_blob"]
+
+
+def write_source(dest: Path):
+    """Write the PR-head wenv.py into dest. Return (commit sha, blob hash)."""
     sha = subprocess.run(
         ["git", "rev-parse", f"{SOURCE_SHA}^{{commit}}"], cwd=REPO, capture_output=True, text=True, check=True
     ).stdout.strip()
-    if subprocess.run(["git", "diff", "--quiet", sha, "--", WENV], cwd=REPO, check=False).returncode != 0:
-        sys.exit(f"{WENV} differs from {SOURCE_SHA}. This script records the PR-head code only.")
-    blob = subprocess.run(
-        ["git", "rev-parse", f"{sha}:{WENV}"], cwd=REPO, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    data = subprocess.run(["git", "show", f"{sha}:{WENV}"], cwd=REPO, capture_output=True, check=True).stdout
+    blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    want = recorded_blob()
+    if blob != want:
+        sys.exit(f"{WENV} at {SOURCE_SHA} has blob {blob}, and {OUT.name} records {want}.")
+    (dest / "wenv.py").write_bytes(data)
     return sha, blob
 
 
@@ -401,13 +418,8 @@ def record_ramp(wenv, torch):
     return out, config
 
 
-def main():
-    sha, blob = check_source()
-    import torch
-
-    sys.path.insert(0, str(REPO / "wtrain"))
-    import wenv
-
+def record(wenv, torch, sha, blob):
+    """Run every case on wenv. Return the arrays for the npz."""
     torch.manual_seed(0)
     arrays, configs = {}, {}
     for name, case in TERM_CASES.items():
@@ -433,8 +445,23 @@ def main():
             sort_keys=True,
         )
     )
-    np.savez_compressed(OUT, **arrays)
-    print(f"wrote {OUT.relative_to(REPO)} ({OUT.stat().st_size} bytes, {len(arrays)} arrays)")
+    return arrays
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, default=OUT, help="output npz (default: the committed fixture)")
+    out_path = parser.parse_args().out.resolve()
+    with tempfile.TemporaryDirectory() as src:
+        sha, blob = write_source(Path(src))
+        sys.path.insert(0, src)
+        import torch
+        import wenv
+
+        arrays = record(wenv, torch, sha, blob)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, **arrays)
+    print(f"wrote {out_path} ({out_path.stat().st_size} bytes, {len(arrays)} arrays)")
 
 
 if __name__ == "__main__":

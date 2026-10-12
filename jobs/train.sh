@@ -72,9 +72,9 @@ hydra_args=()
 [ -n "$EXPERIMENT" ] && hydra_args+=("experiment=$EXPERIMENT")
 [ -n "$RUN_NAME" ] && hydra_args+=("run_name=$RUN_NAME")
 
-# ++ = add-or-override. The root `ppo:` block is an empty dict in config.yaml
-# and in every task preset, so plain `ppo.foo=` fails hydra's struct check for
-# keys the preset did not already set.
+# ++ = add-or-override. config.yaml's root `ppo:` block holds only sym_coef,
+# so every other key still needs `++`. Plain `ppo.foo=` fails hydra's struct
+# check for keys the preset did not already set.
 overrides=(
     robot="$ROBOT" task="$TASK" actuators="$ACTUATORS"
     seed="$SEED"

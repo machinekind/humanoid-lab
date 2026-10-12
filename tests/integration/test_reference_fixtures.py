@@ -36,6 +36,13 @@ from reference_rollouts import (
     rollout,
 )
 
+# The base tree has no ppo_config, and generate_fixtures' non-destructive
+# check runs this file against base code.
+try:
+    from humanoid_lab.ppo_config import REPO_PPO_KEYS
+except ImportError:
+    REPO_PPO_KEYS = frozenset()
+
 pytestmark = pytest.mark.skipif(
     jax.default_backend() != "cpu",
     reason=(
@@ -96,7 +103,10 @@ def test_ppo_params_match_origin_main():
     fresh = ppo_params()
     for name, expected in recorded.items():
         assert name in fresh, f"experiment {name} is gone"
-        assert fresh[name] == expected, f"ppo params of {name} changed"
+        brax_facing = {k: v for k, v in fresh[name].items() if k not in REPO_PPO_KEYS}
+        assert brax_facing == expected, f"ppo params of {name} changed"
+        # Every recorded experiment trains with the symmetry loss off.
+        assert fresh[name].get("sym_coef", 0.0) == 0.0, name
 
 
 def test_brax_train_matches_origin_main():

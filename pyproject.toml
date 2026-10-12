@@ -38,6 +38,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "ruff>=0.14.1"]
+# The Torch+MJWarp trainer in src/humanoid_lab/torch_warp/.
+# On Windows, install CUDA torch from the PyTorch index first. PyPI's Windows
+# torch is CPU-only, and an extra cannot name an index.
+# The extra installs no torch on Linux. PyPI's Linux torch brings CUDA 13 next
+# to jax's CUDA 12. Linux parity users install torch by hand from the cu126
+# index.
+# The validated build is in src/humanoid_lab/torch_warp/README.md.
+torch_warp = ["torch>=2.7; sys_platform != 'linux'", "psutil>=5.9"]
 
 [build-system]
 requires = ["hatchling"]

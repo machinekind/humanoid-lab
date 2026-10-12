@@ -129,8 +129,8 @@ keyframes:
       right_elbow_pitch_joint: 0.78
   # home's legs with the arms hanging straight along the torso: upper arm
   # vertical at arm_pitch 0, forearm collinear at elbow_pitch 1.5 (measured
-  # with wtrain/arm_pose.py: elbow 0 is a right angle, home's 0.78 is ~50
-  # degrees of flex). The ctrl/obs anchor for the arms-down gait runs
+  # with an offline elbow sweep during PR #11: elbow 0 is a right angle,
+  # home's 0.78 is ~50 degrees of flex). The ctrl/obs anchor for the arms-down gait runs
   # (task.env.reset_keyframe=home_arms_down).
   home_arms_down:
     base_pos: [0.0, 0.0, 0.75]

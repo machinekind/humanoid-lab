@@ -796,7 +796,6 @@ def test_find_checkpoint_takes_the_latest_by_default(tmp_path):
     run = _ckpt_run(tmp_path)
 
     assert battery._find_checkpoint(run, tmp_path) == tmp_path / "checkpoints" / "000000000200"
-    assert battery._find_latest_checkpoint(run, tmp_path) == tmp_path / "checkpoints" / "000000000200"
 
 
 def test_find_checkpoint_selects_the_requested_step(tmp_path):

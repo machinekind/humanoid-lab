@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 
 from humanoid_lab import paths
 from humanoid_lab.envs import joystick
+from humanoid_lab.ppo_config import brax_train_kwargs, compose_ppo_params
 from humanoid_lab.registry import TASKS, _apply_overrides
 from humanoid_lab.robot.presets import load_actuator_preset, resolve
 from humanoid_lab.robot.spec import load_robot_spec
@@ -253,11 +254,12 @@ V40_LANDING_TERMS = ("step_length", "foot_reach", "knee_extend")
 
 
 def test_roboto_gait_v40_carries_the_documented_recipe():
-    # docs/warp-training.md lines 16-21. The preset adds no ppo, dr or
-    # domain_rand block: commit 4 brings ppo.sym_coef.
+    # docs/lessons/roboto-gait.md, section Recipe. The preset adds no dr or
+    # domain_rand block.
     with (paths.CONFIGS_DIR / "experiment" / "roboto_gait_v40.yaml").open() as f:
         raw = yaml.safe_load(f)
-    assert set(raw) <= {"defaults", "task", "actuators"}
+    assert set(raw) <= {"defaults", "task", "actuators", "ppo"}
+    assert set(raw["ppo"]) == {"sym_coef"}
 
     cfg = _compose(["experiment=roboto_gait_v40"])
     assert cfg.robot.name == "roboto_origin"
@@ -277,3 +279,9 @@ def test_roboto_gait_v40_carries_the_documented_recipe():
     env_cfg = default_config()
     _apply_overrides(env_cfg, OmegaConf.to_container(env, resolve=True))
     joystick.check_kept_terms(env_cfg.reward, env_cfg.gait, 2)
+
+    # The mirror-symmetry loss is on, and brax's ppo.train never sees the key.
+    assert cfg.ppo.sym_coef > 0
+    training_params, _, repo = brax_train_kwargs(compose_ppo_params(cfg))
+    assert "sym_coef" not in training_params
+    assert repo["sym_coef"] == cfg.ppo.sym_coef

@@ -2,9 +2,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=.venv/bin/python
+# A Windows venv puts the interpreter in .venv/Scripts. This is for Git Bash.
+if [[ ! -x "$PY" && -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; fi
 
 case "${1:-}" in
   train) shift; "$PY" -m humanoid_lab.train "$@" ;;
+  # The Torch+MJWarp trainer. Its config is configs/torch_warp.yaml.
+  train-warp) shift; "$PY" -m humanoid_lab.torch_warp.ppo "$@" ;;
+  # The Torch+MJWarp benchmark. It writes one JSON file.
+  bench-warp) shift; "$PY" -m humanoid_lab.torch_warp.bench "$@" ;;
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
@@ -135,7 +141,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-parity|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|train-warp|bench-warp|smoke|build|check|check-contacts|check-friction|test|test-slow|test-parity|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

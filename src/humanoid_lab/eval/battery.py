@@ -549,11 +549,6 @@ def _find_checkpoint(run: dict, run_dir: Path, step: int | None = None) -> Path:
     raise FileNotFoundError(f"{ckpt_dir} has no checkpoint at step {step}; available steps: {have}")
 
 
-def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
-    # wtrain/parity.py still imports this name.
-    return _find_checkpoint(run, run_dir)
-
-
 def _measurement_env_overrides(run: dict) -> dict:
     """The run's own task.env overrides, plus four measurement-only
     changes: pushes disabled (they contaminate vibration/slip/stand

@@ -104,3 +104,6 @@ class TaskConstants:
     forward_lean_on: bool = False
     land_frac_on: bool = False
     frozen_phase_zeros: bool = False
+    # Only Joystick.resolved_constants sets it, for a backend that applies DR
+    # itself. The JAX DR finds the floor in make_domain_randomize.
+    floor_geom_id: Any = None

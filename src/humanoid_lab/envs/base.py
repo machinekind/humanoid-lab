@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jp
 import mujoco
 import numpy as np
+from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
@@ -183,7 +184,6 @@ class HumanoidEnv(mjx_env.MjxEnv):
         # Foot geom/site id tables from RobotSpec.
         self._foot_site_ids = np.array([m.site(n).id for n in rs.foot_sites])
         self._foot_geom_ids = np.array([m.geom(n).id for n in rs.foot_geoms])
-        self._foot_site_body = jp.array(m.site_bodyid[self._foot_site_ids])
         self._foot_geom_radius = jp.array(m.geom_size[self._foot_geom_ids, 0])
         self._n_feet = len(rs.foot_sites)
         foot_idx = _foot_geom_to_foot_index(m, self._foot_site_ids, self._foot_geom_ids)
@@ -193,7 +193,6 @@ class HumanoidEnv(mjx_env.MjxEnv):
                 f"foot geom(s) {bad} are not on the same body (or a descendant of it) as "
                 "any robot.yaml foot_sites entry"
             )
-        self._foot_geom_foot_idx = jp.array(foot_idx)
 
         # Vertical distance from each foot site to the lowest point of that
         # foot's own collision geoms (capsule bottoms), measured once at the
@@ -420,6 +419,12 @@ class HumanoidEnv(mjx_env.MjxEnv):
     @property
     def robot_spec(self) -> RobotSpec:
         return self._robot_spec
+
+    @property
+    def config(self) -> config_dict.ConfigDict:
+        """The env's resolved ConfigDict. torch_warp reads it, because a
+        static check forbids private env reads there."""
+        return self._config
 
     # -- obs helpers ----------------------------------------------------------
     # Thin wrappers over envs/signals.py, which both backends share.

@@ -439,9 +439,8 @@ def _pair_rel_sq(d, floor: float):
     return xp.square((d[..., 0] - d[..., 1]) / mean) * armed, armed
 
 
-# -- landing and lean terms ported from the Torch+MJWarp runner
-# (wtrain/wenv.py). Masking by the forward command (progress.fwd_mask) is the
-# caller's job.
+# -- landing and lean terms ported from the PR-head Torch runner (d8f56f7).
+# Masking by the forward command (progress.fwd_mask) is the caller's job.
 
 
 def _two_feet(name, x):

@@ -27,6 +27,18 @@ from humanoid_lab.envs import progress, signals
 from humanoid_lab.envs.constants import xp_of
 from humanoid_lab.rewards import terms
 
+# The always-on terms in the order compute_rewards adds them. Its gated terms
+# follow: the style terms, then KEPT_TERMS. A new always-on term in
+# compute_rewards goes here too. tests/integration/test_resolved_constants.py
+# fails when the two disagree.
+UNGATED_TERMS = (
+    "tracking_lin_vel", "tracking_ang_vel", "lin_vel_z", "ang_vel_xy", "orientation",
+    "torques", "torque_rate", "action_rate", "action_accel", "energy", "pose",
+    "feet_air_time", "feet_slip", "feet_phase", "stand_still", "termination",
+    "torque_limit", "feet_apex", "feet_landing", "pose_l1", "joint_pos_limits",
+    "joint_vel", "joint_acc", "upward", "feet_distance", "knee_distance",
+    "feet_contact_without_cmd", "feet_air_time_biped",
+)  # fmt: skip
 # The landing and lean terms ported from the Torch+MJWarp runner, in their
 # order at the end of the reward dict.
 KEPT_TERMS = ("step_length", "foot_reach", "knee_extend", "forward_lean")

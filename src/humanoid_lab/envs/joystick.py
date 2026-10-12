@@ -650,6 +650,27 @@ def _reward_metric_names(scales) -> list[str]:
     return [f"reward/{k}" for k in scales if k not in _GATED_TERMS or scales[k]]
 
 
+# The always-on terms come first, in compose.UNGATED_TERMS order. The gated
+# terms follow in _GATED_TERMS order. A ConfigDict iterates its keys sorted,
+# so the scales cannot give this order.
+_UNGATED_ORDER = compose.UNGATED_TERMS
+_REWARD_ORDER = _UNGATED_ORDER + _GATED_TERMS
+
+
+def reward_term_names(scales) -> list[str]:
+    """The keys compose.compute_rewards returns for these scales, in order.
+    The Torch env names its logged terms with it.
+
+    The set is _reward_metric_names less the prefix. The order is the dict
+    order of compute_rewards, which is the order of its reward sum.
+    """
+    names = [k.removeprefix("reward/") for k in _reward_metric_names(scales)]
+    unknown = sorted(set(names) - set(_REWARD_ORDER))
+    if unknown:
+        raise KeyError(f"reward.scales has keys compose.compute_rewards never returns: {unknown}")
+    return sorted(names, key=_REWARD_ORDER.index)
+
+
 def check_gait_symmetry_cap(reward) -> None:
     """Raise unless reward.gait_symmetry_cap > 0 whenever the income is on.
     gait_symmetry_income divides by the cap, so cap 0 would be NaN on every
@@ -970,6 +991,27 @@ class Joystick(HumanoidEnv):
             naconmax_per_env=self._naconmax_per_env,
             njmax=self._njmax,
             root_body=self._root_body,
+        )
+
+    def resolved_constants(self) -> TaskConstants:
+        """The task constants as numpy, for a backend other than JAX.
+
+        Every array field becomes a numpy array of the same dtype. Python
+        scalars, tuples, dicts, None and the actuator model stay as they
+        are. naconmax_per_env and njmax are already the resolved budgets.
+        floor_geom_id is the floor lookup train.py's make_domain_randomize
+        uses, since the config names no floor geom. reset and step never
+        call this, and self._consts keeps its jax arrays.
+        """
+        from humanoid_lab.dr.randomize import _find_floor_geom_id
+
+        arrays = {
+            f.name: np.asarray(getattr(self._consts, f.name))
+            for f in dataclasses.fields(self._consts)
+            if isinstance(getattr(self._consts, f.name), (jax.Array, np.ndarray))
+        }
+        return dataclasses.replace(
+            self._consts, **arrays, floor_geom_id=_find_floor_geom_id(self._mj_model, None)
         )
 
     def _init_mirror_maps(self):

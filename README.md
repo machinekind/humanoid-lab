@@ -26,8 +26,12 @@ Configuration is Hydra. `./run.sh <verb> [overrides]` wraps the project venv.
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts from a checkpoint |
 | `test` / `test-all` | unit tests, or unit and integration tests |
+| `test-parity` | Torch-against-JAX parity tests |
+| `train-warp` / `bench-warp` | Torch+MJWarp training run, or its benchmark |
 
-Example: `./run.sh train robot=roboto_origin ppo.num_timesteps=3e8 run_name=roboto_walk_v1`
+Example: `./run.sh train robot=roboto_origin ++ppo.num_timesteps=3e8 run_name=roboto_walk_v1`
+
+On Windows hosts without JAX-CUDA, `src/humanoid_lab/torch_warp/` trains on MJWarp, and its README covers the install.
 
 `docs/configuration.md` lists every verb and flag. `docs/adding-a-robot.md` explains the robot layout. `docs/deploy.md` states the export contract.
 
