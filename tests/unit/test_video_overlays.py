@@ -105,12 +105,6 @@ def test_a_label_is_drawn_in_the_top_left_corner():
     h, w = changed.shape
     assert not changed[h // 2:].any()
     assert not changed[:, w // 2:].any()
-
-
-def test_a_longer_label_draws_a_wider_box():
-    def width(text):
-        changed = np.any(overlays.draw_label(blank(), text) != 0, axis=-1)
-        cols = np.flatnonzero(changed.any(axis=0))
-        return cols[-1] - cols[0]
-
-    assert width("heading loop, gain 1.5") > width("open loop")
+    # A longer label draws a box that reaches further right.
+    longer = np.any(overlays.draw_label(blank(), "heading loop, gain 1.5") != 0, axis=-1)
+    assert np.flatnonzero(longer.any(axis=0))[-1] > np.flatnonzero(changed.any(axis=0))[-1]

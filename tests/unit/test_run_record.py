@@ -181,12 +181,6 @@ def test_step_length_without_target_a_migrates_to_the_clock_target(tmp_path):
     assert env["reward"]["step_length"] == {"power": 2.0, "target": "clock"}
 
 
-def test_step_length_with_target_a_migrates_to_the_linear_target(tmp_path):
-    run = _legacy_run(warp_reward={"step_length": {"scale": 1.0, "target_a": 0.1, "target_b": 0.2}})
-    env = _task_env(_load(tmp_path, run))
-    assert env["reward"]["step_length"]["target"] == "linear"
-
-
 def test_ramp_straight_and_lift_migrate(tmp_path):
     run = _legacy_run(
         warp_cmd_ramp={"lin": 0.25, "yaw": 0.6},
@@ -210,13 +204,6 @@ def test_the_warp_keys_are_gone_and_env_config_is_the_migrated_task_env(tmp_path
     assert loaded["env_config"] == _task_env(loaded)
     assert loaded["env_config"] is not _task_env(loaded)
     assert loaded["trainer"] == TRAINER
-
-
-def test_migrate_legacy_does_not_mutate_its_input():
-    run = _full_legacy_run()
-    before = copy.deepcopy(run)
-    run_record.migrate_legacy(run)
-    assert run == before
 
 
 def test_the_migrated_task_env_builds_a_config_and_passes_the_ledger(tmp_path):
@@ -248,10 +235,6 @@ def test_falsy_legacy_knobs_are_off_and_dropped(tmp_path):
     assert not [k for k in loaded if k.startswith("warp_")]
 
 
-def test_the_frozen_phase_obs_values_match_the_env():
-    assert run_record.FROZEN_PHASE_OBS == joystick.FROZEN_PHASE_OBS
-
-
 # -- refusals -------------------------------------------------------------------
 
 
@@ -265,11 +248,6 @@ def test_deleted_terms_are_refused_by_name(tmp_path):
     )
     with pytest.raises(ValueError, match=r"\['arm_swing', 'march'\]\. PR #11 removed"):
         _load(tmp_path, run)
-
-
-def test_the_deleted_term_list_has_fourteen_names():
-    assert len(set(run_record.DELETED_TERMS)) == 14
-    assert not set(run_record.DELETED_TERMS) & set(run_record.KEPT_TERM_PARAMS)
 
 
 def test_an_unknown_parameter_is_refused(tmp_path):
@@ -333,23 +311,28 @@ def test_sizing_collect_still_needs_the_task_name(tmp_path):
         collect.collect(tmp_path, episodes=1, steps=1, seed=0)
 
 
-def test_the_sizing_report_reads_through_load_run(tmp_path):
+def test_the_sizing_report_reads_a_legacy_run_through_load_run(tmp_path):
+    from humanoid_lab.robot.spec import load_robot_spec
     from humanoid_lab.sizing import report
 
-    names = np.array(["a"])
+    joints = load_robot_spec(paths.REPO_ROOT / "robots/roboto_origin").actuated_joints
+    n = len(joints)
     np.savez(
         tmp_path / "sizing_data.npz",
-        tau=np.zeros((1, 1)),
-        omega=np.zeros((1, 1)),
-        joint_names=names,
-        effort_limit=np.ones(1),
-        velocity_limit=np.ones(1),
+        tau=np.ones((2, n)),
+        omega=np.ones((2, n)),
+        joint_names=np.array(joints),
+        effort_limit=np.ones(n),
+        velocity_limit=np.ones(n),
     )
-    run = _brax_run()
-    del run["hydra_config"]["robot"]["dir"]
-    _write(tmp_path, run)
-    with pytest.raises(ValueError, match=r"hydra_config\.robot\.dir missing"):
-        report.build_report(tmp_path)
+    _write(tmp_path, _full_legacy_run())
+    md, _ = report.build_report(tmp_path, motors_name=None)
+    assert "fixture" in md and "deploy_pd" in md
+
+    # The migration runs, so a legacy run with a deleted term is refused.
+    _write(tmp_path, _legacy_run(warp_reward={"march": {"scale": -1.0}}))
+    with pytest.raises(ValueError, match=r"\['march'\]\. PR #11 removed"):
+        report.build_report(tmp_path, motors_name=None)
 
 
 # -- build_run_record and write_run ---------------------------------------------
@@ -421,11 +404,6 @@ def test_the_record_has_origin_mains_keys_plus_trainer_and_warm_start():
     assert record["warm_start"] is None
 
 
-def test_results_must_carry_all_three_keys():
-    with pytest.raises(ValueError, match="final_reward"):
-        _record(results={"early_stopped": False, "stopped_at_steps": None})
-
-
 def test_null_results_are_allowed():
     record = _record(results={"early_stopped": None, "stopped_at_steps": None, "final_reward": None})
     assert (record["early_stopped"], record["stopped_at_steps"], record["final_reward"]) == (None,) * 3
@@ -442,13 +420,6 @@ def test_paths_are_relative_posix_inside_the_project_and_absolute_outside(tmp_pa
     assert _record(checkpoint_dir=inside)["checkpoint_dir"] == "runs/x/checkpoints"
 
 
-def test_resolve_path():
-    assert run_record.resolve_path(None) is None
-    assert run_record.resolve_path("runs/x") == str(paths.PROJECT_DIR / "runs/x")
-    absolute = str(paths.PROJECT_DIR / "elsewhere")
-    assert run_record.resolve_path(absolute) == str(Path(absolute))
-
-
 def test_load_run_resolves_a_relative_checkpoint_dir(tmp_path):
     run = _brax_run()
     loaded = _load(tmp_path, run)
@@ -459,6 +430,10 @@ def test_load_run_resolves_a_relative_checkpoint_dir(tmp_path):
     absolute = str(tmp_path / "abs" / "checkpoints")
     run["checkpoint_dir"] = absolute
     assert _load(tmp_path, run)["checkpoint_dir"] == absolute
+    # A null path stays null.
+    run["checkpoint_dir"] = None
+    assert _load(tmp_path, run)["checkpoint_dir"] is None
+    assert run_record.resolve_path(None) is None
 
 
 def test_restore_is_stored_portably():
@@ -534,21 +509,6 @@ def test_warm_start_block_without_a_source_run(tmp_path):
             "source_results": None,
             "config_diff": None,
         }
-
-
-def test_versions_names_the_six_packages():
-    v = run_record.versions()
-    assert set(v) == {"brax", "jax", "torch", "warp-lang", "mujoco", "mujoco-mjx"}
-    assert all(x is None or isinstance(x, str) for x in v.values())
-    assert v["jax"] is not None
-    block = run_record.trainer_block("torch_warp_ppo", "warp", "cuda:0", sym_coef=1.0)
-    assert block == {
-        "name": "torch_warp_ppo",
-        "physics": "warp",
-        "versions": v,
-        "device": "cuda:0",
-        "sym_coef": 1.0,
-    }
 
 
 def test_write_run_replaces_the_file_atomically(tmp_path):

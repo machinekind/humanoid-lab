@@ -315,23 +315,47 @@ _UNSHAPED = {
 _SHAPE_BATTERY = {**BATTERY, "walk_ramp": _SHAPED, "stand": _UNSHAPED}
 
 
-def test_the_gait_shape_section_shows_the_travel_numbers():
-    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
-    header = next(line for line in section if line.startswith("| scenario | speed_frac"))
-    row = next(line for line in section if line.startswith("| walk_ramp |") and "0.912" in line)
+def _gait_shape_cells(battery: dict) -> dict[str, dict[str, str]]:
+    """The gait shape tables as {scenario: {column: cell}}.
 
-    assert "heading_drift_deg" in header and "support 0 / 1 / 2" in header
-    assert "| 0.912 | -3.45 | 0.0812 | 0.000 / 0.620 / 0.380 | 1.87 | 1.42 | 0.1834 |" in row
+    A column is named by the first word of its header cell. Cells from both
+    tables of the section land in one dict per scenario."""
+    cells: dict[str, dict[str, str]] = {}
+    columns: list[str] = []
+    for line in _section(render_markdown(battery), "## Gait shape"):
+        if not line.startswith("|") or line.startswith("|---"):
+            continue
+        parts = [p.strip() for p in line.strip("|").split("|")]
+        if parts[0] == "scenario":
+            columns = [p.split()[0] for p in parts]
+            continue
+        cells.setdefault(parts[0], {}).update(zip(columns[1:], parts[1:]))
+    return cells
+
+
+def _numbers(cell: str) -> list[float]:
+    return [float(v) for v in cell.split("/")]
+
+
+def test_the_gait_shape_section_shows_the_travel_numbers():
+    row = _gait_shape_cells(_SHAPE_BATTERY)["walk_ramp"]
+
+    expected = {
+        "speed_frac": [0.912], "heading_drift_deg": [-3.45], "lateral_drift_m": [0.0812],
+        "support": [0.0, 0.62, 0.38], "roll_std_deg": [1.87], "pelvis_sway_cm": [1.42],
+        "step_length_m": [0.1834],
+    }
+    for column, want in expected.items():
+        assert _numbers(row[column]) == pytest.approx(want, abs=5e-4), column
 
 
 def test_the_gait_shape_section_shows_left_and_right_side_by_side():
-    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
-    header = next(line for line in section if line.startswith("| scenario | landing_x_m"))
-    rows = [line for line in section if line.startswith("| walk_ramp |")]
+    row = _gait_shape_cells(_SHAPE_BATTERY)["walk_ramp"]
 
-    assert "landing_x_m (left / right)" in header
-    assert "knee_td_rad (left / right)" in header
-    assert any("0.2100 / 0.1900" in r and "0.412 / 0.398" in r for r in rows)
+    # Each cell holds the left value, then the right one.
+    assert _numbers(row["landing_x_m"]) == pytest.approx([0.21, 0.19], abs=5e-4)
+    assert _numbers(row["landing_y_m"]) == pytest.approx([0.0912, -0.0887], abs=5e-4)
+    assert _numbers(row["knee_td_rad"]) == pytest.approx([0.412, 0.398], abs=5e-4)
 
 
 def test_an_unmeasured_gait_shape_value_renders_a_dash():

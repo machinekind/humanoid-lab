@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,13 +16,13 @@ import pytest
 from humanoid_lab.eval import battery
 from humanoid_lab.eval.battery import (
     _measurement_env_overrides,
-    peak_over,
-    settle_steps,
     antiphase_score,
     battery_scenarios,
     foot_slip,
     mech_power_mean,
+    peak_over,
     scenario_result,
+    settle_steps,
     torque_saturation_fraction,
     tracking_error,
     vibration_index,
@@ -326,26 +327,6 @@ def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
     rec["wz"][:] = wz
     rec["cmd"][:, 2] = cmd_wz
     return rec
-
-
-def test_the_unit_record_is_built_from_record_fields():
-    rec = _rec(12)
-
-    required = {k for k, f in battery.RECORD_FIELDS.items() if not f.optional}
-    assert set(rec) == required
-    battery.check_record(rec, _DIMS)
-
-
-def test_record_fields_declares_the_new_fields():
-    fields = battery.RECORD_FIELDS
-
-    assert fields["base_pos"].shape == (3,)
-    assert fields["base_quat"].shape == (4,)
-    assert fields["base_quat"].quat == "imu"
-    assert fields["foot_pos"].shape == ("F", 3)
-    assert fields["knee_q"].shape == ("F",)
-    assert [k for k, f in fields.items() if f.optional] == ["knee_q"]
-    assert all(f.done_row == "kept" for f in fields.values())
 
 
 def test_check_record_names_a_missing_field():
@@ -813,6 +794,48 @@ def test_a_missing_step_lists_the_available_ones(tmp_path):
     msg = str(exc.value)
     assert "150" in msg
     assert "[100, 200]" in msg
+
+
+def test_the_checkpoint_flag_loads_and_records_that_step(tmp_path, monkeypatch):
+    """main() runs the real checkpoint loader and checkpoint lookup. Only the
+    run.json read, the env build and the policy restore are stubbed, and the
+    scenario table is empty, so nothing is built or rolled out."""
+    run = {
+        **_ckpt_run(tmp_path),
+        "run_name": "stub",
+        "task": "joystick",
+        "ppo_config": {},
+        "hydra_config": {
+            "robot": {"dir": "robots/stub"},
+            "actuators": {"name": "stub"},
+            "task": {"env": {}},
+        },
+    }
+    env = SimpleNamespace(
+        reset=lambda rng: None,
+        step=lambda state, act: None,
+        mj_model=SimpleNamespace(actuator_forcerange=np.zeros((2, 2))),
+        dt=_DT,
+        _config=SimpleNamespace(command=_CMD),
+    )
+    restored = []
+
+    def fake_restore(ckpt, env, ppo_params, deterministic=True):
+        restored.append(ckpt)
+        return lambda obs, rng: (obs, None)
+
+    monkeypatch.setattr("humanoid_lab.run_record.load_run", lambda run_dir: run)
+    monkeypatch.setattr("humanoid_lab.registry.make_env", lambda *args: env)
+    monkeypatch.setattr("humanoid_lab.policy_io.load_policy", fake_restore)
+    monkeypatch.setattr(battery, "battery_scenarios", lambda dt, command: {})
+    monkeypatch.setattr(battery.sim_budget, "budget_report_for_env", lambda env, a, b: {})
+
+    # 100 is the older of the two checkpoints, so the default would pick 200.
+    _main(["--run", str(tmp_path), "--checkpoint", "100"], monkeypatch)
+
+    assert restored == [tmp_path / "checkpoints" / "000000000100"]
+    written = json.loads((tmp_path / "battery.json").read_text())
+    assert int(written["checkpoint"]) == 100
 
 
 # -- contact budget peaks ----------------------------------------------------

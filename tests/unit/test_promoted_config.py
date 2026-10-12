@@ -4,14 +4,9 @@ Each check is the module-level function the env constructor calls, run on a
 plain config. Later packages add their knobs to this file.
 """
 
-from types import SimpleNamespace
-
 import pytest
-from ml_collections import config_dict
 
 from humanoid_lab.envs.joystick import (
-    FROZEN_PHASE_OBS,
-    Joystick,
     check_command_ramp,
     check_frozen_phase_obs,
     check_kept_terms,
@@ -51,11 +46,6 @@ def test_one_rate_set_is_refused_and_named(lin, yaw):
 def test_a_negative_rate_is_refused(lin, yaw):
     with pytest.raises(ValueError, match="command.ramp"):
         check_command_ramp(_command(lin=lin, yaw=yaw))
-
-
-def test_a_config_without_a_ramp_block_passes():
-    check_command_ramp(config_dict.ConfigDict({"resample_steps": 250}))
-    check_command_ramp({})
 
 
 # -- the landing and lean terms (reward.step_length, foot_reach, knee_extend, forward_lean) --
@@ -158,16 +148,6 @@ def test_yaml_ints_pass():
     _check(_reward({"knee_extend": 1}, knee_extend={"flex_lo": 0, "flex_hi": 1}))
 
 
-def test_knee_extend_without_a_knee_group_is_refused():
-    stub = SimpleNamespace(
-        _robot_spec=SimpleNamespace(joint_groups={}, foot_sites=["left_foot", "right_foot"], actuated_joints=[])
-    )
-    with pytest.raises(ValueError, match="reward.scales.knee_extend needs a 'knee' joint group"):
-        Joystick._foot_ordered_group_qidx(stub, "knee", "knee_extend")
-    with pytest.raises(ValueError, match="reward.scales.knee_stance needs a 'knee' joint group"):
-        Joystick._foot_ordered_group_qidx(stub, "knee")
-
-
 # -- gait.frozen_phase_obs -------------------------------------------------------
 
 
@@ -176,7 +156,7 @@ def test_the_default_frozen_phase_obs_is_the_legacy_cos_sin():
     check_frozen_phase_obs(default_config().gait)
 
 
-@pytest.mark.parametrize("mode", FROZEN_PHASE_OBS)
+@pytest.mark.parametrize("mode", ["cos_sin", "zeros"])
 def test_both_frozen_phase_obs_values_pass(mode):
     gait = default_config().gait
     gait.frozen_phase_obs = mode

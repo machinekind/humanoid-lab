@@ -7,7 +7,8 @@ brax's init through policy_io.init_from_brax.
 
 from __future__ import annotations
 
-import math
+import functools
+import types
 
 import pytest
 from hydra import compose, initialize_config_dir
@@ -70,25 +71,16 @@ def _flat(net):
     return torch.cat([p.detach().reshape(-1).clone() for p in net.parameters()])
 
 
-def test_one_iteration_runs_and_counts_steps(env):
+def test_each_iteration_counts_its_steps(env):
     tr = _trainer(env)
     assert tr.n_unrolls == 2
     assert tr.steps_per_iter == N * 5 * 2
-    losses = tr.iteration()
-    assert set(losses) == set(warp_ppo.LOSS_KEYS)
-    assert all(isinstance(v, torch.Tensor) for v in losses.values())
-    assert tr.step == tr.steps_per_iter
-    assert tr.it == 1
-    stats = tr.read_stats()
-    for k in (*warp_ppo.LOSS_KEYS, "reward_x1000", "falls_per_1M", "done_ep_len"):
-        assert math.isfinite(stats[k]), k
-    # 10 steps per iteration with episodes of 8: every world finished one.
-    assert stats["done_ep_len"] <= EPISODE_LENGTH
-    assert set(stats["terms"]) == set(env.term_names)
-    assert all(math.isfinite(v) for v in stats["terms"].values())
-    assert stats["sym_loss"] == 0.0
-    # The normalizers saw the whole batch.
-    assert tr.norm_s.count == tr.norm_p.count == tr.steps_per_iter
+    for it in (1, 2):
+        tr.iteration()
+        assert tr.it == it
+        assert tr.step == it * tr.steps_per_iter
+        # The normalizers saw every collected step.
+        assert tr.norm_s.count == tr.norm_p.count == it * tr.steps_per_iter
 
 
 def test_iters_per_reset_uses_brax_ceil(env, monkeypatch):
@@ -136,15 +128,72 @@ def test_critic_warmup_freezes_the_policy(env):
     assert not torch.equal(_flat(tr.policy), policy0)
 
 
-def test_sym_coef_reports_a_sym_loss(env):
+def _brax_sym_loss(tr, obs_s, obs_p, maps):
+    """train._with_sym_loss on the trainer's networks, normalizers and observations."""
+    import jax.numpy as jp
+    from brax.training import types as brax_types
+    from brax.training.acme import running_statistics
+    from brax.training.agents.ppo import networks as ppo_networks
+
+    from humanoid_lab import train
+
+    kw = _ppo_params().network_factory.to_dict()
+    net = ppo_networks.make_ppo_networks(
+        {"state": (tr.S,), "privileged_state": (tr.P,)},
+        tr.A,
+        preprocess_observations_fn=running_statistics.normalize,
+        **kw,
+    )
+
+    def arr(t):
+        return jp.asarray(t.detach().cpu().numpy())
+
+    norm = running_statistics.RunningStatisticsState(
+        count=brax_types.UInt64(hi=0, lo=tr.norm_s.count),
+        mean={"state": arr(tr.norm_s.mean), "privileged_state": arr(tr.norm_p.mean)},
+        summed_variance={"state": arr(tr.norm_s.svar), "privileged_state": arr(tr.norm_p.svar)},
+        std={"state": arr(tr.norm_s.std), "privileged_state": arr(tr.norm_p.std)},
+    )
+    data = types.SimpleNamespace(observation={"state": arr(obs_s), "privileged_state": arr(obs_p)})
+    obs_perm, obs_sign, act_perm, act_sign = (jp.asarray(m) for m in maps)
+    _loss, metrics = train._with_sym_loss(
+        types.SimpleNamespace(policy=policy_io.to_brax(tr.policy)),
+        norm,
+        data,
+        None,
+        ppo_network=net,
+        sym_coef=1.0,
+        obs_key=kw.get("policy_obs_key", "state"),
+        obs_perm=obs_perm,
+        obs_sign=obs_sign,
+        act_perm=act_perm,
+        act_sign=act_sign,
+        compute_ppo_loss=lambda *a, **k: (0.0, {}),
+    )
+    return float(metrics["sym_loss"])
+
+
+def _record_update(update, batches, name, x):
+    batches[name] = x.clone()
+    update(x)
+
+
+def test_sym_loss_matches_brax(env):
     with pytest.raises(ValueError, match="mirror_maps"):
         warp_ppo.Trainer(env, _ppo_params(), sym_coef=1.0)
     maps = symmetry.policy_mirror_maps(env.robot_spec, env.actor_obs_names)
-    tr = _trainer(env, sym_coef=1.0, mirror_maps=maps)
-    tr.iteration()
-    stats = tr.read_stats()
-    assert math.isfinite(stats["sym_loss"])
-    assert stats["sym_loss"] > 0.0
+    # A zero learning rate keeps the policy fixed through the update. Every
+    # minibatch then reads the same networks, and the reported loss is the
+    # mean over the whole batch.
+    tr = _trainer(env, _ppo_params(learning_rate=0.0), sym_coef=1.0, mirror_maps=maps)
+    batches = {}
+    for name in ("norm_s", "norm_p"):
+        norm = getattr(tr, name)
+        norm.update = functools.partial(_record_update, norm.update, batches, name)
+    losses = tr.iteration()
+    want = _brax_sym_loss(tr, batches["norm_s"], batches["norm_p"], maps)
+    assert want > 0
+    assert float(losses["sym_loss"]) == pytest.approx(want, rel=1e-5)
 
 
 def test_state_dict_round_trips(env, tmp_path):
@@ -152,6 +201,9 @@ def test_state_dict_round_trips(env, tmp_path):
     tr.iteration()
     path = tmp_path / "trainer_state.pt"
     policy_io.save_trainer_state(path, tr.state_dict())
+    # A second save replaces the file and leaves no temporary file behind.
+    policy_io.save_trainer_state(path, tr.state_dict())
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["trainer_state.pt"]
     state = policy_io.load_trainer_state(path, "cpu")
 
     other = warp_ppo.Trainer(env, _ppo_params(), seed=99)

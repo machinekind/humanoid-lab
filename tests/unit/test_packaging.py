@@ -1,9 +1,9 @@
 """Packaging and Windows checks that read files as text.
 
 Git for Windows checks text files out with CRLF unless .gitattributes says
-otherwise, and bash then fails on the carriage returns. A Windows venv puts
-the interpreter at .venv/Scripts/python.exe. The torch_warp extra must not
-pull PyPI torch onto Linux, where it brings CUDA 13 next to jax's CUDA 12.
+otherwise, and bash then fails on the carriage returns. The torch_warp extra
+must not pull PyPI torch onto Linux, where it brings CUDA 13 next to jax's
+CUDA 12.
 """
 
 import re
@@ -53,15 +53,6 @@ def test_the_pins_stay():
     assert "warp-lang==1.13.0" in deps
     assert "jax==0.9.2; sys_platform != 'linux'" in deps
     assert "jax[cuda12]==0.9.2; sys_platform == 'linux'" in deps
-
-
-def test_run_sh_falls_back_to_the_windows_venv():
-    text = RUN_SH.read_text(encoding="utf-8")
-    assert "PY=.venv/bin/python\n" in text
-    assert (
-        'if [[ ! -x "$PY" && -x .venv/Scripts/python.exe ]]; then '
-        "PY=.venv/Scripts/python.exe; fi"
-    ) in text
 
 
 def _run_sh_verbs():

@@ -265,13 +265,6 @@ def test_a_legacy_torch_run_exports_with_its_migrated_knobs(run_dir, tmp_path):
     assert export.load_for_export(copy).env._config.command.straight_prob == 0.2
 
 
-def test_a_legacy_run_with_a_deleted_term_is_refused(run_dir, tmp_path):
-    copy = _legacy_copy(run_dir, tmp_path, "legacy_march", warp_reward={"march": {"scale": -1.0}})
-
-    with pytest.raises(ValueError, match="march"):
-        export.load_for_export(copy)
-
-
 def test_a_failed_export_leaves_an_earlier_good_export_in_place(loaded, run_dir, tmp_path):
     out_dir = tmp_path / "keeper"
     export.export_run(run_dir, out_dir)

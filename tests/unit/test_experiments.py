@@ -253,32 +253,21 @@ def test_the_mirror_presets_reach_the_env_config(experiment):
 V40_LANDING_TERMS = ("step_length", "foot_reach", "knee_extend")
 
 
-def test_roboto_gait_v40_carries_the_documented_recipe():
-    # docs/lessons/roboto-gait.md, section Recipe. The preset adds no dr or
-    # domain_rand block.
-    with (paths.CONFIGS_DIR / "experiment" / "roboto_gait_v40.yaml").open() as f:
-        raw = yaml.safe_load(f)
-    assert set(raw) <= {"defaults", "task", "actuators", "ppo"}
-    assert set(raw["ppo"]) == {"sym_coef"}
-
+def test_roboto_gait_v40_passes_the_construction_checks():
     cfg = _compose(["experiment=roboto_gait_v40"])
-    assert cfg.robot.name == "roboto_origin"
-    assert cfg.actuators.name == "deploy_pd"
-    env = cfg.task.env
-    assert list(env.gait.freq) == [0.8, 1.4]
-    assert env.command.deadband == 0.15
-    assert env.obs.state[-1] == "heading_err"
-    assert env.obs.privileged[-1] == "heading_err"
-    for term in V40_LANDING_TERMS:
-        assert env.reward[term].pair_min is True, term
-    assert env.reward.forward_lean.max_deg == 0.0
-    for term in (*V40_LANDING_TERMS, "forward_lean"):
-        assert env.reward.scales[term] != 0.0, term
-
     _, default_config = TASKS[cfg.task.name]
     env_cfg = default_config()
-    _apply_overrides(env_cfg, OmegaConf.to_container(env, resolve=True))
-    joystick.check_kept_terms(env_cfg.reward, env_cfg.gait, 2)
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    # The preset turns the landing and lean terms on, so the checks below have work to do.
+    for term in (*V40_LANDING_TERMS, "forward_lean"):
+        assert env_cfg.reward.scales[term] != 0.0, term
+
+    n_feet = len(load_robot_spec(paths.REPO_ROOT / cfg.robot.dir).foot_sites)
+    joystick.check_kept_terms(env_cfg.reward, env_cfg.gait, n_feet)
+    joystick.check_pure_draw_ranges(env_cfg.command)
+    joystick.check_command_ramp(env_cfg.command)
+    joystick.check_gait_symmetry_cap(env_cfg.reward)
+    joystick.check_frozen_phase_obs(env_cfg.gait)
 
     # The mirror-symmetry loss is on, and brax's ppo.train never sees the key.
     assert cfg.ppo.sym_coef > 0

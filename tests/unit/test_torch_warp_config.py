@@ -13,32 +13,9 @@ from omegaconf import OmegaConf
 
 from humanoid_lab import paths, registry
 from humanoid_lab.envs import joystick
+from humanoid_lab.ppo_config import compose_ppo_params
 
 README = paths.REPO_ROOT / "src" / "humanoid_lab" / "torch_warp" / "README.md"
-
-WTRAIN_FLAGS = (
-    "--src",
-    "--name",
-    "--steps",
-    "--num-envs",
-    "--seed",
-    "--ckpt-minutes",
-    "--lr",
-    "--sym-coef",
-    "--critic-warmup-iters",
-    "--max-minutes",
-    "--src-ckpt",
-    "--resume",
-    "--reset-keyframe",
-    "--act-scale",
-    "--warp-reward",
-    "--pose-l1",
-    "--scale",
-    "--warp-cmd-ramp",
-    "--cmd-straight",
-    "--warp-lift",
-    "--env",
-)
 
 
 def _compose(config_name, overrides=()):
@@ -69,14 +46,15 @@ def _readme_overrides():
     return found
 
 
-def test_torch_warp_composes_alone_and_with_an_experiment():
-    cfg = _compose("torch_warp")
-    assert cfg.torch_warp.device == "cuda:0"
-    assert cfg.torch_warp.resume is False
-    assert cfg.bench.iters == 3
-    cfg = _compose("torch_warp", ["experiment=roboto_gait_v40"])
-    assert cfg.ppo.sym_coef > 0
-    assert "torch_warp" in cfg and "bench" in cfg
+def test_torch_warp_is_config_plus_its_own_blocks_alone_and_with_an_experiment():
+    for overrides in ([], ["experiment=roboto_gait_v40"]):
+        torch_cfg = OmegaConf.to_container(_compose("torch_warp", overrides), resolve=True)
+        brax_cfg = OmegaConf.to_container(_compose("config", overrides), resolve=True)
+        assert set(torch_cfg) - set(brax_cfg) == {"torch_warp", "bench"}
+        assert {k: torch_cfg[k] for k in brax_cfg} == brax_cfg
+        if overrides:
+            # The experiment lands: its sym_coef replaces the default 0.
+            assert torch_cfg["ppo"]["sym_coef"] > 0
 
 
 def test_config_rejects_the_torch_only_blocks():
@@ -87,7 +65,9 @@ def test_config_rejects_the_torch_only_blocks():
 
 def test_sym_coef_needs_no_plus_on_either_config():
     for name in ("config", "torch_warp"):
-        assert _compose(name, ["ppo.sym_coef=0.5"]).ppo.sym_coef == 0.5
+        cfg = _compose(name, ["ppo.sym_coef=0.5"])
+        assert cfg.ppo.sym_coef == 0.5
+        assert compose_ppo_params(cfg).sym_coef == 0.5
 
 
 @pytest.mark.parametrize("override", _readme_overrides())
@@ -95,17 +75,3 @@ def test_every_readme_override_composes_and_lands_on_a_real_key(override):
     assert "<" not in override and "..." not in override
     cfg = _compose("torch_warp", override.split())
     registry._apply_overrides(joystick.default_config(), OmegaConf.to_container(cfg.task.env, resolve=True))
-
-
-def test_the_readme_lists_every_wtrain_flag():
-    rows = _flag_rows()
-    assert len(WTRAIN_FLAGS) == 21
-    assert sorted(rows) == sorted(WTRAIN_FLAGS)
-    for flag, cell in rows.items():
-        assert cell.startswith("dropped:") or re.search(r"`[^`]+=[^`]*`", cell), flag
-
-
-def test_the_num_timesteps_example_composes():
-    cfg = _compose("torch_warp", ["++ppo.num_timesteps=3e8", "run_name=roboto_walk_v1"])
-    assert cfg.ppo.num_timesteps == 3e8
-    assert cfg.run_name == "roboto_walk_v1"

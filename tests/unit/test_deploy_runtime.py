@@ -263,12 +263,13 @@ def test_schema_2_cos_sin_observes_cos_sin():
     policy = runtime.DeployPolicy(toy_weights(), meta)
     policy.reset()
     policy.act(**sensors(command=np.array([0.8, 0.0, 0.0])))
-    legs = policy.leg_phases()
+    # vx 0.8 is the clock's cmd_speed_max, so it runs at freq_high, 2 Hz.
+    # The right leg's offset is -pi, so its cos and sin are the left leg's negated.
+    phi = 2 * np.pi * 0.02 * 2.0
     obs = policy.observe(**sensors())
-    assert policy.phase > 0.0
-    assert np.allclose(obs[10:], np.concatenate([np.cos(legs), np.sin(legs)]), atol=1e-6)
-    fresh = runtime.DeployPolicy(toy_weights(), meta)
-    assert np.allclose(fresh.observe(**sensors())[10:], [1.0, -1.0, 0.0, 0.0], atol=1e-6)
+    assert np.allclose(
+        obs[10:], [np.cos(phi), -np.cos(phi), np.sin(phi), -np.sin(phi)], atol=1e-6
+    )
 
 
 def test_a_schema_2_meta_without_phase_obs_is_refused():

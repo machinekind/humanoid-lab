@@ -74,6 +74,9 @@ def test_progress_clears_done_rows_only(xp):
     _same(after["progress_ema"], np.asarray([0.9, 0.2, 0.9], dtype=np.float32))
     _same(after["steps_since_cmd"], [0, 6, 0])
     _check_untouched_except(before, after, {"progress_ema", "steps_since_cmd"})
+    # The input dict keeps its own values.
+    _same(before["progress_ema"], np.asarray([0.1, 0.2, 0.3], dtype=np.float32))
+    _same(before["steps_since_cmd"], [5, 6, 7])
 
 
 def test_gait_zeros_every_tracker_of_done_rows_only(xp):
@@ -85,6 +88,10 @@ def test_gait_zeros_every_tracker_of_done_rows_only(xp):
         _same(a[2], np.zeros_like(b[2]))
         _same(a[1], b[1])
     _check_untouched_except(before, after, set(GAIT_TRACKER_KEYS))
+    # The other layers leave the trackers as the gait layer alone clears them.
+    every = clear_done(before, _done(xp), gait_state.LAYERS, _reset_values(xp))
+    for k in GAIT_TRACKER_KEYS:
+        _same(every[k], after[k])
 
 
 def test_heading_rewrites_yaw_ref_of_done_rows_only(xp):
@@ -105,33 +112,8 @@ def test_land_zeroes_land_frac_of_done_rows_only(xp):
     _check_untouched_except(before, after, {"land_frac"})
 
 
-def test_no_flags_changes_nothing_and_does_not_mutate_the_input(xp):
-    before = _info(xp)
-    keys = set(before)
-    after = clear_done(before, _done(xp), (), {})
-    assert after is not before
-    assert set(before) == keys
-    _check_untouched_except(before, after, set())
-
-
-def test_all_flags_together(xp):
-    before = _info(xp)
-    after = clear_done(before, _done(xp), gait_state.LAYERS, _reset_values(xp))
-    _same(after["yaw_ref"], np.asarray([-1.0, 2.0, -1.0], dtype=np.float32))
-    _same(after["steps_since_cmd"], [0, 6, 0])
-    _same(np.asarray(after["feet_air_time"])[1], np.asarray(before["feet_air_time"])[1])
-    _same(np.asarray(after["feet_air_time"])[0], [0.0, 0.0])
-    _same(np.asarray(after["land_frac"])[2], np.zeros((2, 3), dtype=np.float32))
-    _same(np.asarray(after["land_frac"])[1], np.asarray(before["land_frac"])[1])
-
-
-def test_nothing_done_changes_nothing(xp):
-    before = _info(xp)
-    after = clear_done(before, xp.asarray([False] * N), gait_state.LAYERS, _reset_values(xp))
-    _check_untouched_except(before, after, set())
-
-
 def test_result_leaves_stay_in_the_input_namespace(xp):
+    # tests/parity/test_parity_task_math.py checks the Torch leaves.
     after = clear_done(_info(xp), _done(xp), gait_state.LAYERS, _reset_values(xp))
     want = np.ndarray if xp is np else type(jp.zeros(1))
     for k, v in after.items():
@@ -165,13 +147,6 @@ def test_heading_flag_from_either_obs_list(block):
     assert reseed_flags(cfg) == ("heading",)
 
 
-def test_privileged_only_heading_err_still_counts():
-    cfg = default_config()
-    assert "heading_err" not in cfg.obs.state
-    cfg.obs.privileged = ("heading_err",)
-    assert reseed_flags(cfg) == ("heading",)
-
-
 @pytest.mark.parametrize("term", compose.LANDING_SLOTS)
 def test_land_flag_needs_a_nonzero_landing_scale_and_pair_min(term):
     cfg = default_config()
@@ -189,15 +164,14 @@ def test_forward_lean_never_asks_for_the_land_layer():
     assert reseed_flags(cfg) == ()
 
 
-def test_flags_come_in_layer_order():
+def test_every_layer_is_flagged_when_every_feature_is_on():
     cfg = default_config()
     cfg.obs.state = tuple(cfg.obs.state) + ("heading_err",)
     cfg.reward.scales.gait_symmetry = -1.0
     cfg.no_progress.enable = True
     cfg.reward.scales.foot_reach = 1.0
     cfg.reward.foot_reach.pair_min = True
-    assert reseed_flags(cfg) == ("progress", "gait", "heading", "land")
-    assert reseed_flags(cfg) == gait_state.LAYERS
+    assert sorted(reseed_flags(cfg)) == sorted(gait_state.LAYERS)
 
 
 def test_partial_config_is_tolerated():
@@ -236,54 +210,29 @@ def _commands(batch):
 
 
 @pytest.mark.parametrize("batch", BATCHES)
-def test_reset_state_base_keys_and_dtypes(batch):
-    info = gait_state.reset_state(_commands(batch), toy_consts(), _cfg())
-    assert set(info) == {
-        "command", "last_action", "last_last_action", "last_torque", "feet_air_time",
-        "feet_contact_time", "swing_apex", "last_apex", "last_contact", "phase", "step_count",
-        "steps_since_cmd",
-    }
-    for k in ("last_action", "last_last_action", "last_torque"):
-        assert info[k].shape == batch + (_NU,) and info[k].dtype == np.float32
-    for k in ("feet_air_time", "feet_contact_time", "swing_apex", "last_apex"):
-        assert info[k].shape == batch + (_NF,) and info[k].dtype == np.float32
-    assert info["last_contact"].dtype == bool and info["last_contact"].shape == batch + (_NF,)
-    assert info["phase"].dtype == np.float32 and info["phase"].shape == batch
-    for k in ("step_count", "steps_since_cmd"):
-        assert info[k].dtype == np.int32 and info[k].shape == batch
+def test_reset_state_zeroes_everything_but_the_command(batch):
+    cmd = _commands(batch)
+    info = gait_state.reset_state(cmd, toy_consts(), _cfg())
+    _same(info["command"], cmd)
     for k, v in info.items():
+        assert np.shape(v)[: len(batch)] == batch, k
         if k != "command":
             assert not np.asarray(v).any(), k
 
 
-def test_reset_state_jax_dtypes():
-    import jax.numpy as jp
-
-    info = gait_state.reset_state(jp.asarray(_commands((3,))), toy_consts("jax"), _cfg())
-    assert info["phase"].dtype == jp.float32 and info["step_count"].dtype == jp.int32
-    assert info["last_contact"].dtype == jp.bool_
-
-
-def test_reset_state_gates():
+def test_reset_state_seeds_the_gated_leaves():
     cmd = _commands((2,))
     consts = toy_replace(toy_consts(), heading_obs=True, gait_dur_ema_on=True)
     yaw = np.array([0.1, 0.2], np.float32)
     info = gait_state.reset_state(cmd, consts, _cfg(), yaw=yaw)
-    assert {"yaw_ref", "air_dur_ema", "stance_dur_ema"} <= set(info)
-    np.testing.assert_array_equal(info["yaw_ref"], yaw)
-    assert info["air_dur_ema"].shape == (2, _NF) and not info["air_dur_ema"].any()
-    base = gait_state.reset_state(cmd, toy_consts(), _cfg())
-    for k in (
-        "yaw_ref", "air_dur_ema", "stance_dur_ema", "push_countdown", "mirror", "progress_ema",
-        "cmd_target",
-    ):
-        assert k not in base
+    _same(info["yaw_ref"], yaw)
+    assert not info["air_dur_ema"].any() and not info["stance_dur_ema"].any()
+    # A ramp with zero rates is off, so the sample is served at once.
     off = gait_state.reset_state(cmd, toy_consts(), _cfg(command={"ramp": {"lin": 0.0, "yaw": 0.0}}))
-    assert "cmd_target" not in off
     _same(off["command"], cmd)
     cd = np.array([4, 6], np.int32)
     info = gait_state.reset_state(cmd, toy_consts(), _cfg(), push_countdown=cd)
-    np.testing.assert_array_equal(info["push_countdown"], cd)
+    _same(info["push_countdown"], cd)
     info = gait_state.reset_state(cmd, toy_consts(), _cfg(no_progress={"enable": True}))
     np.testing.assert_allclose(info["progress_ema"], progress.cmd_speed(cmd))
 
@@ -294,7 +243,6 @@ _RAMP = {"ramp": {"lin": 0.5, "yaw": 1.0}}
 def test_reset_state_with_the_ramp_serves_zero_and_keeps_the_sample_as_the_target():
     cmd = _commands((3,))
     info = gait_state.reset_state(cmd, toy_consts(), _cfg(command=_RAMP))
-    assert list(info)[:2] == ["command", "cmd_target"]
     _same(info["command"], np.zeros_like(cmd))
     _same(info["cmd_target"], cmd)
     info = gait_state.reset_state(
@@ -311,12 +259,6 @@ def test_reset_state_mirror_is_u_below_prob():
     )
     np.testing.assert_array_equal(info["mirror"], [True, True, False, False])
     assert info["mirror"].dtype == bool
-
-
-def test_reset_offset():
-    noise = np.array([-1.0, 0.5, 1.0], np.float32)
-    np.testing.assert_array_equal(gait_state.reset_offset(noise, 0.0), np.zeros(3))
-    np.testing.assert_array_equal(gait_state.reset_offset(noise, 0.2), noise * 0.2)
 
 
 def _pre_inputs(batch, cfg):
@@ -505,24 +447,41 @@ def test_update_batched_equals_stacked(on, batch, mode):
     assert_batched_matches_stacked(fn, [vals[k] for k in names], batch, mode, atol=1e-5)
 
 
-@pytest.mark.parametrize("on", [False, True], ids=["off", "on"])
-def test_update_keeps_the_info_keys_shapes_and_dtypes(on):
-    """reset_state's info goes through update with the same keys, shapes and
-    dtypes. With every feature off no key is added and aux holds 'fall' only."""
-    consts, cfg = _uconsts("numpy", on), _ucfg(on)
-    vals = _update_inputs((3,), on)
+def _fresh_step(case):
+    """(info, r, action, draws, consts, cfg) for a step from reset_state's info.
+
+    case picks the config: 'off' and 'on' use _ucfg, 'ramp' uses _ramp_ucfg
+    and 'land' uses _land_ucfg with its own inputs.
+    """
+    if case == "land":
+        consts, cfg, vals = _land_uconsts(), _land_ucfg(), _land_inputs((3,))
+    else:
+        on = case == "on"
+        consts = _uconsts("numpy", on)
+        cfg = _ramp_ucfg() if case == "ramp" else _ucfg(on)
+        vals = _update_inputs((3,), on)
     _, r, action, draws = _split(vals)
-    info = gait_state.reset_state(
-        vals["i.command"], consts, cfg, yaw=vals["r.yaw"] if on else None
-    )
+    yaw = vals["r.yaw"] if consts.heading_obs else None
+    info = gait_state.reset_state(vals["i.command"], consts, cfg, yaw=yaw)
+    return info, r, action, draws, consts, cfg
+
+
+@pytest.mark.parametrize("case", ["off", "on", "ramp", "land"])
+def test_a_step_from_reset_keeps_the_info_layout_and_pays_the_reset_rewards(case):
+    """A step from reset_state's info returns the same keys, shapes and
+    dtypes, which a jax scan carry needs. Its rewards are compute_rewards on
+    the reset info, where no foot has air time to pay. done is fall or cut."""
+    info, r, action, draws, consts, cfg = _fresh_step(case)
     out, rewards, done, aux = gait_state.update(info, r, action, consts, cfg, draws)
     assert list(out) == list(info)
     for k in info:
         assert out[k].shape == info[k].shape and out[k].dtype == info[k].dtype, k
-    assert done.dtype == bool and done.shape == (3,)
-    assert set(aux) == ({"fall", "cut", "progress_ratio"} if on else {"fall"})
-    want = compose.compute_rewards(r, info, action, np.zeros((3, _NF), bool), r["contact"], consts, cfg)[0]
+    no_landing = np.zeros((3, _NF), bool)
+    want = compose.compute_rewards(r, info, action, no_landing, r["contact"], consts, cfg)[0]
     assert list(rewards) == list(want)
+    for k in want:
+        np.testing.assert_array_equal(rewards[k], want[k], err_msg=k)
+    _same(done, aux["fall"] | aux.get("cut", False))
 
 
 @pytest.mark.parametrize("xp_name", ["numpy", "jax"])
@@ -738,18 +697,6 @@ def test_the_ramp_reseeds_progress_ema_from_the_slewed_command():
     _same(out["progress_ema"][0], progress.cmd_speed(out["command"])[0])
 
 
-def test_update_with_the_ramp_keeps_the_reset_keys():
-    consts, cfg = _uconsts(), _ramp_ucfg()
-    vals = _update_inputs((3,), False)
-    _, r, action, draws = _split(vals)
-    info = gait_state.reset_state(vals["i.command"], consts, cfg)
-    out, _, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
-    assert list(out) == list(info)
-    assert "cmd_target" in out
-    for k in info:
-        assert out[k].shape == info[k].shape and out[k].dtype == info[k].dtype, k
-
-
 # -- land_frac -------------------------------------------------------------------
 
 _LAND_FLAGS = {
@@ -790,17 +737,9 @@ def _land_inputs(batch, seed=7):
     return vals
 
 
-def test_reset_state_seeds_land_frac_only_when_on():
-    cmd = _commands((3,))
-    info = gait_state.reset_state(cmd, _land_uconsts(), _land_ucfg())
-    assert info["land_frac"].shape == (3, _NF, 3) and info["land_frac"].dtype == np.float32
-    assert not info["land_frac"].any()
-    info = gait_state.reset_state(jp.asarray(cmd), _land_uconsts("jax"), _land_ucfg())
-    assert info["land_frac"].dtype == jp.float32
-    # The terms on without pair_min: no land_frac.
-    no_pair = toy_replace(_land_uconsts(), land_frac_on=False)
-    assert "land_frac" not in gait_state.reset_state(cmd, no_pair, _ucfg())
-    assert "land_frac" not in gait_state.reset_state(cmd, toy_consts(), _ucfg())
+def test_reset_state_seeds_land_frac_with_zeros():
+    info = gait_state.reset_state(_commands((3,)), _land_uconsts(), _land_ucfg())
+    _same(info["land_frac"], np.zeros((3, _NF, 3), np.float32))
 
 
 def test_update_records_land_only_on_first_contact_feet():
@@ -817,17 +756,6 @@ def test_update_records_land_only_on_first_contact_feet():
     _same(out["land_frac"], want)
     assert not np.array_equal(want, vals["i.land_frac"])
     assert list(rewards)[-4:] == list(compose.KEPT_TERMS)
-
-
-def test_update_with_land_keeps_the_reset_keys():
-    consts, cfg = _land_uconsts(), _land_ucfg()
-    vals = _land_inputs((3,))
-    _, r, action, draws = _split(vals)
-    info = gait_state.reset_state(vals["i.command"], consts, cfg)
-    out, _, _, _ = gait_state.update(info, r, action, consts, cfg, draws)
-    assert list(out) == list(info)
-    for k in info:
-        assert out[k].shape == info[k].shape and out[k].dtype == info[k].dtype, k
 
 
 @pytest.mark.parametrize("mode", MODES)

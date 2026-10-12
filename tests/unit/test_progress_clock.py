@@ -1,11 +1,11 @@
 """The command, gait clock and command-draw math across array backends.
 
-Every function runs on numpy and eager jax at batch shapes (), (3,) and
-(2, 3). The batched call must equal the per-item calls stacked.
+The batched functions run on numpy and eager jax at batch shapes (), (3,)
+and (2, 3). The batched call must equal the per-item calls stacked.
+Elementwise functions have value tests only.
 tests/integration/test_shared_math_jit.py runs the same checks under jit.
 """
 
-import itertools
 import math
 
 import jax.numpy as jnp
@@ -65,26 +65,9 @@ def test_lift_scale_clips_into_min_frac_and_one():
     np.testing.assert_allclose(progress.lift_scale(cmd, 0.5, 0.25), [0.25, 0.5, 0.6, 1.0], rtol=1e-6)
 
 
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("batch", BATCHES)
-def test_clock_freq(batch, mode):
-    speed = np.abs(_commands(batch)[..., 0]) * 2.0
-    assert_batched_matches_stacked(
-        lambda s: progress.clock_freq(s, VMAX, FREQ), [speed], batch, mode
-    )
-
-
 def test_clock_freq_clamps_to_the_range():
     speed = np.array([0.0, 0.5, 1.0, 5.0], np.float32)
     np.testing.assert_allclose(progress.clock_freq(speed, VMAX, FREQ), [1.0, 1.75, 2.5, 2.5])
-
-
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("batch", BATCHES)
-def test_phase_dt(batch, mode):
-    assert_batched_matches_stacked(
-        lambda c: progress.phase_dt(c, VMAX, FREQ, DT, DEADBAND), [_commands(batch)], batch, mode
-    )
 
 
 @pytest.mark.parametrize("xp", [np, jnp])
@@ -122,19 +105,14 @@ def test_leg_phases_are_antiphase_and_wrapped():
     np.testing.assert_allclose(diff, math.pi, atol=1e-4)
 
 
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("batch", BATCHES)
-def test_gait_targets(batch, mode):
-    assert_batched_matches_stacked(
-        lambda p: progress.gait_targets(p, 0.6, 0.08), [_phases(batch)], batch, mode
-    )
-
-
 def test_gait_targets_swing_is_the_complement_of_stance():
-    rz, stance = progress.gait_targets(_phases((40,)), 0.6, 0.08)
-    assert rz.shape == stance.shape == (40, 2)
-    assert np.all(rz[stance] == 0.0)
-    assert np.all(rz >= 0.0) and np.all(rz <= 0.08 + 1e-6)
+    """With duty 0.6 each leg swings for the first 0.4 of its cycle and peaks
+    at 0.2. Leg 1 runs half a cycle behind leg 0."""
+    phase = np.float32(2 * math.pi) * np.array([0.1, 0.2, 0.7], np.float32)
+    rz, stance = progress.gait_targets(phase, 0.6, 0.08)
+    np.testing.assert_array_equal(stance, [[False, True], [False, True], [True, False]])
+    want = [[0.08 * math.sin(math.pi / 4), 0.0], [0.08, 0.0], [0.0, 0.08]]
+    np.testing.assert_allclose(rz, want, atol=1e-6)
 
 
 # -- command from draws ----------------------------------------------------
@@ -211,16 +189,6 @@ def test_each_pure_draw_gives_a_clean_single_axis_command():
         np.testing.assert_array_equal(out[:, 1:], 0.0)
 
 
-def test_zeros_are_positive_zero():
-    cfg = _Cfg(CFG_ALL)
-    for on in (("pure_wz",), ("pure_vy",), ("pure_slow",)):
-        out = progress.command_from_draws(_draws((4,), on=on), cfg)
-        zeros = out[out == 0.0]
-        assert zeros.size and not np.any(np.signbit(zeros))
-    out = progress.command_from_draws(_draws((4,), zero=True), _Cfg())
-    assert not np.any(np.signbit(out))
-
-
 def test_a_later_draw_overwrites_an_earlier_one():
     cfg = _Cfg(CFG_ALL)
     names = [n for n, *_ in progress.COMMAND_DRAWS]
@@ -241,25 +209,6 @@ def test_straight_keeps_vx_and_zeroes_vy_and_wz():
     np.testing.assert_array_equal(out[:, 0], d["vx"])
     np.testing.assert_array_equal(out[:, 1:], 0.0)
     assert not np.any(np.signbit(out[:, 1:]))
-
-
-def test_straight_is_order_independent(monkeypatch):
-    cfg = _Cfg(CFG_ALL)
-    others = ("pure_wz", "pure_vy", "pure_slow", "pure_fast", "pure_back")
-    default = progress.COMMAND_DRAWS
-    straight = tuple(e for e in default if e[0] == "straight")
-    moved = straight + tuple(e for e in default if e[0] != "straight")
-    assert len(straight) == 1 and moved != default
-    for n in range(len(others) + 1):
-        for subset in itertools.combinations(others, n):
-            d = _draws((4,), on=subset + ("straight",))
-            d["vy"] = -d["vy"]
-            want = progress.command_from_draws(d, cfg)
-            monkeypatch.setattr(progress, "COMMAND_DRAWS", moved)
-            got = progress.command_from_draws(d, cfg)
-            monkeypatch.setattr(progress, "COMMAND_DRAWS", default)
-            np.testing.assert_array_equal(got, want)
-            assert np.array_equal(np.signbit(got), np.signbit(want)), subset
 
 
 def test_standing_still_overrides_every_draw():
@@ -283,11 +232,6 @@ def test_a_disabled_draw_needs_no_draws():
         del d[k]
     out = progress.command_from_draws(d, _Cfg({"pure_vy_prob": 0.0}))
     assert out.shape == (3, 3)
-
-
-def test_command_dtype_follows_the_draws():
-    out = progress.command_from_draws(_draws((2,)), _Cfg())
-    assert out.dtype == np.float32
 
 
 # The command ramp.

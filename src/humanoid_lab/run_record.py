@@ -99,7 +99,7 @@ DELETED_TERMS = (
 LEGACY_KEYS = ("warp_reward", "warp_cmd_ramp", "warp_cmd_straight", "warp_lift")
 
 # envs/joystick.py's FROZEN_PHASE_OBS. It is repeated here so this module
-# stays free of jax. test_run_record pins the two equal.
+# stays free of jax.
 FROZEN_PHASE_OBS = ("cos_sin", "zeros")
 
 

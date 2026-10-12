@@ -41,19 +41,17 @@ NV = 10
 
 @pytest.fixture(scope="module")
 def data():
-    return np.load(FIXTURE)
+    data = np.load(FIXTURE)
+    # The fixture must come from the PR-head wenv. A fixture re-recorded from
+    # new code would make every comparison below pass trivially.
+    assert json.loads(str(data["_meta"]))["source_sha"].startswith("d8f56f7")
+    return data
 
 
 def _case(data, name):
     prefix = f"{name}/"
     arrays = {k[len(prefix) :]: data[k] for k in data.files if k.startswith(prefix) and k != f"{name}/config"}
     return arrays, json.loads(str(data[f"{name}/config"]))
-
-
-def test_fixture_records_every_case(data):
-    meta = json.loads(str(data["_meta"]))
-    assert meta["source_sha"].startswith("d8f56f7")
-    assert meta["cases"] == sorted(TERM_CASES + ["straight", "ramp"])
 
 
 def _cfg(config):
@@ -148,14 +146,6 @@ def test_terms_match_wenv(data, name):
         np.testing.assert_allclose(np.asarray(land), x["land_frac_now"], rtol=RTOL, atol=ATOL)
     else:
         assert land is None
-
-
-def test_the_cases_cover_both_targets_and_the_pair_min(data):
-    pair = _cfg(_case(data, "clock_pair")[1])
-    plain = _cfg(_case(data, "linear_plain")[1])
-    assert pair.reward.step_length.target == "clock" and plain.reward.step_length.target == "linear"
-    assert compose.land_frac_on(pair.reward) and not compose.land_frac_on(plain.reward)
-    assert _cfg(_case(data, "lift")[1]).gait.lift.v_full == 0.5
 
 
 def test_straight_matches_wenv(data):

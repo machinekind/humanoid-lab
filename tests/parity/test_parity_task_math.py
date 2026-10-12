@@ -28,7 +28,6 @@ import inspect
 import math
 import types
 
-import array_api_compat
 import jax
 import jax.numpy as jp
 import numpy as np
@@ -325,6 +324,27 @@ def _all_pure(command_cfg):
     return c
 
 
+def _assert_both_branches(b):
+    """The update, push and mirror cases are only worth something if the
+    batch holds both outcomes of each branch."""
+
+    def mixed(x):
+        x = np.asarray(x)
+        return x.any() and not x.all()
+
+    _info, _rewards, _done, aux = gait_state.update(b.update_info, b.r, b.action, b.consts, b.cfg, b.update_draws)
+    assert mixed(aux["cut"])
+    assert mixed(np.asarray(b.update_info["steps_since_cmd"]) + 1 >= b.cfg.command.resample_steps)
+    push_now, _ = push.push_schedule(b.cfg.push, b.step_count, b.countdown, b.push_draws["next_countdown"])
+    assert mixed(push_now)
+    fixed_now, _ = push.push_schedule(b.fixed_push, b.step_count)
+    assert mixed(fixed_now)
+    assert mixed(FLAGS)
+    assert mixed(b.command_draws["zero_on"])
+    for name, *_ in progress.COMMAND_DRAWS:
+        assert mixed(b.command_draws[f"{name}_on"]), name
+
+
 @pytest.fixture(scope="module")
 def world(parity_device):
     """The inputs of every case, once as JAX arrays and once as Torch tensors."""
@@ -436,7 +456,9 @@ def world(parity_device):
     torch_in["consts"] = torch_consts(consts)
     for b in (jax_in, torch_in):
         b.update(env=env, cfg=cfg, actor=actor, pure_cfg=pure_cfg, fixed_push=fixed_push)
-    return types.SimpleNamespace(jax=types.SimpleNamespace(**jax_in), torch=types.SimpleNamespace(**torch_in))
+    jax_ns = types.SimpleNamespace(**jax_in)
+    _assert_both_branches(jax_ns)
+    return types.SimpleNamespace(jax=jax_ns, torch=types.SimpleNamespace(**torch_in))
 
 
 # -- cases ----------------------------------------------------------------
@@ -707,29 +729,3 @@ def test_every_shared_array_function_has_a_case():
         f"shared functions with no parity case: {missing}. Add a case, or list "
         "the function in ARRAY_FREE if it takes no data arrays."
     )
-
-
-def test_xp_of_picks_the_namespace_of_the_data():
-    assert constants.xp_of(torch.zeros(2), None, 1.0) is array_api_compat.torch
-    assert constants.xp_of(jp.zeros(2), None, 1.0) is jp
-
-
-def test_the_hand_set_inputs_reach_both_sides_of_each_branch(world):
-    """The update, push and mirror cases are only worth something if the
-    batch holds both outcomes of each branch."""
-    b = world.jax
-    _info, _rewards, _done, aux = gait_state.update(b.update_info, b.r, b.action, b.consts, b.cfg, b.update_draws)
-    cut = np.asarray(aux["cut"])
-    assert cut.any() and not cut.all()
-    resample = np.asarray(b.update_info["steps_since_cmd"]) + 1 >= b.cfg.command.resample_steps
-    assert resample.any() and not resample.all()
-    push_now, _ = push.push_schedule(b.cfg.push, b.step_count, b.countdown, b.push_draws["next_countdown"])
-    assert np.asarray(push_now).any() and not np.asarray(push_now).all()
-    fixed_now, _ = push.push_schedule(b.fixed_push, b.step_count)
-    assert np.asarray(fixed_now).any() and not np.asarray(fixed_now).all()
-    assert FLAGS.any() and not FLAGS.all()
-    zero_on = np.asarray(b.command_draws["zero_on"])
-    assert zero_on.any() and not zero_on.all()
-    for name, *_ in progress.COMMAND_DRAWS:
-        on = np.asarray(b.command_draws[f"{name}_on"])
-        assert on.any() and not on.all(), name

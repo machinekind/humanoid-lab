@@ -25,7 +25,7 @@ torch = pytest.importorskip("torch")
 
 import replay
 
-from humanoid_lab.torch_warp.env import STEP, TorchDraws
+from humanoid_lab.torch_warp.env import TorchDraws
 
 NU = 12
 S = 60  # actor obs size
@@ -189,17 +189,6 @@ def test_torch_draws_repeat_for_a_fixed_seed(device):
     )
     assert set(rest) == {p for p in a if not p.startswith("reset/")}
     _assert_equal(rest, a, "loaded state")
-
-
-def test_jax_draws_repeat_for_a_fixed_key():
-    a = jax_seq(SEED, CFG_ALL, TABLE_ALL)
-    b = jax_seq(SEED, CFG_ALL, TABLE_ALL)
-    assert set(a) == set(b)
-    _assert_equal(a, b, "same key")
-
-    other = jax_seq(SEED + 1, CFG_ALL, TABLE_ALL)
-    for path in a:
-        assert not np.array_equal(a[path], other[path]), f"keys {SEED} and {SEED + 1} give the same {path}"
 
 
 # -- independence of optional draws ------------------------------------------------
@@ -378,30 +367,27 @@ OVERSHOOT_BOUNDS = (
 
 
 def test_torch_uniform_stays_in_its_closed_range_at_the_ends(device, monkeypatch):
-    """A rand at 0 or just below 1 still gives a draw in the float32 [lo, hi]."""
+    """A rand at 0 or just below 1 still gives a command draw in the float32 [lo, hi].
+
+    torch.rand is replaced, so world i of every draw gets rand value i. The
+    three overshoot bounds become the vx, vy and wz ranges of a reset.
+    """
     ends = torch.tensor([0.0, 1 - 2**-24, 1 - 2**-23], dtype=torch.float32, device=device)
-    # Every row gets one rand value, so each bound pair of the list case sees all three.
-    monkeypatch.setattr(
-        TorchDraws, "_rand", lambda self, key, shape: ends.reshape(-1, *([1] * (len(shape) - 1))).expand(shape)
-    )
-    draws = TorchDraws(SEED, device)
-    for lo, hi in OVERSHOOT_BOUNDS:
+
+    def rand(shape, **kwargs):
+        return ends.reshape(-1, *([1] * (len(shape) - 1))).expand(shape).clone()
+
+    c = cfg({"command": dict(zip(("vx", "vy", "wz"), OVERSHOOT_BOUNDS, strict=True))})
+    monkeypatch.setattr(torch, "rand", rand)
+    command = TorchDraws(SEED, device).reset(len(ends), c, NU)["command"]
+    for name, (lo, hi) in zip(("vx", "vy", "wz"), OVERSHOOT_BOUNDS, strict=True):
         lo32, hi32 = np.float32(lo), np.float32(hi)
         raw = (lo + (hi - lo) * ends).cpu().numpy()
         assert raw.max() > hi32, f"[{lo}, {hi}] no longer overshoots, so this case tests nothing"
-        v = draws.uniform((STEP, 0, 0), (3,), lo, hi).cpu().numpy()
+        v = command[name].cpu().numpy()
         assert v.dtype == np.float32
-        assert v.min() >= lo32 and v.max() <= hi32, f"[{lo}, {hi}] gives {v!r}"
-        assert v[0] == lo32
-    # A list bound becomes a float32 tensor before the arithmetic. No overshoot
-    # turned up in pure float32 over 10 million random pairs, so the list case
-    # only checks that all three rand values land in range on every pair.
-    los = [lo for lo, _ in OVERSHOOT_BOUNDS]
-    his = [hi for _, hi in OVERSHOOT_BOUNDS]
-    v = draws.uniform((STEP, 0, 0), (3, 3), los, his).cpu().numpy()
-    assert np.all(v >= np.float32(los))
-    assert np.all(v <= np.float32(his))
-    np.testing.assert_array_equal(v[0], np.float32(los))
+        assert v.min() >= lo32 and v.max() <= hi32, f"{name} in [{lo}, {hi}] gives {v!r}"
+        assert v[0] == lo32, f"{name}: rand 0 gives {v[0]!r}, want {lo32!r}"
 
 
 # -- statistics ---------------------------------------------------------------------

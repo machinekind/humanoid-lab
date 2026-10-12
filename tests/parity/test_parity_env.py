@@ -13,8 +13,7 @@ Eight worlds run 400 steps with 50-step episodes. Worlds 0-3 get full-size
 random actions and fall. Worlds 4-7 get small actions and time out. Five
 configs cover command resampling and ramping, the gait trackers, the
 heading reference, the landing record, the no-progress cut, symmetry and
-pushes. test_the_scenario_covers_its_events proves each config reaches its
-events.
+pushes. _build asserts that each config reaches its events.
 """
 
 from __future__ import annotations
@@ -105,12 +104,57 @@ def _actions(action_size, seed) -> np.ndarray:
     return np.clip(np.repeat(held, HOLD, axis=0)[:STEPS] + jitter, -1.0, 1.0).astype(np.float32)
 
 
+def _stack(record, key):
+    return np.stack([st.info[key] for st in record.steps])
+
+
+def _assert_covers_events(name, record):
+    """Fail the record if its config misses one of the events the lockstep is meant to cover."""
+    done = np.stack([st.done for st in record.steps])
+    trunc = np.stack([st.truncation for st in record.steps])
+    assert (done & ~trunc).any(), f"{name}: no fall"
+    assert trunc.any(), f"{name}: no timeout"
+
+    since = _stack(record, "steps_since_cmd")
+    assert ((since[1:] == 0) & ~done[1:]).any(), f"{name}: no command resample on a live world"
+
+    if name in ("recipe", "recipe_ramp_straight_lift"):
+        land = _stack(record, "land_frac")
+        assert (land != 0).any(), f"{name}: land_frac is never nonzero"
+        assert done.any()
+        for t in range(STEPS):
+            assert (land[t][done[t]] == 0).all(), f"{name} step {t}: a done world keeps its land_frac"
+        yaw_ref = _stack(record, "yaw_ref")
+        assert (yaw_ref != yaw_ref[0]).any(), f"{name}: yaw_ref never changes"
+
+    if name == "recipe_ramp_straight_lift":
+        command, target = _stack(record, "command"), _stack(record, "cmd_target")
+        assert (command != target).any(), f"{name}: the ramp never lags the target"
+        straight = (target[..., 1] == 0) & (target[..., 2] == 0) & (target[..., 0] != 0)
+        assert straight.any(), f"{name}: no straight command"
+
+    if name == "no_progress_symmetry_push":
+        cuts = sum(float(st.metrics["no_progress_cut"].sum()) for st in record.steps)
+        assert cuts > 0, f"{name}: the no-progress cut never fires"
+        mirror = _stack(record, "mirror")
+        assert mirror.any() and not mirror.all(), f"{name}: mirror holds one value only"
+
+    if name == "heading":
+        yaw_ref = _stack(record, "yaw_ref")
+        live = ~done[1:]
+        moved = yaw_ref[1:] != yaw_ref[:-1]
+        assert (moved & live).any(), f"{name}: yaw_ref never moves on a live world"
+        assert (~moved & live).any(), f"{name}: yaw_ref never holds on a live world"
+        assert done.any(), f"{name}: no done world"
+
+
 def _build(name, device):
     overrides, env_overrides = CONFIGS[name]
     hydra = replay.hydra_dict(overrides, env=env_overrides, domain_rand=False)
     env = replay.jax_env(hydra)
     actions = _actions(env.action_size, ACTION_SEEDS[name])
     record = replay.record_jax(env, actions, L, seed=ACTION_SEEDS[name])
+    _assert_covers_events(name, record)
     run = replay.replay_torch(record, hydra, device, L)
     return types.SimpleNamespace(
         name=name, hydra=hydra, env=env, actions=actions, record=record, run=run, device=device
@@ -203,51 +247,6 @@ def test_reset_and_every_step_match_jax(case):
     assert_lockstep(case.name, case.record, case.run)
 
 
-# -- coverage ---------------------------------------------------------------------------
-def _stack(record, key):
-    return np.stack([st.info[key] for st in record.steps])
-
-
-def test_the_scenario_covers_its_events(case):
-    record, name = case.record, case.name
-    done = np.stack([st.done for st in record.steps])
-    trunc = np.stack([st.truncation for st in record.steps])
-    assert (done & ~trunc).any(), f"{name}: no fall"
-    assert trunc.any(), f"{name}: no timeout"
-
-    since = _stack(record, "steps_since_cmd")
-    assert ((since[1:] == 0) & ~done[1:]).any(), f"{name}: no command resample on a live world"
-
-    if name in ("recipe", "recipe_ramp_straight_lift"):
-        land = _stack(record, "land_frac")
-        assert (land != 0).any(), f"{name}: land_frac is never nonzero"
-        assert done.any()
-        for t in range(STEPS):
-            assert (land[t][done[t]] == 0).all(), f"{name} step {t}: a done world keeps its land_frac"
-        yaw_ref = _stack(record, "yaw_ref")
-        assert (yaw_ref != yaw_ref[0]).any(), f"{name}: yaw_ref never changes"
-
-    if name == "recipe_ramp_straight_lift":
-        command, target = _stack(record, "command"), _stack(record, "cmd_target")
-        assert (command != target).any(), f"{name}: the ramp never lags the target"
-        straight = (target[..., 1] == 0) & (target[..., 2] == 0) & (target[..., 0] != 0)
-        assert straight.any(), f"{name}: no straight command"
-
-    if name == "no_progress_symmetry_push":
-        cuts = sum(float(st.metrics["no_progress_cut"].sum()) for st in record.steps)
-        assert cuts > 0, f"{name}: the no-progress cut never fires"
-        mirror = _stack(record, "mirror")
-        assert mirror.any() and not mirror.all(), f"{name}: mirror holds one value only"
-
-    if name == "heading":
-        yaw_ref = _stack(record, "yaw_ref")
-        live = ~done[1:]
-        moved = yaw_ref[1:] != yaw_ref[:-1]
-        assert (moved & live).any(), f"{name}: yaw_ref never moves on a live world"
-        assert (~moved & live).any(), f"{name}: yaw_ref never holds on a live world"
-        assert done.any(), f"{name}: no done world"
-
-
 # -- the kick ---------------------------------------------------------------------------
 def test_kicks_match_the_jax_kicks(cases):
     c = cases("no_progress_symmetry_push")
@@ -290,29 +289,33 @@ def sabotage_report():
     parity_report.RESULTS.update(saved)
 
 
-def test_the_lockstep_catches_a_skipped_respawn_clear(cases, monkeypatch, sabotage_report):
-    c = cases("heading")
+def _skip_the_respawn_clear(monkeypatch):
     monkeypatch.setattr(gait_state, "clear_done", lambda info, done, flags, values: dict(info))
-    run = replay.replay_torch(c.record, c.hydra, c.device, L, steps=SABOTAGE_STEPS)
-    with pytest.raises(AssertionError, match="yaw_ref"):
-        assert_lockstep(c.name, c.record, run)
 
 
-def test_the_lockstep_catches_an_off_by_one_episode_counter(cases, sabotage_report):
-    c = cases("stock")
-
-    def hook(tenv):
-        tenv.episode_length = L + 1
-
-    run = replay.replay_torch(c.record, c.hydra, c.device, L, steps=SABOTAGE_STEPS, hook=hook)
-    with pytest.raises(AssertionError, match="done|truncation"):
-        assert_lockstep(c.name, c.record, run)
+def _lengthen_the_episode_by_one(tenv):
+    tenv.episode_length = L + 1
 
 
-def test_the_lockstep_catches_torch_only_reward_drift(cases, monkeypatch, sabotage_report):
-    c = cases("stock")
+def _drift_the_torch_reward(monkeypatch):
     total_reward = compose.total_reward
     monkeypatch.setattr(compose, "total_reward", lambda *a, **kw: total_reward(*a, **kw) * 1.001)
-    run = replay.replay_torch(c.record, c.hydra, c.device, L, steps=SABOTAGE_STEPS)
-    with pytest.raises(AssertionError, match="reward"):
+
+
+# label -> (config, patch on the Torch side, hook on the Torch env, the mismatch the lockstep must name).
+SABOTAGES = {
+    "skipped_respawn_clear": ("heading", _skip_the_respawn_clear, None, "yaw_ref"),
+    "off_by_one_episode_counter": ("stock", None, _lengthen_the_episode_by_one, "done|truncation"),
+    "torch_only_reward_drift": ("stock", _drift_the_torch_reward, None, "reward"),
+}
+
+
+@pytest.mark.parametrize("label", list(SABOTAGES))
+def test_the_lockstep_catches_a_sabotaged_runner(label, cases, monkeypatch, sabotage_report):
+    name, patch, hook, match = SABOTAGES[label]
+    c = cases(name)
+    if patch is not None:
+        patch(monkeypatch)
+    run = replay.replay_torch(c.record, c.hydra, c.device, L, steps=SABOTAGE_STEPS, hook=hook)
+    with pytest.raises(AssertionError, match=match):
         assert_lockstep(c.name, c.record, run)

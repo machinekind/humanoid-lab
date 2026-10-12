@@ -7,9 +7,11 @@ readings, which is too slow for the unit edit loop.
 
 A batched test is any test in MODULES that takes `batch` and `mode`. Its other
 parametrize values are expanded here, so a new batched test in one of those
-modules runs under jit with no edit to this file. jit layouts differ from
-eager ones in their last bits, so task_toys.assert_batched_matches_stacked
-compares with rtol=1e-6.
+modules runs under jit with no edit to this file. Collection fails when a
+module in MODULES has no batched test left.
+
+jit layouts differ from eager ones in their last bits, so
+task_toys.assert_batched_matches_stacked compares with rtol=1e-6.
 """
 
 import inspect
@@ -81,7 +83,9 @@ def _grid(marks):
 
 def _cases():
     for module in MODULES:
-        for name, test, marks in _batched_tests(module):
+        tests = list(_batched_tests(module))
+        assert tests, f"{module.__name__} has no batched test"
+        for name, test, marks in tests:
             for kwargs, label in _grid(marks):
                 yield pytest.param(test, kwargs, id="-".join(filter(None, [module.__name__, name, label])))
 
@@ -92,8 +96,3 @@ CASES = list(_cases())
 @pytest.mark.parametrize("test,kwargs", CASES)
 def test_batched_equals_stacked_under_jit(test, kwargs):
     test(**{**kwargs, "batch": BATCH, "mode": "jit"})
-
-
-def test_every_module_has_batched_tests():
-    found = {case.id.split("-")[0] for case in CASES}
-    assert found == {m.__name__ for m in MODULES}

@@ -131,17 +131,12 @@ def test_identical_draws_give_identical_model_fields(built):
         parity_report.record(f"dr[{b.name}]", name, expected, actual, tol="exact")
         if not np.array_equal(expected, actual):
             pytest.fail(_first_difference(b, name, expected, actual))
-
-
-def test_torch_batches_the_same_fields(built):
-    b = built
-    for name in physics.DR_DTYPES:
-        shape = _torch_field(b, name).shape
-        if name in b.batched:
-            assert shape[0] == N, f"{b.name} {name}: JAX batches it, Torch leading dim {shape[0]}"
-        else:
-            assert shape[0] == 1, f"{b.name} {name}: JAX keeps it unbatched, Torch leading dim {shape[0]}"
-    assert set(b.batched) <= set(physics.DR_DTYPES), f"{b.name}: JAX batches fields outside DR_DTYPES"
+    # Torch must leave every field JAX keeps unbatched at its base value in every world.
+    for name in sorted(set(physics.DR_DTYPES) - set(b.batched)):
+        base = np.asarray(getattr(b.jenv.mjx_model, name))
+        actual = _torch_field(b, name)
+        assert actual.shape[1:] == base.shape, f"{b.name} {name}: shape {actual.shape}, base {base.shape}"
+        assert (actual == base).all(), f"{b.name} {name}: JAX leaves it at its base, Torch changes it"
 
 
 def test_foot_priority_matches(built):
@@ -155,3 +150,7 @@ def test_foot_priority_matches(built):
     np.testing.assert_array_equal(actual[feet], want, err_msg=f"{b.name}: foot priority, foot_friction {foot_on}")
     if not foot_on:
         assert np.all(actual[feet] != 1), f"{b.name}: feet read priority 1 with foot_friction off"
+    # The priority goes on a model copy. The JAX model inside the Torch env keeps its own.
+    np.testing.assert_array_equal(
+        b.tenv.jenv.mj_model.geom_priority, b.jenv.mj_model.geom_priority, err_msg=f"{b.name}: the JAX model changed"
+    )

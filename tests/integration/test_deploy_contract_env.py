@@ -17,7 +17,6 @@ import pytest
 
 from humanoid_lab import deploy_contract as dc
 from humanoid_lab import paths
-from humanoid_lab.envs import progress
 from humanoid_lab.envs.joystick import Joystick, default_config
 from humanoid_lab.export import runtime
 
@@ -47,6 +46,20 @@ def run_for(env, preset: str = "sizing_ideal") -> dict:
             "actuators": {"name": preset},
         },
     }
+
+
+def zero_policy(contract: dict) -> runtime.DeployPolicy:
+    """A runtime policy with all-zero weights for `contract`."""
+    obs_size, nu = contract["obs_size"], contract["action_size"]
+    weights = {
+        "norm_mean": np.zeros(obs_size, np.float32),
+        "norm_std": np.ones(obs_size, np.float32),
+        "hidden_0_kernel": np.zeros((obs_size, 4), np.float32),
+        "hidden_0_bias": np.zeros(4, np.float32),
+        "hidden_1_kernel": np.zeros((4, 2 * nu), np.float32),
+        "hidden_1_bias": np.zeros(2 * nu, np.float32),
+    }
+    return runtime.DeployPolicy(weights, contract)
 
 
 @pytest.fixture(scope="module")
@@ -155,9 +168,23 @@ def test_the_gait_clock_parameters_travel_with_the_policy(ideal_env, ideal_contr
     assert clock["freq_high"] == ideal_env._config.gait.freq[1]
     assert np.allclose(clock["cmd_speed_max"], float(ideal_env._cmd_vmax))
     assert len(clock["offsets"]) == ideal_env._n_feet
-    assert clock["speed_deadband"] == ideal_env._deadband
-    assert clock["turn_weight"] == progress.YAW_SPEED_WEIGHT
     assert ideal_contract["ctrl_dt"] == ideal_env._config.ctrl_dt
+    # The runtime advances its clock by the env's step for every command.
+    # Pure turns and commands near the deadband pin the turn weight and the
+    # deadband.
+    policy = zero_policy(ideal_contract)
+    commands = [
+        [0.0, 0.0, 0.0],
+        [0.03, 0.0, 0.0],
+        [0.0, 0.0, 0.1],
+        [0.0, 0.0, 0.5],
+        [0.04, 0.0, 0.05],
+        [0.3, 0.1, 0.4],
+        [1.0, 0.0, 0.0],
+    ]
+    for command in commands:
+        want = float(ideal_env._phase_dt(jp.array(command)))
+        assert policy.phase_increment(command) == pytest.approx(want, abs=1e-6), command
 
 
 def test_a_wider_deadband_freezes_the_clock_in_the_env_and_in_the_runtime():
@@ -179,16 +206,8 @@ def test_a_wider_deadband_freezes_the_clock_in_the_env_and_in_the_runtime():
         state = step(state, action)
         assert float(state.info["phase"]) == 0.0
 
-    obs_size, nu = contract["obs_size"], contract["action_size"]
-    weights = {
-        "norm_mean": np.zeros(obs_size, np.float32),
-        "norm_std": np.ones(obs_size, np.float32),
-        "hidden_0_kernel": np.zeros((obs_size, 4), np.float32),
-        "hidden_0_bias": np.zeros(4, np.float32),
-        "hidden_1_kernel": np.zeros((4, 2 * nu), np.float32),
-        "hidden_1_bias": np.zeros(2 * nu, np.float32),
-    }
-    policy = runtime.DeployPolicy(weights, contract)
+    nu = contract["action_size"]
+    policy = zero_policy(contract)
     policy.reset()
     reading = {
         "gyro": np.zeros(3),

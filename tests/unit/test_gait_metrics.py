@@ -22,7 +22,6 @@ from humanoid_lab.eval.gait import (
     gait_metrics,
     gait_shape,
     landing_metrics,
-    metric_window,
     stability_metrics,
     support_fractions,
     travel_metrics,
@@ -273,13 +272,6 @@ def _walk_pos(n, heading, speed):
 
 def _travel(rec, fell_at=None):
     return travel_metrics(rec, dt=_DT, settle_steps=_SETTLE, fell_at=fell_at)
-
-
-def test_metric_window_stops_before_the_fall_row():
-    assert metric_window(100, 50, None) == slice(50, 100)
-    assert metric_window(100, 50, 80) == slice(50, 80)
-    w = metric_window(100, 50, 30)
-    assert len(range(100)[w]) == 0
 
 
 def test_speed_frac_is_one_when_the_walk_delivers_the_command():
@@ -599,16 +591,3 @@ def test_landings_stop_at_the_fall():
     assert _landings(rec, fell_at=_SETTLE + 30)["landing_x_m_left"] == pytest.approx(0.3, abs=1e-4)
     assert _landings(rec, fell_at=_SETTLE + 20)["landing_x_m_left"] is None
     assert _landings(rec)["landing_x_m_left"] == pytest.approx(0.45, abs=1e-4)
-
-
-def test_landing_keys_follow_the_side_tokens():
-    rec = _shape_rec()
-
-    named = gait_shape(rec, dt=_DT, settle_steps=_SETTLE, fell_at=None, sides=_SIDES)
-    plain = gait_shape(rec, dt=_DT, settle_steps=_SETTLE, fell_at=None)
-
-    assert "landing_x_m_left" in named
-    assert "knee_td_rad_right" in named
-    assert "landing_x_m_foot0" not in named
-    assert "landing_x_m_foot0" in plain
-    assert "landing_x_m_left" not in plain

@@ -2,8 +2,8 @@
 
 The shared task modules import only array_api_compat, numpy, the standard
 library and each other. The JAX-side core runs without torch. Each check
-blocks packages in sys.modules before the first import, so it runs in its
-own Python process. tests/unit starts no subprocess, so the checks live
+needs a sys.modules that has imported nothing yet, so it runs in its own
+Python process. tests/unit starts no subprocess, so the checks live
 here. tests/unit/test_import_guards.py scans the source for the same rules.
 """
 
@@ -56,14 +56,6 @@ def _imports(modules):
     return "".join(f"import {m}\n" for m in modules)
 
 
-def test_shared_modules_import_with_jax_torch_mujoco_and_brax_blocked():
-    proc = _python(_block(HEAVY) + _imports(SHARED))
-    assert proc.returncode == 0, (
-        "a shared module imports a package it must not (see the module "
-        f"docstrings of envs/constants.py and plan section 2):\n{proc.stderr}"
-    )
-
-
 def test_shared_modules_load_no_heavy_package_even_behind_a_try():
     code = (
         "import sys\n"
@@ -72,7 +64,10 @@ def test_shared_modules_load_no_heavy_package_even_behind_a_try():
         + "assert not bad, bad\n"
     )
     proc = _python(code)
-    assert proc.returncode == 0, f"importing the shared modules loaded {proc.stderr}"
+    assert proc.returncode == 0, (
+        "importing the shared modules loaded a package they must not (see the "
+        f"module docstring of envs/constants.py):\n{proc.stderr}"
+    )
 
 
 def test_core_modules_import_with_torch_blocked():

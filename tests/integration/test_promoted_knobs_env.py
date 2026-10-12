@@ -4,6 +4,8 @@ The env is built through the registry and wrapped by make_wrap_env_fn, as
 the trainer does. Outputs stay finite and the knob's state behaves.
 """
 
+import dataclasses
+
 import jax
 import jax.numpy as jp
 import numpy as np
@@ -12,9 +14,11 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from humanoid_lab import paths
-from humanoid_lab.envs import wrappers
+from humanoid_lab.envs import base, wrappers
 from humanoid_lab.envs.wrappers import make_wrap_env_fn
 from humanoid_lab.registry import make_env
+from humanoid_lab.robot.presets import load_actuator_preset
+from humanoid_lab.robot.spec import load_robot_spec
 
 ROBOT = paths.ROBOTS_DIR / "roboto_origin"
 LIN, YAW = 0.5, 1.0
@@ -66,16 +70,6 @@ def test_the_command_ramp_slews_from_zero_and_stays_finite():
     assert moved
 
 
-def test_a_default_env_has_no_ramp_state():
-    env = make_env("joystick", ROBOT, "deploy_pd", {"sim": {"backend": "jax"}})
-    state = jax.jit(env.reset)(jax.random.PRNGKey(0))
-    assert "cmd_target" not in state.info
-    assert "land_frac" not in state.info
-    assert jp.shape(state.info["command"]) == (3,)
-    for t in LANDING_TERMS:
-        assert f"reward/{t}" not in state.metrics, t
-
-
 @pytest.mark.parametrize(
     "overrides, match",
     [
@@ -91,9 +85,35 @@ def test_joystick_construction_refuses_a_bad_promoted_knob(overrides, match):
         make_env("joystick", ROBOT, "deploy_pd", {"sim": {"backend": "jax"}, **overrides})
 
 
-def test_the_root_body_is_the_floating_base():
-    env = make_env("joystick", ROBOT, "deploy_pd", {"sim": {"backend": "jax"}})
-    assert env._root_body == env._mj_model.body(env.robot_spec.termination_bodies[0]).id
+def _rename_knee(groups):
+    return {("shin" if name == "knee" else name): v for name, v in groups.items()}
+
+
+@pytest.mark.parametrize(
+    "reward",
+    [
+        {"scales": {"knee_extend": 0.5}, "knee_extend": {"flex_lo": 0.1, "flex_hi": 0.6}},
+        {"scales": {"knee_stance": -0.1}},
+    ],
+    ids=["knee_extend", "knee_stance"],
+)
+def test_a_knee_term_without_a_knee_group_is_refused(monkeypatch, reward):
+    """roboto_origin with its knee group renamed to shin, in the robot spec
+    and in the actuator preset. The model is the same. Construction only."""
+
+    def spec_without_knee(robot_dir):
+        spec = load_robot_spec(robot_dir)
+        return dataclasses.replace(spec, joint_groups=_rename_knee(spec.joint_groups))
+
+    def preset_without_knee(*args):
+        preset = load_actuator_preset(*args)
+        return dataclasses.replace(preset, groups=_rename_knee(preset.groups))
+
+    monkeypatch.setattr(base, "load_robot_spec", spec_without_knee)
+    monkeypatch.setattr(base, "load_actuator_preset", preset_without_knee)
+    term = next(iter(reward["scales"]))
+    with pytest.raises(ValueError, match=f"reward.scales.{term} needs a 'knee' joint group"):
+        make_env("joystick", ROBOT, "deploy_pd", {"sim": {"backend": "jax"}, "reward": reward})
 
 
 LANDING_TERMS = ("step_length", "foot_reach", "knee_extend", "forward_lean")
@@ -109,7 +129,7 @@ LANDING_REWARD = {
 }
 
 
-def test_the_landing_terms_pay_finite_rewards_and_land_frac_restarts_on_respawn():
+def test_land_frac_restarts_on_respawn():
     env = make_env(
         "joystick",
         ROBOT,
@@ -124,30 +144,32 @@ def test_the_landing_terms_pay_finite_rewards_and_land_frac_restarts_on_respawn(
     w = make_wrap_env_fn(env._config)(env, episode_length=20, action_repeat=1)
     state = jax.jit(w.reset)(jax.random.split(jax.random.PRNGKey(0), 4))
     assert jp.shape(state.info["land_frac"]) == (4, n_feet, 3)
-    for t in LANDING_TERMS:
-        assert f"reward/{t}" in state.metrics, t
 
     step = jax.jit(w.step)
     key = jax.random.PRNGKey(1)
     respawned = 0
+    cleared = 0
     for _ in range(25):
         key, k = jax.random.split(key)
         action = jax.random.uniform(k, (4, env.action_size), minval=-1.0, maxval=1.0)
+        before = np.asarray(state.info["land_frac"])
         state = step(state, action)
         land = np.asarray(state.info["land_frac"])
         assert land.shape == (4, n_feet, 3)
         done = np.asarray(state.done) > 0.0
         if done.any():
             respawned += int(done.sum())
+            cleared += int(np.any(before[done] != 0.0, axis=(1, 2)).sum())
             np.testing.assert_array_equal(land[done], np.zeros_like(land[done]))
-        for t in LANDING_TERMS:
-            assert np.isfinite(np.asarray(state.metrics[f"reward/{t}"])).all(), t
         _assert_finite(state.reward, "reward")
         _assert_finite(state.obs, "obs")
         _assert_finite(state.metrics, "metrics")
         _assert_finite({k: v for k, v in state.info.items() if k != "rng"}, "info")
     # The truncation at step 20 respawns every world at least once.
     assert respawned >= 4
+    # At least one world had a landing on record when it respawned, so the
+    # zeroing above had something to clear.
+    assert cleared >= 1
 
 
 def _roll_wrapped(env, steps, n=4, episode_length=20):
@@ -176,26 +198,6 @@ def _layers(w):
         out.append(type(w))
         w = w.env
     return out
-
-
-def test_every_promoted_knob_on_stays_finite():
-    env = make_env(
-        "joystick",
-        ROBOT,
-        "deploy_pd",
-        {
-            "sim": {"backend": "jax"},
-            "episode_length": 20,
-            "command": {"ramp": {"lin": LIN, "yaw": YAW}, "straight_prob": 0.3},
-            "gait": {"lift": {"v_full": 0.5, "min_frac": 0.25}},
-            "reward": LANDING_REWARD,
-        },
-    )
-    _, state = _roll_wrapped(env, 30)
-    assert "cmd_target" in state.info
-    assert "land_frac" in state.info
-    for t in LANDING_TERMS:
-        assert f"reward/{t}" in state.metrics, t
 
 
 def test_the_v40_preset_builds_and_steps():

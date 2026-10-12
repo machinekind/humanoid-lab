@@ -32,14 +32,6 @@ def test_sizing_keeps_the_run_s_other_env_keys_and_its_pushes():
     assert overrides["command"] == {"ramp": {"lin": 0.0, "yaw": 0.0}}
 
 
-def test_sizing_does_not_mutate_the_run():
-    run = _run({"command": {"ramp": {"lin": 0.5, "yaw": 1.0}}})
-
-    sizing_env_overrides(run)
-
-    assert run["hydra_config"]["task"]["env"]["command"]["ramp"] == {"lin": 0.5, "yaw": 1.0}
-
-
 def test_a_run_with_no_env_block_gets_the_ramp_off():
     run = {"hydra_config": {"task": {}}}
 

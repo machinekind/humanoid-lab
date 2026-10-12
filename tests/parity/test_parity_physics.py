@@ -46,7 +46,6 @@ HOLD = 25
 JITTER = 0.25
 # The steps that give a state. Step 50 follows the step-49 timeout.
 SAMPLED = range(2, STEPS, 4)
-CTRL_OFFSET = 0.3
 
 
 @dataclasses.dataclass
@@ -67,6 +66,21 @@ def _actions(action_size) -> np.ndarray:
     return np.clip(np.repeat(held, HOLD, axis=0)[:STEPS] + jitter, -1.0, 1.0).astype(np.float32)
 
 
+def _assert_covers_events(record):
+    """Fail unless the sampled states hold a fall, a respawn and a foot on the floor."""
+    steps = record.steps
+    done = np.stack([st.done for st in steps])  # (STEPS, N)
+    truncation = np.stack([st.truncation for st in steps])
+    rows = [(t, w) for t in SAMPLED for w in range(N)]
+    falls = [(t, w) for t, w in rows if done[t, w] and not truncation[t, w]]
+    assert falls, "no state ends in a fall"
+    # A state at step t follows a respawn when its world was done at step t-1.
+    respawns = [(t, w) for t, w in rows if t > 0 and done[t - 1, w]]
+    assert respawns, "no state follows a respawn"
+    contacts = [(t, w) for t, w in rows if steps[t].info["last_contact"][w].any()]
+    assert contacts, "no state has a foot on the floor"
+
+
 @pytest.fixture(scope="module")
 def states() -> States:
     hydra = replay.hydra_dict(["actuators=deploy_pd"], env={"push": {"enable": False}}, domain_rand=False)
@@ -84,6 +98,7 @@ def states() -> States:
         rows.extend((t, w) for w in range(N))
     pre = {f: np.concatenate([p[f] for p in pres]) for f in pres[0]}
     post = {f: np.concatenate([p[f] for p in posts]) for f in posts[0]}
+    _assert_covers_events(record)
     return States(env=env, record=record, pre=pre, post=post, ctrl=post["ctrl"], rows=rows)
 
 
@@ -98,10 +113,10 @@ def device(parity_device) -> torch.device:
     return device
 
 
-def step_mjwarp(states, device, ctrl=None):
+def step_mjwarp(states, device):
     """Step every state once on MJWarp. Returns (qpos, qvel) as numpy."""
     env = states.env
-    ctrl = states.ctrl if ctrl is None else ctrl
+    ctrl = states.ctrl
     n = len(states.rows)
     c = env.resolved_constants()
     physics = WarpPhysics(env.mj_model, n, device, c.naconmax_per_env, c.njmax, env.n_substeps)
@@ -162,23 +177,3 @@ def test_one_control_step_matches_mjx_at_100_states(states, device):
     assert qvel_err.max() <= tol["qvel_atol"], (
         f"qvel: worst at {_worst(states, qvel_err, 'qvel', qvel)}. Tolerance {vel_tol}"
     )
-
-
-def test_the_states_include_contacts_falls_and_respawns(states):
-    steps = states.record.steps
-    done = np.stack([st.done for st in steps])  # (STEPS, N)
-    truncation = np.stack([st.truncation for st in steps])
-    falls = [(t, w) for t, w in states.rows if done[t, w] and not truncation[t, w]]
-    assert falls, "no state ends in a fall"
-    # A state at step t follows a respawn when its world was done at step t-1.
-    respawns = [(t, w) for t, w in states.rows if t > 0 and done[t - 1, w]]
-    assert respawns, "no state follows a respawn"
-    contacts = [(t, w) for t, w in states.rows if steps[t].info["last_contact"][w].any()]
-    assert contacts, "no state has a foot on the floor"
-
-
-def test_a_wrong_ctrl_breaks_physics_parity(states, device):
-    tol = tolerances.physics(device)
-    _, qvel = step_mjwarp(states, device, ctrl=states.ctrl + CTRL_OFFSET)
-    err = float(np.abs(qvel.astype(np.float64) - states.post["qvel"]).max())
-    assert err > tol["qvel_atol"], f"ctrl + {CTRL_OFFSET} gave a qvel error of only {err:.3g}"

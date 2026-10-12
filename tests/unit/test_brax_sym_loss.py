@@ -7,7 +7,6 @@ only.
 """
 
 import contextlib
-import inspect
 from types import SimpleNamespace
 
 import jax.numpy as jnp
@@ -68,10 +67,12 @@ def _call(w, data, coef):
     )
 
 
-def test_brax_train_looks_the_loss_up_at_call_time():
-    # The patch works only while ppo.train reads the module attribute when it
-    # runs. A brax upgrade that binds the loss some other way breaks it.
-    assert "ppo_losses.compute_ppo_loss" in inspect.getsource(brax_ppo_train.train)
+def test_brax_train_reaches_the_loss_through_the_patched_module():
+    # The patch rebinds losses.compute_ppo_loss. It works only while brax's
+    # train module reaches the loss through that module. A brax upgrade that
+    # imports the function by name binds it at import and breaks the patch.
+    assert brax_ppo_train.ppo_losses is ppo_losses
+    assert not hasattr(brax_ppo_train, "compute_ppo_loss")
 
 
 def test_a_zero_sym_coef_patches_nothing():
@@ -83,14 +84,25 @@ def test_a_zero_sym_coef_patches_nothing():
     assert ppo_losses.compute_ppo_loss is original
 
 
-def test_a_nonzero_sym_coef_patches_only_inside_the_block():
-    original = ppo_losses.compute_ppo_loss
+def test_a_nonzero_sym_coef_patches_only_inside_the_block(monkeypatch):
+    monkeypatch.setattr(ppo_losses, "compute_ppo_loss", _stub_loss)
+    rng = np.random.default_rng(0)
+    network = _stub_network(jnp.asarray(rng.normal(size=(S, 2 * A)), dtype=jnp.float32))
+    data = _data(rng)
+
+    def loss():
+        # The lookup brax's train() makes when it runs.
+        return brax_ppo_train.ppo_losses.compute_ppo_loss(
+            SimpleNamespace(policy=None), None, data, None, ppo_network=network
+        )
+
     with train.sym_loss_patch(0.5, *_maps(), "state"):
-        patched = ppo_losses.compute_ppo_loss
-        assert patched is not original
-        assert patched.keywords["compute_ppo_loss"] is original
-        assert patched.keywords["sym_coef"] == 0.5
-    assert ppo_losses.compute_ppo_loss is original
+        inside, metrics = loss()
+    assert float(metrics["sym_loss"]) > 0
+    np.testing.assert_allclose(float(inside), 1.0 + 0.5 * float(metrics["sym_loss"]), rtol=1e-6)
+    outside, metrics = loss()
+    assert float(outside) == 1.0
+    assert "sym_loss" not in metrics
 
 
 def test_the_wrapper_adds_the_mirror_loss():

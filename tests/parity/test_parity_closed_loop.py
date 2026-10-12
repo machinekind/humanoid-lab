@@ -9,8 +9,9 @@ Eight seed pairs on CPU gave 48 to 89 falls and 28 to 66 timeouts.
 This is a behavior check, so it has no tolerance. After every step the
 module fixture checks that every output is finite, that each respawn writes
 the first physics state and the first observation, that it resets yaw_ref
-and land_frac, and that no episode runs past its length. It also counts the
-falls and the timeouts. The tests read the collected facts.
+and land_frac, and that no episode runs past its length. The fixture fails
+unless the run holds both falls and timeouts. The test reads the collected
+facts.
 """
 
 from __future__ import annotations
@@ -61,9 +62,7 @@ def run(parity_device):
         "too_long": [],
         "falls": 0,
         "timeouts": 0,
-        "respawns": 0,
         "timeout_lengths": set(),
-        "max_length": 0,
     }
 
     def check_finite(t, name, tensor):
@@ -89,12 +88,10 @@ def run(parity_device):
             check_finite(t, f"info.{name}", v)
 
         count += 1
-        facts["max_length"] = max(facts["max_length"], int(count.max()))
         if bool((count > L).any()):
             facts["too_long"].append((t, count.tolist()))
 
         if bool(done.any()):
-            facts["respawns"] += int(done.sum())
             falls = done & ~truncation
             facts["falls"] += int(falls.sum())
             facts["timeouts"] += int(truncation.sum())
@@ -111,37 +108,23 @@ def run(parity_device):
             if not bool((land == 0).all()):
                 facts["bad_land_frac"].append((t, worlds))
             count = torch.where(done, torch.zeros_like(count), count)
+    assert facts["falls"] > 0, "no world fell in 500 steps"
+    assert facts["timeouts"] > 0, "no world timed out in 500 steps"
     return facts
 
 
-def test_outputs_stay_finite(run):
-    assert not run["nonfinite"], f"non-finite outputs (step, name): {run['nonfinite'][:10]}"
-
-
-def test_falls_and_timeouts_occur(run):
-    assert run["falls"] > 0, "no world fell in 500 steps"
-    assert run["timeouts"] > 0, "no world timed out in 500 steps"
-    assert run["timeout_lengths"] == {L}, (
-        f"a timeout ended an episode of length {sorted(run['timeout_lengths'])}, and only {L} times out"
-    )
-
-
 def test_a_respawn_restores_the_first_pose_and_obs(run):
-    assert run["respawns"] > 0
+    """Every respawn writes the first state, and every episode ends by its length."""
+    assert not run["nonfinite"], f"non-finite outputs (step, name): {run['nonfinite'][:10]}"
     assert not run["bad_pose"], f"qpos differs from the first qpos after a respawn (step, worlds): {run['bad_pose']}"
     assert not run["bad_obs"], (
         f"state or priv differs from the first obs after a respawn (step, worlds): {run['bad_obs']}"
     )
-
-
-def test_a_respawn_resets_yaw_ref_and_land_frac(run):
-    assert run["respawns"] > 0
     assert not run["bad_yaw_ref"], (
         f"yaw_ref differs from the first yaw after a respawn (step, worlds): {run['bad_yaw_ref']}"
     )
     assert not run["bad_land_frac"], f"land_frac is not zero after a respawn (step, worlds): {run['bad_land_frac']}"
-
-
-def test_no_episode_outlives_its_length(run):
     assert not run["too_long"], f"an episode ran past {L} steps (step, counters): {run['too_long'][:5]}"
-    assert run["max_length"] == L, f"the longest episode ran {run['max_length']} steps, and timeouts end at {L}"
+    assert run["timeout_lengths"] == {L}, (
+        f"a timeout ended an episode of length {sorted(run['timeout_lengths'])}, and only {L} times out"
+    )

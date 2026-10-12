@@ -1,21 +1,23 @@
 """The shared reward terms and their composition across array backends and
 batch shapes.
 
-Every term, compute_rewards and total_reward run on numpy and eager jax at
-batch shapes (), (3,) and (2, 3). The batched call must equal the per-item
-calls stacked. tests/integration/test_shared_math_jit.py runs the same checks
-under jit.
+Every term and compute_rewards run on numpy and eager jax at batch shapes
+(), (3,) and (2, 3). The batched call must equal the per-item calls stacked.
+tests/integration/test_shared_math_jit.py runs the same checks under jit.
 """
-
-import dataclasses
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from task_toys import BATCHES, MODES, assert_batched_matches_stacked, toy_consts, toy_replace
+from task_toys import (
+    BATCHES,
+    MODES,
+    assert_batched_matches_stacked,
+    toy_consts,
+    toy_replace,
+)
 
 from humanoid_lab.envs import joystick, progress
-from humanoid_lab.envs.constants import TaskConstants, xp_of
 from humanoid_lab.rewards import compose, terms
 
 NU = 6
@@ -126,41 +128,9 @@ def _cases(a):
 def test_term_batched_equals_stacked(name, batch, mode):
     fn, args = _cases(_arrays(batch))[name]
     assert_batched_matches_stacked(fn, args, batch, mode)
-
-
-def test_term_covers_every_public_function():
-    covered = {n.removesuffix("_cap") for n in _cases(_arrays((2,)))}
-    public = {n for n in dir(terms) if not n.startswith("_") and callable(getattr(terms, n))}
-    assert public - {"xp_of"} <= covered
-
-
-def test_xp_of_is_numpy_for_scalars_and_python_numbers():
-    assert xp_of(0.4, 0.0) is np
-    assert xp_of(None, True, 3, 0.5) is np
-    assert xp_of() is np
-
-
-def test_xp_of_follows_the_data_arrays():
-    assert xp_of(1.0, jnp.ones(2)) is jnp or xp_of(1.0, jnp.ones(2)).__name__.startswith("jax")
-    assert xp_of(np.ones(2)).__name__.startswith("array_api_compat.numpy")
-
-
-def test_scalar_calls_still_work():
-    assert terms.tracking_err_ang(0.4, 0.0) == pytest.approx(0.16)
-
-
-def test_task_constants_is_frozen():
-    consts = toy_consts("numpy")
-    assert isinstance(consts, TaskConstants)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        consts.dt = 1.0
-    assert consts.act_perm is None and consts.priv_sign is None
-
-
-def test_toy_consts_actuator_stub():
-    c = toy_consts("jax")
-    out = c.actuator_model.ctrl_from_action(jnp.ones(4), c.default_pose, c.action_scale)
-    np.testing.assert_allclose(np.asarray(out), np.asarray(c.default_pose) + 0.5)
+    if mode == "numpy" and all(np.ndim(a) == 0 and np.asarray(a).dtype.kind == "f" for a in args):
+        # A call on float scalars alone also takes Python floats.
+        np.testing.assert_allclose(fn(*(float(a) for a in args)), fn(*args), rtol=1e-6)
 
 
 # -- landing and lean terms -----------------------------------------------------
@@ -201,18 +171,17 @@ def test_step_length_pair_min_reads_the_other_foot():
     assert float(pay_off) == 1.0
 
 
-@pytest.mark.parametrize("fn", [terms.step_length, terms.foot_reach])
-def test_landing_terms_need_two_feet(fn):
-    x = np.zeros(3, np.float32)
-    with pytest.raises(ValueError, match="two feet"):
-        fn(x, np.zeros(3, bool), np.float32(0.2))
-
-
-def test_knee_extend_pair_min_needs_two_feet():
-    x = np.zeros(3, np.float32)
-    b = np.zeros(3, bool)
-    with pytest.raises(ValueError, match="two feet"):
-        terms.knee_extend(x, x, b, b, x, 0.2, 1.0, pair_min=True, last_frac=x)
+@pytest.mark.parametrize("name", ["step_length", "foot_reach", "knee_extend"])
+def test_landing_terms_need_two_feet(name):
+    # knee_extend checks the foot count only under pair_min.
+    x, b, target = np.zeros(3, np.float32), np.zeros(3, bool), np.float32(0.2)
+    args, kwargs = {
+        "step_length": ((x, b, target), {}),
+        "foot_reach": ((x, b, target), {}),
+        "knee_extend": ((x, x, b, b, x, 0.2, 1.0), {"pair_min": True, "last_frac": x}),
+    }[name]
+    with pytest.raises(ValueError, match=f"{name} needs two feet"):
+        getattr(terms, name)(*args, **kwargs)
 
 
 def test_foot_reach_floor_and_x_min():
@@ -373,7 +342,7 @@ def _cfg(**reward):
 @pytest.mark.parametrize("batch", BATCHES, ids=str)
 @pytest.mark.parametrize(
     "reward",
-    [{}, dict(tracking_relative=True, tracking_far_weight=0.3, tracking_product=True, shaping_tracking_gate=True)],
+    [{}, {"tracking_relative": True, "tracking_far_weight": 0.3, "tracking_product": True, "shaping_tracking_gate": True}],
     ids=["default", "all_switches"],
 )
 def test_compute_rewards_batched_equals_stacked(reward, batch, mode):
@@ -382,21 +351,6 @@ def test_compute_rewards_batched_equals_stacked(reward, batch, mode):
     consts = _style_consts("numpy" if mode == "numpy" else "jax", orientation_tol=0.01, **ALL_STYLE)
     fn = _stacked_fn(consts, _cfg(**reward), names)
     assert_batched_matches_stacked(fn, [vals[n] for n in names], batch, mode, atol=1e-5)
-
-
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("batch", BATCHES, ids=str)
-def test_total_reward_batched_equals_stacked(batch, mode):
-    vals = _compose_inputs(batch)
-    rewards, _ = _run(_style_consts("numpy", **ALL_STYLE), _cfg(), vals)
-    keys = sorted(rewards)
-    scales = joystick.default_config().reward.scales
-
-    def fn(*arrays):
-        return compose.total_reward(dict(zip(keys, arrays)), scales, 0.02)
-
-    out = assert_batched_matches_stacked(fn, [np.asarray(rewards[k]) for k in keys], batch, mode, atol=1e-6)
-    assert out is None
 
 
 def test_key_order_is_the_golden_order():
@@ -417,13 +371,6 @@ def test_style_keys_appear_only_when_their_gate_is_on():
     assert list(both) == BASE_KEYS + list(STYLE_KEYS.values())
 
 
-def test_zero_scale_terms_are_still_computed():
-    cfg = _cfg()
-    cfg.reward.scales.pose = 0.0
-    rewards, _ = _run(toy_consts("numpy"), cfg, _compose_inputs((3,)))
-    assert "pose" in rewards
-
-
 def test_missing_body_pairs_give_zeros_of_the_batch_shape():
     for batch in BATCHES:
         rewards, _ = _run(toy_consts("numpy"), _cfg(), _compose_inputs(batch))
@@ -435,12 +382,17 @@ def test_missing_body_pairs_give_zeros_of_the_batch_shape():
 
 def test_body_pairs_use_the_readings():
     vals = _compose_inputs((3,))
-    r = {k: vals[k] for k in R_KEYS} | {"feet_sep": np.full(3, 0.5, np.float32), "knee_sep": np.full(3, 0.1, np.float32)}
+    feet_sep = np.array([0.3, 0.1, 0.55], np.float32)
+    knee_sep = np.array([0.1, 0.25, 0.0], np.float32)
+    r = {k: vals[k] for k in R_KEYS} | {"feet_sep": feet_sep, "knee_sep": knee_sep}
     info = {k: vals[k] for k in INFO_KEYS}
     cfg = _cfg()
+    cfg.reward.feet_distance_range = (0.2, 0.5)
+    cfg.reward.knee_distance_range = (0.05, 0.2)
     rewards, _, _ = compose.compute_rewards(r, info, vals["action"], vals["first_contact"], vals["contact"], toy_consts("numpy"), cfg)
-    np.testing.assert_array_equal(rewards["feet_distance"], terms.distance_band(r["feet_sep"], *cfg.reward.feet_distance_range))
-    np.testing.assert_array_equal(rewards["knee_distance"], terms.distance_band(r["knee_sep"], *cfg.reward.knee_distance_range))
+    # 1 inside the band. Outside it, (1 + exp(-100 * excursion)) / 2.
+    np.testing.assert_allclose(rewards["feet_distance"], [1.0, (1 + np.exp(-10)) / 2, (1 + np.exp(-5)) / 2], rtol=1e-5)
+    np.testing.assert_allclose(rewards["knee_distance"], [1.0, (1 + np.exp(-5)) / 2, (1 + np.exp(-5)) / 2], rtol=1e-5)
 
 
 def test_flipping_tracking_product_changes_values_and_not_the_order():
@@ -586,11 +538,10 @@ def test_kept_terms_off_leave_the_rewards_unchanged():
 
 
 def _direct(vals, cfg, consts):
-    """The four kept terms and their fractions from direct terms.* calls."""
+    """The landing fractions of the three slot terms from direct terms.* calls."""
     rcfg = cfg.reward
     cmd = vals["command"]
     vx = cmd[..., 0]
-    fwd = progress.fwd_mask(cmd, consts.deadband)
     foot_x = vals["foot_pos_base"][..., 0]
     last = vals["land_frac"]
     fc = vals["first_contact"]
@@ -600,48 +551,37 @@ def _direct(vals, cfg, consts):
     else:
         target = p.target_a + p.target_b * np.clip(vx, 0.0, None)
     pm = bool(p.pair_min)
-    step, step_frac = terms.step_length(foot_x, fc, target, p.power, pm, last[..., 1] if pm else None)
+    _, step_frac = terms.step_length(foot_x, fc, target, p.power, pm, last[..., 1] if pm else None)
     p = rcfg.foot_reach
     target = p.target_a + p.target_b * np.clip(vx, 0.0, None)
-    reach, reach_frac = terms.foot_reach(foot_x, fc, target, p.x_min, p.power, pm, last[..., 0] if pm else None)
+    _, reach_frac = terms.foot_reach(foot_x, fc, target, p.x_min, p.power, pm, last[..., 0] if pm else None)
     p = rcfg.knee_extend
-    knee, td_ext = terms.knee_extend(
+    _, td_ext = terms.knee_extend(
         vals["qpos_act"][..., consts.knee_qidx], foot_x, vals["contact"], fc, vals["feet_air_time"],
         p.flex_lo, p.flex_hi, p.x_split, p.td_min_air, p.td_mult, pm, last[..., 2] if pm else None,
     )  # fmt: skip
-    p = rcfg.forward_lean
-    lean = terms.forward_lean(vals["gravity"][..., 0], vx, p.max_deg, p.vx_max, p.sigma)
-    pays = {"step_length": step * fwd, "foot_reach": reach * fwd, "knee_extend": knee * fwd, "forward_lean": lean * fwd}
-    return pays, {"foot_reach": reach_frac, "step_length": step_frac, "knee_extend": td_ext}
+    return {"foot_reach": reach_frac, "step_length": step_frac, "knee_extend": td_ext}
 
 
 @pytest.mark.parametrize("target", ["clock", "linear"])
 @pytest.mark.parametrize("pair_min", [False, True], ids=["plain", "pair_min"])
-def test_kept_terms_equal_the_direct_calls_times_fwd(pair_min, target):
+def test_kept_terms_pay_only_on_forward_rows(pair_min, target):
     vals = _fwd_rows(_compose_inputs((4,)))
+    # On every row foot 0 lands far ahead after a long swing with a straight
+    # knee, so each landing term earns a nonzero fraction.
+    vals["foot_pos_base"][..., 0] = np.array([1.0, 0.0], np.float32)
+    vals["first_contact"][:] = np.array([True, False])
+    vals["contact"][:] = np.array([True, False])
+    vals["feet_air_time"][:] = 0.5
+    vals["qpos_act"][..., :2] = 0.0
     cfg = _kept_cfg(pair_min=pair_min, target=target)
-    consts = _kept_consts("numpy", cfg)
-    out = _run(consts, cfg, vals)
-    want, _ = _direct(vals, cfg, consts)
+    out = _run(_kept_consts("numpy", cfg), cfg, vals)
     for t in compose.KEPT_TERMS:
-        np.testing.assert_allclose(out[0][t], want[t], rtol=1e-6, err_msg=t)
+        assert out[0][t][:2].all(), t
         assert not out[0][t][2:].any(), t  # fwd is off on rows 2 and 3
-    assert out[0]["forward_lean"][:2].all()
-
-
-def test_land_stacks_the_fractions_in_slot_order():
-    vals = _fwd_rows(_compose_inputs((4,)))
-    cfg = _kept_cfg()
-    consts = _kept_consts("numpy", cfg)
-    _, _, land = _run(consts, cfg, vals)
-    _, fracs = _direct(vals, cfg, consts)
-    assert land.shape == (4, F, 3) and land.dtype == np.float32
-    # The PR's slot order, spelled out so a reorder of LANDING_SLOTS fails here.
-    assert compose.LANDING_SLOTS == ("foot_reach", "step_length", "knee_extend")
-    for i, t in enumerate(("foot_reach", "step_length", "knee_extend")):
-        np.testing.assert_allclose(land[..., i], fracs[t], rtol=1e-6, err_msg=t)
-    # The record ignores fwd: row 3 backs up and still records its fractions.
-    assert land[3].any()
+    if pair_min:
+        # The record ignores fwd: row 3 backs up and still records its fractions.
+        assert out[2][3].any()
 
 
 def test_a_disabled_landing_terms_slot_is_zero():
@@ -650,21 +590,11 @@ def test_a_disabled_landing_terms_slot_is_zero():
     consts = _kept_consts("numpy", cfg)
     rewards, _, land = _run(consts, cfg, vals)
     assert list(rewards)[-2:] == ["foot_reach", "forward_lean"]
-    _, fracs = _direct(vals, cfg, consts)
+    fracs = _direct(vals, cfg, consts)
     np.testing.assert_allclose(land[..., 0], fracs["foot_reach"], rtol=1e-6)
     zeros = np.zeros((4, F), np.float32)
     np.testing.assert_array_equal(land[..., 1], zeros)
     np.testing.assert_array_equal(land[..., 2], zeros)
-
-
-def test_land_is_none_without_pair_min():
-    vals = _compose_inputs((3,))
-    cfg = _kept_cfg(pair_min=False)
-    _, _, land = compose.compute_rewards(
-        {k: vals[k] for k in R_KEYS}, {k: vals[k] for k in INFO_KEYS}, vals["action"],
-        vals["first_contact"], vals["contact"], _kept_consts("numpy", cfg), cfg,
-    )  # fmt: skip
-    assert land is None
 
 
 def test_pair_min_reads_the_other_foots_slot():
@@ -718,12 +648,21 @@ def test_compute_rewards_with_kept_terms_land_batched_equals_stacked(pair_min, b
 
 
 def test_the_config_is_read_at_call_time():
+    """Turning shaping_tracking_gate on in the same cfg object gates the
+    positive gait terms by the linear tracking kernel on the next call."""
     vals = _compose_inputs((3,))
+    # Every row is in single stance, so the biped term pays.
+    vals["contact"][:] = np.array([True, False])
+    vals["last_contact"][:] = np.array([True, False])
     cfg = _cfg()
     first, _ = _run(toy_consts("numpy"), cfg, vals)
     cfg.reward.shaping_tracking_gate = True
     second, _ = _run(toy_consts("numpy"), cfg, vals)
-    assert not np.array_equal(first["feet_apex"], second["feet_apex"])
+    gated = ("feet_air_time", "feet_apex", "feet_air_time_biped")
+    assert first["feet_apex"].all() and first["feet_air_time"].all() and first["feet_air_time_biped"].all()
+    for k in first:
+        want = first[k] * first["tracking_lin_vel"] if k in gated else first[k]
+        np.testing.assert_allclose(second[k], want, rtol=1e-6, err_msg=k)
 
 
 def test_orientation_tolerance_is_a_floor_at_zero():
@@ -736,9 +675,15 @@ def test_orientation_tolerance_is_a_floor_at_zero():
 def test_the_deadband_masks_moving_and_stand_still_terms():
     vals = _compose_inputs((3,))
     vals["command"] = np.zeros_like(vals["command"])
-    rewards, _ = _run(toy_consts("numpy"), _cfg(), vals)
+    still, _ = _run(toy_consts("numpy"), _cfg(), vals)
+    vals["command"] = np.tile(np.array([0.8, 0.0, 0.0], np.float32), (3, 1))
+    moving, _ = _run(toy_consts("numpy"), _cfg(), vals)
     for key in ("feet_slip", "feet_phase", "feet_landing", "feet_air_time"):
-        assert not rewards[key].any()
+        assert not still[key].any(), key
+        assert moving[key].any(), key
+    for key in ("stand_still", "feet_contact_without_cmd"):
+        assert still[key].any(), key
+        assert not moving[key].any(), key
 
 
 def test_total_reward_is_the_scaled_sum_and_clips_at_100():

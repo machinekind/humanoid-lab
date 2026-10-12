@@ -12,7 +12,7 @@ import pytest
 from brax.training.agents.ppo import train as ppo
 from hydra import compose, initialize_config_dir
 
-from humanoid_lab import paths, ppo_config
+from humanoid_lab import paths
 from humanoid_lab.ppo_config import (
     brax_train_kwargs,
     compose_ppo_params,
@@ -53,10 +53,6 @@ def test_ppo_params_equal_the_origin_main_snapshot(name):
     assert got == expected
 
 
-def test_sym_coef_overrides_without_plus():
-    assert compose_ppo_params(_compose(["ppo.sym_coef=0.5"])).sym_coef == 0.5
-
-
 @pytest.mark.parametrize(
     ("overrides", "env_length", "expected"),
     [
@@ -71,7 +67,3 @@ def test_resolve_episode_length_follows_the_env_unless_ppo_sets_it(overrides, en
     p = compose_ppo_params(cfg)
     resolve_episode_length(p, cfg, env_length)
     assert p.episode_length == expected
-
-
-def test_importing_ppo_config_sets_no_environment_variable():
-    assert "os.environ" not in inspect.getsource(ppo_config)

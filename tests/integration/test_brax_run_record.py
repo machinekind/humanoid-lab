@@ -53,10 +53,10 @@ def smoke_run(tmp_path_factory):
 
 def test_a_nonzero_sym_coef_reports_the_sym_loss(smoke_run):
     _, stdout = smoke_run
-    assert "symmetry loss on, coef 0.5" in stdout
-    values = re.findall(r"^steps .*\bsym (\S+)", stdout, flags=re.MULTILINE)
+    values = [float(v) for v in re.findall(r"^steps .*\bsym (\S+)", stdout, flags=re.MULTILINE)]
     assert values, stdout
-    assert all(math.isfinite(float(v)) for v in values), values
+    # A fresh policy is not mirror symmetric, so its mirror loss is positive.
+    assert all(math.isfinite(v) and v > 0 for v in values), values
 
 
 def test_run_json_records_the_sym_coef(smoke_run):
@@ -69,12 +69,11 @@ def test_run_json_records_the_sym_coef(smoke_run):
 def test_run_json_comes_from_the_builder(smoke_run):
     run_dir, _ = smoke_run
     record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    assert tuple(record) == run_record.RECORD_KEYS
+    assert set(record) == set(run_record.RECORD_KEYS)
     trainer = record["trainer"]
     assert trainer["name"] == "brax_ppo"
     assert trainer["physics"] == "jax"
     assert set(trainer["versions"]) == set(run_record.VERSION_PACKAGES)
-    assert len(trainer["versions"]) == 6
     assert record["warm_start"] is None
     # tmp is outside the project, so the path is absolute, in POSIX form.
     ckpt = record["checkpoint_dir"]

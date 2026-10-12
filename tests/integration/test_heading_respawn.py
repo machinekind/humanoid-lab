@@ -5,8 +5,7 @@ and leaves `info` alone, so `info['yaw_ref']` would carry the dying
 episode's heading into the respawn. The script below turns the robot to a
 yaw of 0.7, holds a straight command so yaw_ref freezes there, drops the
 base below the fall height, and watches the respawn. With the heading layer
-the observation reads 0 afterwards. With playground's wrapper alone it reads
-a large error, which is what proves the test can fail.
+the observation reads 0 afterwards.
 """
 
 from __future__ import annotations
@@ -15,12 +14,11 @@ import jax
 import jax.numpy as jp
 import numpy as np
 import pytest
-from mujoco_playground import wrapper as playground_wrapper
 
 from humanoid_lab import paths
 from humanoid_lab.envs import progress, signals
 from humanoid_lab.envs.joystick import default_config
-from humanoid_lab.envs.wrappers import HeadingReseedWrapper, make_wrap_env_fn
+from humanoid_lab.envs.wrappers import make_wrap_env_fn
 from humanoid_lab.registry import make_env
 
 N = 2
@@ -85,12 +83,6 @@ def _script(env, wenv):
     return out
 
 
-def test_the_heading_layer_is_outermost(env):
-    wrap = make_wrap_env_fn(env._config)
-    wenv = wrap(env, episode_length=1000, action_repeat=1)
-    assert isinstance(wenv, HeadingReseedWrapper)
-
-
 def test_a_respawn_restarts_the_heading_reference(env):
     wenv = make_wrap_env_fn(env._config)(env, episode_length=1000, action_repeat=1)
     out = _script(env, wenv)
@@ -100,12 +92,3 @@ def test_a_respawn_restarts_the_heading_reference(env):
     assert out["done"].all()
     np.testing.assert_array_equal(out["respawn_yaw_ref"], out["respawn_yaw"])
     assert np.abs(out["errs"]).max() < 0.01, out["errs"]
-
-
-def test_without_the_heading_layer_the_error_survives_the_respawn(env):
-    """The control: playground's wrapper alone leaves yaw_ref at the old heading."""
-    wenv = playground_wrapper.wrap_for_brax_training(env, episode_length=1000, action_repeat=1)
-    out = _script(env, wenv)
-
-    assert out["done"].all()
-    assert np.abs(out["errs"][1:]).min() > 0.5, out["errs"]

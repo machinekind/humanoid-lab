@@ -22,7 +22,6 @@ import collections
 import copy
 import dataclasses
 import types
-from typing import ClassVar
 
 import jax
 import jax.numpy as jp
@@ -224,7 +223,23 @@ def record_jax(env, actions, episode_length, seed=0) -> JaxRecord:
             )
     finally:
         del env.reset, env.step
+    _assert_stash(record)
     return record
+
+
+def _assert_stash(record) -> None:
+    """The stash holds the data from before the respawn.
+
+    A live world's stashed frame is its wrapped data. A done world's wrapped
+    data is the first data, and its stash keeps the data the step made.
+    """
+    for t, st in enumerate(record.steps):
+        live = ~st.done
+        for f in FRAME_FIELDS:
+            assert np.array_equal(st.physics[f][live], st.data[f][live]), f"step {t} {f}: the stash differs"
+        assert np.array_equal(st.data["qpos"][st.done], record.reset_data["qpos"][st.done]), (
+            f"step {t}: a done world's wrapped data is not its first data"
+        )
 
 
 # -- the replay physics -------------------------------------------------------------
@@ -282,9 +297,6 @@ class ReplayPhysics:
         self._log.append(("reset", {"qpos": qpos.clone(), "qvel": qvel.clone(), "ctrl": ctrl.clone()}))
         self._load()
         self._qvel_ref = self.data.qvel.clone()
-
-    def forward(self):
-        """No-op. env.py never calls it. It matches WarpPhysics's public method."""
 
     def step(self, ctrl):
         self._log.append(
@@ -347,15 +359,6 @@ class ReplayDraws:
     The reset and step keys are one-shot. Set them before each WarpJoystick
     reset or step. The DR keys are given at construction.
     """
-
-    # The JAX adapter each method reaches.
-    ADAPTERS: ClassVar[dict] = {
-        "jax_reset_draws": "reset",
-        "jax_step_draws": "step",
-        "jax_command_draws": "reset and step",
-        "jax_push_draws": "step",
-        "jax_dr_draws": "dr",
-    }
 
     def __init__(self, device, dr_keys=None):
         self.device = torch.device(device)

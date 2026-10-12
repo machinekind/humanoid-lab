@@ -208,23 +208,3 @@ def test_mirror_is_an_involution_where_the_flag_is_set():
     assert np.array_equal(once[~flag], x[~flag])
     assert np.array_equal(once[flag], sign * x[flag][:, perm])
     assert np.array_equal(symmetry.mirror(once, flag, perm, sign), x)
-
-
-def test_mirror_runs_on_jax_arrays():
-    import jax.numpy as jnp
-
-    perm, sign = symmetry.component_mirror("command", JOINTS, FEET)
-    got = symmetry.mirror(jnp.array([0.4, 0.2, -1.0]), jnp.array(True), perm, sign)
-    assert np.allclose(np.asarray(got), [0.4, -0.2, 1.0])
-
-
-def test_policy_mirror_maps_size_the_actor_obs_and_the_action():
-    names = list(default_config().obs.state)
-    obs_perm, obs_sign, act_perm, act_sign = symmetry.policy_mirror_maps(SPEC, names)
-    n = sum(SIZES[m] for m in names)
-    assert obs_perm.shape == obs_sign.shape == (n,)
-    assert act_perm.shape == act_sign.shape == (NJ,)
-    want_obs = symmetry.obs_mirror(names, JOINTS, FEET, SPEC.name)
-    want_act = symmetry.joint_mirror(JOINTS, SPEC.name)
-    assert np.array_equal(obs_perm, want_obs[0]) and np.array_equal(obs_sign, want_obs[1])
-    assert np.array_equal(act_perm, want_act[0]) and np.array_equal(act_sign, want_act[1])

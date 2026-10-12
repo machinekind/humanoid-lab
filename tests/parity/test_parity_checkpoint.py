@@ -171,27 +171,12 @@ def test_mid_list_growth_is_refused():
             tpio.check_layout(["gyro", "joint_pos", "command"], new, sizes, "state")
 
 
-def test_from_scratch_init_saves_and_loads(tmp_path):
-    params = tpio.init_from_brax(3, S, P, A, NET)
-    pol, val = _nets()
-    norm_s, norm_p = tpio.from_brax(params, pol, val)
-    assert norm_s.count == 0
-    for n in (norm_s, norm_p):
-        assert torch.equal(n.std, torch.ones_like(n.std))
-        assert torch.isfinite(n(torch.ones(4, n.size))).all()
-
-    step_dir = tpio.save_brax(tmp_path / "ckpt", 0, norm_s, norm_p, pol, val, NET, A)
-    obs = _obs()
-    assert np.abs(_brax_actions(step_dir, obs) - _torch_actions(pol, norm_s, obs)).max() < 1e-6
-
-    same = tpio.init_from_brax(3, S, P, A, NET)
-    other = tpio.init_from_brax(4, S, P, A, NET)
-    flat = jax.tree_util.tree_leaves(params[1:])
-    assert all(np.array_equal(a, b) for a, b in zip(flat, jax.tree_util.tree_leaves(same[1:]), strict=True))
-    assert not all(np.array_equal(a, b) for a, b in zip(flat, jax.tree_util.tree_leaves(other[1:]), strict=True))
-
-
 def test_the_normalizer_has_std_one_at_count_zero():
+    # brax's init_state converts to count 0 and std 1.
+    for norm in tpio.from_brax(tpio.init_from_brax(3, S, P, A, NET), *_nets()):
+        assert norm.count == 0
+        assert torch.equal(norm.std, torch.ones_like(norm.std))
+
     n = tpio.Normalizer.zeros(4)
     assert n.count == 0
     assert torch.equal(n.std, torch.ones(4))
@@ -234,23 +219,3 @@ def test_save_brax_refuses_an_existing_step(brax_ckpt):
     pol, val, norm_s, norm_p = _from_ckpt(brax_ckpt)
     with pytest.raises(FileExistsError):
         tpio.save_brax(brax_ckpt.parent, 3, norm_s, norm_p, pol, val, NET, A)
-
-
-def test_trainer_state_is_written_atomically(tmp_path):
-    pol, _ = _nets()
-    norm = tpio.Normalizer.zeros(S)
-    norm.update(torch.ones(3, S))
-    state = {"policy": pol.state_dict(), "norm_s": norm.state_dict(), "step": 123}
-    path = tmp_path / "trainer_state.pt"
-    tpio.save_trainer_state(path, state)
-    tpio.save_trainer_state(path, state)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["trainer_state.pt"]
-
-    back = tpio.load_trainer_state(path, "cpu")
-    assert back["step"] == 123
-    for k, v in state["policy"].items():
-        assert torch.equal(back["policy"][k], v)
-    restored = tpio.Normalizer.zeros(S)
-    restored.load_state_dict(back["norm_s"])
-    assert restored.count == 3
-    assert torch.equal(restored.mean, norm.mean) and torch.equal(restored.std, norm.std)
