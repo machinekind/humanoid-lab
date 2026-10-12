@@ -225,7 +225,8 @@ class TorchDraws:
     |                   | 0x106        | 0    | mass_add                           |
 
     STREAMS lists the same keys. A uniform draw is lo + (hi - lo) * rand,
-    a bernoulli is rand < p, and a randint is int32 like jax.random.randint.
+    clamped to [lo, hi]. A bernoulli is rand < p, and a randint is int32
+    like jax.random.randint.
     Torch samples are never compared with JAX samples. Only the dict keys
     and the shapes match the JAX adapters, so the shared code reads both.
     """
@@ -256,8 +257,13 @@ class TorchDraws:
         return torch.rand(shape, generator=self._gen(key), device=self.device, dtype=torch.float32)
 
     def uniform(self, key, shape, lo, hi):
+        """A float32 in [lo, hi], both closed.
+
+        float32 rounding can put lo + (hi - lo) * rand one ulp above hi for a
+        rand just below 1, so the result is clamped.
+        """
         lo, hi = self._bound(lo), self._bound(hi)
-        return lo + (hi - lo) * self._rand(key, shape)
+        return torch.clamp(lo + (hi - lo) * self._rand(key, shape), lo, hi)
 
     def bernoulli(self, key, shape, p):
         return self._rand(key, shape) < float(p)
@@ -337,9 +343,24 @@ class TorchDraws:
         return draws
 
     def state_dict(self) -> dict:
-        return {"/".join(str(k) for k in key): g.get_state() for key, g in self._gens.items()}
+        """The seed and the state of each open stream, all as CPU tensors.
+
+        The seed is in it because a stream that is not open yet is seeded
+        from it on first use.
+        """
+        state = {"/".join(str(k) for k in key): g.get_state() for key, g in self._gens.items()}
+        state["seed"] = torch.tensor(self.seed, dtype=torch.int64)
+        return state
 
     def load_state_dict(self, state) -> None:
+        """Become the saved draws: its seed and its open streams.
+
+        A state without a seed keeps this object's seed.
+        """
+        state = dict(state)
+        if "seed" in state:
+            self.seed = int(state.pop("seed"))
+        self._gens = {}
         for name, s in state.items():
             self._gen(tuple(int(k) for k in name.split("/"))).set_state(s)
 

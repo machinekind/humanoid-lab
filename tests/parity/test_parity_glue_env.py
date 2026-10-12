@@ -2,8 +2,9 @@
 
 This file checks the env's own pieces: the obs sizes, the step contract,
 the constants conversion, the draw dict structure, the episode counter, the
-respawn and the DR install. Lockstep parity with the JAX env, physics parity
-and the RNG statistics are commit 5's tests.
+respawn and the DR install. test_parity_env.py checks lockstep parity with
+the JAX env, test_parity_physics.py checks physics parity and
+test_parity_rng.py checks the RNG statistics.
 """
 
 from __future__ import annotations

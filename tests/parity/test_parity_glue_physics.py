@@ -1,8 +1,8 @@
 """WarpPhysics glue on the CPU warp device.
 
 This file checks the glue only: the model copy, the budgets, the views, the
-DR install and the reset and respawn writes. MJX-against-MJWarp physics
-parity is commit 5's test.
+DR install and the reset and respawn writes. test_parity_physics.py checks
+MJX-against-MJWarp physics parity.
 """
 
 from __future__ import annotations

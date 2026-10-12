@@ -28,8 +28,9 @@ case "${1:-}" in
   check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
-  # builds models and steps MJX. `test-parity` runs the shared task math on
-  # Torch and checks it against JAX. It skips when torch is not installed.
+  # builds models and steps MJX. `test-parity` checks the Torch+MJWarp runner
+  # against the JAX env: task math, a lockstep env run, physics, DR and RNG.
+  # It skips when torch is not installed.
   # `test-all` is all three, for CI and pre-merge.
   test)  shift; "$PY" -m pytest tests/unit -q "$@" ;;
   # JAX_COMPILATION_CACHE_DIR makes the MJX compiles persist across runs, so

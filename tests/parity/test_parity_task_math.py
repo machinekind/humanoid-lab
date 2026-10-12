@@ -1,7 +1,8 @@
 """Parity of the shared task math: JAX arrays against Torch tensors.
 
 Every array function in the shared modules runs twice on the same values:
-once on JAX arrays and once on Torch CPU tensors. The shared modules are
+once on JAX arrays and once on Torch tensors on the --parity-device
+(cpu by default). The shared modules are
 envs/{signals,progress,gait_state,push,symmetry}, rewards/{terms,compose}
 and dr/transform. Float outputs must agree within tolerances.TASK, and every
 float Torch output must be float32. Bool and int outputs must match exactly,
@@ -31,6 +32,7 @@ import array_api_compat
 import jax
 import jax.numpy as jp
 import numpy as np
+import parity_report
 import pytest
 from tolerances import TASK
 
@@ -48,6 +50,8 @@ from humanoid_lab.registry import make_env
 from humanoid_lab.rewards import compose, terms
 
 torch = pytest.importorskip("torch")
+
+import replay
 
 N = 8
 STEPS = 40
@@ -117,8 +121,13 @@ SHARED_MODULES = {
 # -- conversion -----------------------------------------------------------
 
 
+# The torch device of the Torch inputs. The world fixture sets it from
+# --parity-device before it converts any input.
+TORCH_DEVICE = {"device": torch.device("cpu")}
+
+
 def to_torch(x):
-    """Torch CPU tensors of the same values: float arrays become float32,
+    """Torch tensors of the same values on TORCH_DEVICE: float arrays become float32,
     int arrays keep their int dtype, bool arrays become torch.bool. Python
     scalars, strings and None pass through, and dicts and tuples convert
     leaf by leaf."""
@@ -130,11 +139,11 @@ def to_torch(x):
         return tuple(to_torch(v) for v in x)
     a = np.asarray(x)
     if a.dtype.kind == "f":
-        return torch.tensor(a, dtype=torch.float32, device="cpu")
+        return torch.tensor(a, dtype=torch.float32, device=TORCH_DEVICE["device"])
     if a.dtype.kind == "b":
-        return torch.tensor(a, dtype=torch.bool, device="cpu")
+        return torch.tensor(a, dtype=torch.bool, device=TORCH_DEVICE["device"])
     if a.dtype.kind == "i":
-        return torch.tensor(a, device="cpu")
+        return torch.tensor(a, device=TORCH_DEVICE["device"])
     raise TypeError(f"no torch conversion for dtype {a.dtype}")
 
 
@@ -182,6 +191,9 @@ def assert_parity(j, t, where="out"):
     if a.dtype.kind == "f":
         assert t.dtype == torch.float32, f"{where}: Torch dtype {t.dtype}, expected float32"
         assert np.isfinite(a).all(), f"{where}: JAX output is not finite"
+        parity_report.record(
+            "task_math", where.split("/")[0].split("[")[0], a, b, tol=parity_report.tol_text(TASK)
+        )
         np.testing.assert_allclose(b, a, err_msg=where, **TASK)
     else:
         assert b.dtype == a.dtype, f"{where}: Torch dtype {b.dtype} vs JAX {a.dtype}"
@@ -314,8 +326,9 @@ def _all_pure(command_cfg):
 
 
 @pytest.fixture(scope="module")
-def world():
+def world(parity_device):
     """The inputs of every case, once as JAX arrays and once as Torch tensors."""
+    TORCH_DEVICE["device"] = replay.torch_device(parity_device)
     env = _env()
     cfg = env._config
     consts = env._consts

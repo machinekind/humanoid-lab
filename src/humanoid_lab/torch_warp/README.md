@@ -283,15 +283,61 @@ The normalizer implements brax's Welford mode with `std_eps` 0 only.
 
 ## Parity and the bench
 
+`tests/parity` checks the Torch+MJWarp runner against the JAX env. Torch's
+info is never copied from JAX. The lockstep checks replay only the physics
+arrays and the random draws, and WarpJoystick keeps its own bookkeeping.
+
+| File | What it checks |
+|---|---|
+| `test_parity_task_math.py` | The shared task math on JAX arrays and on Torch tensors, from the same values. |
+| `test_parity_env.py` | The lockstep run. WarpJoystick runs on the wrapped JAX env's physics and draws for 8 worlds, 400 steps and 5 configs. Every info key, obs, reward, done, truncation, term and ctrl must match. |
+| `test_parity_physics.py` | One control step of MJX on JAX against MJWarp, from 100 identical states along a rollout with falls, respawns and foot contacts. |
+| `test_parity_dr.py` | Identical DR draws give identical per-world model fields, exact in float32. |
+| `test_parity_rng.py` | Each backend's draws repeat for a fixed seed, stay independent when an optional draw is toggled, lie in their closed ranges and match their definitions. |
+| `test_parity_closed_loop.py` | The real WarpJoystick on MJWarp and TorchDraws, retained recipe, 16 worlds, 500 steps. Outputs stay finite, falls and timeouts occur, and a respawn restores the first pose, `yaw_ref` and the landing state. |
+| `test_parity_glue_env.py` | The env glue: obs sizes, the step contract, the constants, the draw structure, the episode counter, the respawn and the DR install. |
+| `test_parity_glue_physics.py` | The WarpPhysics glue: the model copy, the budgets, the views, the DR install, the reset and respawn writes and CUDA graph capture. |
+| `test_parity_checkpoint.py` | Checkpoints round-trip between Brax and Torch. |
+| `test_parity_ppo_math.py` | The Torch GAE, log-prob and entropy against brax's. |
+| `test_parity_refusals.py` | Every refusal fails at construction or in the config ledger. |
+| `test_parity_trainer_loop.py` | The Torch PPO loop. |
+| `test_parity_run_record.py` | `ppo.main` end to end: run outputs, warm start, resume and run.json. |
+| `test_parity_static.py` | `torch_warp` read as text: public env names only, nothing POSIX-only, no `torch.compile`. |
+| `test_parity_bench.py` | The JSON `bench.py` writes. |
+| `replay.py` | The helpers the lockstep checks share: the JAX recorder, `ReplayPhysics` and `ReplayDraws`. `test_parity_replay.py` tests them. |
+| `parity_report.py` | Collects the worst error of each check for `--parity-report`. `test_parity_report.py` tests it. |
+
+The tolerances are in `tests/parity/tolerances.py`. The measured values come
+from this suite on macOS arm64 with torch 2.14.1, CPU build.
+
+| Check | Tolerance | Worst case measured here |
+|---|---|---|
+| Task math and the lockstep run | `rtol=1e-5`, `atol=1e-5` | Task math: 3.9e-3 abs on `compose.compute_rewards`, where the relative error is 2.5e-7. Lockstep: 1.0 abs on `terms.joint_acc`, whose values are about 1e6, at a relative error of 4.5e-7. Outside the terms the worst lockstep error is 1.9e-6 abs. |
+| Physics on CPU | qpos `atol=1e-4`, qvel `atol=1e-2` | qpos 2.6e-5, qvel 5.2e-3. |
+| Physics on CUDA | 10 times the CPU values | Not measured. The value is provisional until the PR author's GPU run. |
+| DR fields | exact | 0 in every field. |
+| Bools and ints | exact | exact. |
+
 Run the parity suite on CPU JAX:
 
 ```
 ./run.sh test-parity
-JAX_PLATFORMS=cpu python -m pytest tests/parity
+./run.sh test-parity --parity-report
+python -m pytest tests/parity --parity-device cuda:0 --parity-report
 ```
 
-`./run.sh test-parity` sets `JAX_PLATFORMS=cpu` itself. The tolerances are
-in `tests/parity/tolerances.py`, each with its measured basis.
+`./run.sh test-parity` sets `JAX_PLATFORMS=cpu` itself.
+`tests/parity/conftest.py` sets it too, so the bare pytest command works in
+PowerShell. `--parity-report` prints the worst error of each check at the end
+of the run.
+`--parity-device cuda:0` runs the Torch side on a GPU with the CUDA physics
+tolerance. The files that follow it are `test_parity_task_math.py`,
+`test_parity_env.py`, `test_parity_physics.py`, `test_parity_dr.py`,
+`test_parity_rng.py`, `test_parity_closed_loop.py` and
+`test_parity_replay.py`. The trainer, checkpoint, run-record and glue tests
+keep Torch on CPU. JAX stays on CPU. The whole suite takes about two minutes
+on an Apple silicon Mac with a warm compile cache. On a machine without CUDA
+the only skipped test is `test_cuda_graph_steps_match_cpu`.
 
 The goldens in `tests/data/golden/` and the fixtures in
 `tests/data/fixtures/` are bit patterns recorded on darwin arm64. Their tests
@@ -319,7 +365,12 @@ The author runs it on the Windows GPU host:
    up with the install steps above.
 2. The verification one-liner prints `True True`.
 3. `python -m pytest tests/unit`, then
-   `JAX_PLATFORMS=cpu python -m pytest tests/parity`.
+   `python -m pytest tests/parity --parity-report`, then
+   `python -m pytest tests/parity --parity-device cuda:0 --parity-report`.
+   The commands work in PowerShell. `tests/parity/conftest.py` sets
+   `JAX_PLATFORMS=cpu`. Paste both parity reports. The CPU report checks the
+   CPU tolerances on Windows x86. The CUDA report's physics rows set the CUDA
+   tolerance in `tests/parity/tolerances.py`.
 4. Smoke-sized training with `python -m humanoid_lab.torch_warp.ppo` in
    PowerShell and `./run.sh train-warp` in Git Bash. Both from scratch and as
    a warm start from a Brax checkpoint. At least 3 iterations with capture on

@@ -15,8 +15,9 @@ WarpPhysics owns one MJWarp model and one batch of data.
   through reset_worlds and restore_worlds.
 
 The physics interface WarpJoystick uses is: data, step, reset_worlds,
-restore_worlds, set_dr and peaks. Commit 5's ReplayPhysics implements the
-same names.
+restore_worlds, set_dr and base_fields. The trainer and the bench also call
+peaks. tests/parity/replay.py's ReplayPhysics implements the names
+WarpJoystick uses.
 """
 
 from __future__ import annotations
