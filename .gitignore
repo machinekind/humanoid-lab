@@ -17,3 +17,5 @@ CLAUDE.local.md
 logs/
 .DS_Store
 .jax_cache/
+.gpu-ops
+.ops-state/
