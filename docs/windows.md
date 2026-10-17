@@ -43,8 +43,8 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -c "import torch, warp; print(torch.cuda.is_available(), warp.is_cuda_available())"
 ```
 
-- `<V>` is the torch version in the README's "Validated versions" table. The
-  cu126 index is an example until the validated build is named.
+- `<V>` is `2.14.1`, the torch build in the README's "Validated versions"
+  table. That build was validated on Linux. No Windows machine has run it.
 - Install torch first. PyPI's Windows torch is a CPU-only build, and an
   extra cannot name an index. Pip then keeps the CUDA build, because
   `torch==<V>` matches `<V>+cu126`.

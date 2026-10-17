@@ -13,10 +13,12 @@ qpos and 5.2e-3 for qvel at its 100 states. Some other sets of 100 states
 reach a qvel error of 2.3e-2 and a qpos error of 1.2e-4 on CPU. MJX on JAX
 in float32 causes that error, and MJWarp stays close to MuJoCo C in float64.
 Whether to keep PHYSICS_CPU as it is stays an open question for the owner
-in the PR description. The CUDA values are 10 times the CPU values. They are
-provisional until the PR author's Windows GPU run sets them.
+in the PR description. The CUDA values are 10 times the CPU values. On an
+RTX 4090 (torch 2.14.1+cu126, driver 580.178.04) the suite measured the same
+2.6e-5 and 5.2e-3 as on CPU, so the CUDA tolerance holds a 10x margin.
 
-The measured values come from macOS arm64 with torch 2.14.1, CPU build.
+The measured values come from macOS arm64 with torch 2.14.1, CPU build, and
+from Linux x86_64 with torch 2.14.1+cu126 on an RTX 4090.
 
 PPO_MATH holds for the Torch GAE, log-prob and entropy against brax's on
 identical float32 inputs. The measured worst case is 3.8e-6 for log_prob.

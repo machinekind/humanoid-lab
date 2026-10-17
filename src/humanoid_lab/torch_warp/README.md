@@ -51,12 +51,12 @@ docstring states the same contract.
 
 | Item | Version |
 |---|---|
-| torch build and CUDA index | Pending the PR author's Windows run. |
-| torch the parity suite ran against here | 2.14.1, CPU build, macOS arm64. |
-| Minimum NVIDIA driver | The higher of the validated torch build's and warp 1.13's minimum. Pending. |
-| GPU | Pending. |
-| Windows build | Pending. |
-| Python | Pending. |
+| torch build and CUDA index | `2.14.1+cu126` from `https://download.pytorch.org/whl/cu126`. |
+| Validated host | Linux x86_64 (Ubuntu 22.04 image, kernel 6.8), by `jobs/torch_warp_validate.sh` on 2026-10-17: parity on CPU and CUDA, smoke training with resume, a 20-minute run of `roboto_gait_v40`, the bench, battery. |
+| GPU | NVIDIA GeForce RTX 4090, 24 GB, compute capability 8.9. |
+| NVIDIA driver | 580.178.04. The floor is the higher of the cu126 torch build's and warp 1.13's minimum. |
+| Python | 3.12.15 on Linux. 3.11 on macOS for the CPU-only parity run. |
+| Windows build | Not run. No Windows GPU host has been available. docs/windows.md is written from the Linux run and the source. |
 | mujoco | 3.10.0 |
 | mujoco-mjx | 3.10.0. It vendors MJWarp. |
 | warp-lang | 1.13.0. This pin is mandatory. |
@@ -290,13 +290,14 @@ arrays and the random draws, and WarpJoystick keeps its own bookkeeping.
 | `parity_report.py` | Collects the worst error of each check for `--parity-report`. `test_parity_report.py` tests it. |
 
 The tolerances are in `tests/parity/tolerances.py`. The measured values come
-from this suite on macOS arm64 with torch 2.14.1, CPU build.
+from this suite on macOS arm64 with torch 2.14.1, CPU build, and on Linux
+x86_64 with torch 2.14.1+cu126 on an RTX 4090 (`--parity-device cuda:0`).
 
 | Check | Tolerance | Worst case measured here |
 |---|---|---|
-| Task math and the lockstep run | `rtol=1e-5`, `atol=1e-5` | Task math: 3.9e-3 abs on `compose.compute_rewards`, where the relative error is 2.5e-7. Lockstep: 1.0 abs on `terms.joint_acc`, whose values are about 1e6, at a relative error of 4.5e-7. Outside the terms the worst lockstep error is 1.9e-6 abs. |
+| Task math and the lockstep run | `rtol=1e-5`, `atol=1e-5` | Task math: 3.9e-3 abs on `compose.compute_rewards` on CPU and 7.8e-3 abs on CUDA, at relative errors of 2.5e-7 and 5.9e-7. Lockstep: 1.0 abs on `terms.joint_acc`, whose values are about 1e6, at a relative error of 4.5e-7, on both devices. Outside the terms the worst lockstep error is 1.9e-6 abs. |
 | Physics on CPU | qpos `atol=1e-4`, qvel `atol=1e-2` | qpos 2.6e-5, qvel 5.2e-3. |
-| Physics on CUDA | 10 times the CPU values | Not measured. The value is provisional until the PR author's GPU run. |
+| Physics on CUDA | 10 times the CPU values | qpos 2.6e-5, qvel 5.2e-3 on the RTX 4090, the same as on CPU. The tolerance keeps its 10x margin. |
 | DR fields | exact | 0 in every field. |
 | Bools and ints | exact | exact. |
 
@@ -337,7 +338,10 @@ numbers compare only between runs at the same seed on the same hardware.
 
 ## Windows acceptance checklist
 
-The checklist is [Smoke checks](../../../docs/windows.md#smoke-checks) in docs/windows.md. The PR author runs it at the commit-4 SHA and at the PR head and pastes the output into the PR.
+The checklist is [Smoke checks](../../../docs/windows.md#smoke-checks) in
+docs/windows.md. `jobs/torch_warp_validate.sh` runs the same steps unattended
+on a CUDA host and writes a step table. Its last run is the one in
+[Validated versions](#validated-versions): Linux, not Windows.
 
 ## wtrain flags
 
