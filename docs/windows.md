@@ -30,7 +30,7 @@ default GL. The video path has been exercised only on darwin.
 | Python | 3.11 or 3.12. `pyproject.toml` requires `>=3.11,<3.13`. |
 | Shells | PowerShell for install, training and Python entry points. Git Bash, from Git for Windows, for `run.sh` and `jobs/*.sh`. |
 | Line endings | `.gitattributes` keeps every `.sh` at LF. A clone made before that file existed checks `run.sh` out with CRLF, and bash fails on it. Fix it with `git add --renormalize .` or a fresh clone. |
-| VRAM and disk | The repo states no figure. Read `memory` in `train_log.jsonl` or in the bench JSON. Memory and throughput do not transfer between GPUs, so measure on the card the real run uses. |
+| VRAM and disk | The validated Linux run at 8192 envs used 396 MB of torch memory and a 1.8 GB warp pool, with 3.3 GB of RSS (README, "Parity and the bench"). Memory and throughput do not transfer between GPUs, so read `memory` in `train_log.jsonl` on the card the real run uses. |
 
 ## Install
 

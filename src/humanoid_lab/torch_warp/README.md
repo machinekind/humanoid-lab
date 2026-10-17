@@ -336,6 +336,21 @@ It writes JSON to `bench.out`, or to `runs/bench/bench_<timestamp>.json`
 when `bench.out` is null. `bench.py`'s docstring lists every field. Bench
 numbers compare only between runs at the same seed on the same hardware.
 
+Measured on the validated host (RTX 4090, `roboto_gait_v40`, seed 0, 8192
+envs, batch 256 x 32 minibatches, unroll 20):
+
+| Figure | Value |
+|---|---|
+| Physics steps/s | 515,000 |
+| `env.step` steps/s | 432,000 |
+| PPO env steps/s | 192,000 |
+| Warm-up: construct, reset, first step, first iteration | 0.65 s, 0.53 s, 0.18 s, 0.99 s |
+| Memory: torch max allocated, warp mempool high, RSS | 396 MB, 1,790 MB, 3.3 GB |
+| Contact budget at 8192 envs | `nacon_pool_max` 83,449 of a 786,432 pool, `nefc_max` 101 of `njmax` 896 |
+
+The 20-minute `roboto_gait_v40` run on the same host averaged 199,000 PPO
+env steps/s over 200 M steps and used the same memory.
+
 ## Windows acceptance checklist
 
 The checklist is [Smoke checks](../../../docs/windows.md#smoke-checks) in
