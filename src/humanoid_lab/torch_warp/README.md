@@ -45,25 +45,7 @@ docstring states the same contract.
 
 ## Install on Windows
 
-Use PowerShell and Python 3.11 or 3.12:
-
-```
-py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install torch==<V> --index-url https://download.pytorch.org/whl/cu126
-.venv\Scripts\python -m pip install -e ".[torch_warp,dev]"
-.venv\Scripts\python -c "import torch, warp; print(torch.cuda.is_available(), warp.is_cuda_available())"
-```
-
-- `<V>` is the validated torch version in the table below. The cu126 index
-  is an example until the validated build is named.
-- Install torch first. PyPI's Windows torch is a CPU-only build. Pip then
-  keeps the CUDA build, because `torch==<V>` matches `<V>+cu126`.
-- The rest resolves to jax and jaxlib 0.9.2 (CPU), mujoco and mujoco-mjx
-  3.10.0, and warp-lang 1.13.0, which is a CUDA-enabled wheel.
-- The last line must print `True True`.
-- `.gitattributes` keeps every `.sh` file at LF. A clone made before that
-  file existed needs `git add --renormalize .` or a fresh clone. Without it,
-  Git for Windows checks out `run.sh` with CRLF, and bash fails on it.
+[docs/windows.md](../../../docs/windows.md#install) has the install steps.
 
 ## Validated versions
 
@@ -355,36 +337,7 @@ numbers compare only between runs at the same seed on the same hardware.
 
 ## Windows acceptance checklist
 
-Not run yet. The PR author runs it at the commit-4 SHA and at the PR head and
-pastes the output into the PR.
-
-The author runs it on the Windows GPU host:
-
-1. A fresh clone with default Git for Windows settings, and a fresh venv set
-   up with the install steps above.
-2. The verification one-liner prints `True True`.
-3. `python -m pytest tests/unit`, then
-   `python -m pytest tests/parity --parity-report`, then
-   `python -m pytest tests/parity --parity-device cuda:0 --parity-report`.
-   The commands work in PowerShell. `tests/parity/conftest.py` sets
-   `JAX_PLATFORMS=cpu`. Paste both parity reports. The CPU report checks the
-   CPU tolerances on Windows x86. The CUDA report's physics rows set the CUDA
-   tolerance in `tests/parity/tolerances.py`.
-4. Smoke-sized training with `python -m humanoid_lab.torch_warp.ppo` in
-   PowerShell and `./run.sh train-warp` in Git Bash. Both from scratch and as
-   a warm start from a Brax checkpoint. At least 3 iterations with capture on
-   and one wall-clock checkpoint, then Ctrl+C and resume. The physics must
-   move under capture. A logged line within the first episode length shows
-   a nonzero `done_ep_len` or falls. WarpPhysics raises "captured physics
-   graph did nothing" when the first graph launch leaves the clock still.
-   That guard covers the step graph only. Every env reset after the first
-   launches the forward graph.
-   `test_parity_glue_physics.py::test_cuda_graph_steps_match_cpu` checks both
-   graphs in step 3 on a CUDA host.
-5. battery, video (`long`, `--compare`, `--checkpoint`) and export on the
-   result.
-6. `bash jobs/video_watch.sh` with `PY`, `RUN_NAME` and `MAX_IDLE` set.
-7. `./run.sh bench-warp`, with the JSON attached.
+The checklist is [Smoke checks](../../../docs/windows.md#smoke-checks) in docs/windows.md. The PR author runs it at the commit-4 SHA and at the PR head and pastes the output into the PR.
 
 ## wtrain flags
 

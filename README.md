@@ -31,7 +31,7 @@ Configuration is Hydra. `./run.sh <verb> [overrides]` wraps the project venv.
 
 Example: `./run.sh train robot=roboto_origin ++ppo.num_timesteps=3e8 run_name=roboto_walk_v1`
 
-On Windows hosts without JAX-CUDA, `src/humanoid_lab/torch_warp/` trains on MJWarp, and its README covers the install.
+On Windows hosts without JAX-CUDA, `src/humanoid_lab/torch_warp/` trains on MJWarp. [docs/windows.md](docs/windows.md) covers the install and a full run.
 
 `docs/configuration.md` lists every verb and flag. `docs/adding-a-robot.md` explains the robot layout. `docs/deploy.md` states the export contract.
 

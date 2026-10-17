@@ -1279,9 +1279,10 @@ the Brax trainer never sees them.
 | `physics_steps` | `100` | Timed physics-only steps. |
 | `out` | `null` | The JSON output path. `null` writes `runs/bench/bench_<timestamp>.json`. |
 
-The [package README](../src/humanoid_lab/torch_warp/README.md) covers the
-Windows install, the train, warm-start and resume commands, the refusal
-ledger for the `ppo` and `network` keys, and the parity suite.
+[windows.md](windows.md) covers the Windows install and a full run. The
+[package README](../src/humanoid_lab/torch_warp/README.md) covers the train,
+warm-start and resume commands, the refusal ledger for the `ppo` and
+`network` keys, and the parity suite.
 
 **run.json.** A Torch run writes the same keys as a Brax run (see
 [run.json](#runjson)). It differs in these ways:
