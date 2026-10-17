@@ -52,7 +52,7 @@ docstring states the same contract.
 | Item | Version |
 |---|---|
 | torch build and CUDA index | `2.14.1+cu126` from `https://download.pytorch.org/whl/cu126`. |
-| Validated host | Linux x86_64 (Ubuntu 22.04 image, kernel 6.8), by `jobs/torch_warp_validate.sh` on 2026-10-17: parity on CPU and CUDA, smoke training with resume, a 20-minute run of `roboto_gait_v40`, the bench, battery. |
+| Validated host | Linux x86_64 (Ubuntu 22.04 image, kernel 6.8), by `jobs/torch_warp_validate.sh` on 2026-10-17: parity on CPU and CUDA (against MJX), smoke training with resume, a 20-minute run of `roboto_gait_v40`, the bench, battery. |
 | GPU | NVIDIA GeForce RTX 4090, 24 GB, compute capability 8.9. |
 | NVIDIA driver | 580.178.04. The floor is the higher of the cu126 torch build's and warp 1.13's minimum. |
 | Python | 3.12.15 on Linux. 3.11 on macOS for the CPU-only parity run. |
@@ -297,7 +297,7 @@ x86_64 with torch 2.14.1+cu126 on an RTX 4090 (`--parity-device cuda:0`).
 |---|---|---|
 | Task math and the lockstep run | `rtol=1e-5`, `atol=1e-5` | Task math: 3.9e-3 abs on `compose.compute_rewards` on CPU and 7.8e-3 abs on CUDA, at relative errors of 2.5e-7 and 5.9e-7. Lockstep: 1.0 abs on `terms.joint_acc`, whose values are about 1e6, at a relative error of 4.5e-7, on both devices. Outside the terms the worst lockstep error is 1.9e-6 abs. |
 | Physics on CPU | qpos `atol=1e-4`, qvel `atol=1e-2` | qpos 2.6e-5, qvel 5.2e-3. |
-| Physics on CUDA | 10 times the CPU values | qpos 2.6e-5, qvel 5.2e-3 on the RTX 4090, the same as on CPU. The tolerance keeps its 10x margin. |
+| Physics on CUDA | 10 times the CPU values | qpos 2.6e-5, qvel 5.2e-3 against MJX on the RTX 4090. MJX float32 dominates both, so this row does not measure MJWarp on CUDA. `physics[cuda vs cpu]` in the report, MJWarp against itself across devices, is the backend measurement. Not run on a GPU yet. |
 | DR fields | exact | 0 in every field. |
 | Bools and ints | exact | exact. |
 

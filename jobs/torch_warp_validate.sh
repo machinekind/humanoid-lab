@@ -25,6 +25,7 @@
 #   UNIT_TESTS     run tests/unit first                        (default true)
 #   INSTALL_TORCH  install CUDA torch when it is missing       (default true)
 #   TORCH_INDEX    wheel index for that install                (default the cu126 index)
+#   ONLY_PARITY    stop after the two parity steps             (default false)
 #
 # Outputs, under runs/torch_warp_validate_<TAG>/:
 #   environment.json   interpreter, library and GPU versions, from the box
@@ -39,6 +40,9 @@
 #
 # A longer real run at a chosen env count:
 #   REAL_MINUTES=60 NUM_ENVS=4096 ./jobs/torch_warp_validate.sh
+#
+# The parity suite alone, on CPU and on CUDA, with the environment report:
+#   ONLY_PARITY=true UNIT_TESTS=false ./jobs/torch_warp_validate.sh
 #
 # Partial-failure policy: every step runs whatever the earlier ones did, so
 # one table shows the whole state. The exit code is nonzero when any step but
@@ -56,6 +60,7 @@ set -uo pipefail
 : "${UNIT_TESTS:=true}"
 : "${INSTALL_TORCH:=true}"
 : "${TORCH_INDEX:=https://download.pytorch.org/whl/cu126}"
+: "${ONLY_PARITY:=false}"
 # JAX stays on the CPU here. torch and warp own the GPU, and the Torch
 # trainer refuses a GPU JAX backend.
 # MUJOCO_GL is left alone: an exported `egl` makes `import mujoco` fail on an
@@ -91,6 +96,14 @@ step() {
         echo "== $name ok, $(( $(date +%s) - start ))s"
     fi
     return "$rc"
+}
+
+# finish: prints the step table and exits with the run's status.
+finish() {
+    echo "== steps (name, rc, seconds) =="
+    cat "$STEPS"
+    echo "== $(date -Iseconds) done failed=$failed =="
+    exit "$failed"
 }
 
 PY=.venv/bin/python
@@ -150,6 +163,7 @@ if [ "$UNIT_TESTS" = "true" ]; then
 fi
 step parity_cpu "$OUT/parity_cpu.log" ./run.sh test-parity --parity-report || failed=1
 step parity_cuda "$OUT/parity_cuda.log" ./run.sh test-parity --parity-device cuda:0 --parity-report || failed=1
+[ "$ONLY_PARITY" = "true" ] && finish
 
 # -- trainings ---------------------------------------------------------------
 common=(experiment="$EXPERIMENT" wandb.enable=false seed="$SEED")
@@ -176,7 +190,4 @@ if [ "$REAL_MINUTES" != "0" ] && [ -f "runs/${TAG}_real/run.json" ]; then
     step video "$OUT/video.log" ./run.sh eval --run "runs/${TAG}_real" || true
 fi
 
-echo "== steps (name, rc, seconds) =="
-cat "$STEPS"
-echo "== $(date -Iseconds) done failed=$failed =="
-exit "$failed"
+finish

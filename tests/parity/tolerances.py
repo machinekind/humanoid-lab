@@ -14,8 +14,14 @@ reach a qvel error of 2.3e-2 and a qpos error of 1.2e-4 on CPU. MJX on JAX
 in float32 causes that error, and MJWarp stays close to MuJoCo C in float64.
 Whether to keep PHYSICS_CPU as it is stays an open question for the owner
 in the PR description. The CUDA values are 10 times the CPU values. On an
-RTX 4090 (torch 2.14.1+cu126, driver 580.178.04) the suite measured the same
-2.6e-5 and 5.2e-3 as on CPU, so the CUDA tolerance holds a 10x margin.
+RTX 4090 (torch 2.14.1+cu126, driver 580.178.04) the suite measured 2.6e-5
+and 5.16e-3 against MJX, the same figures as on that host's CPU (macOS
+measures 5.19e-3). Those figures are MJX's float32 error and cannot see the
+backend: at their worst elements MJWarp on CPU is 1.3e-8 (qpos) and 2.9e-6
+(qvel) from MuJoCo C, below the three digits the report prints. The
+backend measurement is the physics[cuda vs cpu] row, MJWarp against itself
+across devices. It has not run on a GPU yet, so the 10x CUDA margin is
+pending that row.
 
 The measured values come from macOS arm64 with torch 2.14.1, CPU build, and
 from Linux x86_64 with torch 2.14.1+cu126 on an RTX 4090.
