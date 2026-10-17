@@ -49,15 +49,15 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
 fi
 
 : "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
-TASK="${TASK:-joystick}"
-ACTUATORS="${ACTUATORS:-sizing_ideal}"
-EXPERIMENT="${EXPERIMENT:-}"
-RUN_NAME="${RUN_NAME:-}"
-NUM_ENVS="${NUM_ENVS:-32768}"
-BATCH="${BATCH:-1024}"
-SEED="${SEED:-0}"
-WANDB="${WANDB:-true}"
-RUN_ARGS="${RUN_ARGS:-}"
+: "${TASK:=joystick}"
+: "${ACTUATORS:=sizing_ideal}"
+: "${EXPERIMENT:=}"
+: "${RUN_NAME:=}"
+: "${NUM_ENVS:=32768}"
+: "${BATCH:=1024}"
+: "${SEED:=0}"
+: "${WANDB:=true}"
+: "${RUN_ARGS:=}"
 
 if [ "$WANDB" = "true" ]; then
     WANDB_FLAG="wandb.enable=true"

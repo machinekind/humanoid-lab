@@ -60,9 +60,9 @@ fi
 
 : "${RUN_NAME:?set RUN_NAME to a run dir name under runs/, e.g. roboto_walk_v1}"
 : "${PY:?set PY to the python that has humanoid_lab installed, e.g. .venv/bin/python}"
-INTERVAL="${INTERVAL:-600}"
-SCENARIO="${SCENARIO:-walk_ramp}"
-MAX_IDLE="${MAX_IDLE:-7200}"
+: "${INTERVAL:=600}"
+: "${SCENARIO:=walk_ramp}"
+: "${MAX_IDLE:=7200}"
 
 # Outputs stay under runs/.
 case "$RUN_NAME" in
