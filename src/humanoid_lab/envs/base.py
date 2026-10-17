@@ -88,6 +88,7 @@ class HumanoidEnv(mjx_env.MjxEnv):
         self._preset = load_actuator_preset(robot_dir, preset_name, actuator_overrides)
 
         spec = build_spec(robot_dir, preset_name, actuator_overrides)
+        self._customize_spec(spec)
         self._mj_model = compile_spec(spec)
         self._mj_model.opt.timestep = self.sim_dt
         self._customize_model(self._mj_model)
@@ -372,6 +373,11 @@ class HumanoidEnv(mjx_env.MjxEnv):
                 f"'{self._reset_keyframe}' keyframe is not a standing equilibrium, and a "
                 "snapshot of a fall cannot anchor the pose rewards"
             )
+
+    def _customize_spec(self, spec) -> None:
+        """Hook for subclasses that add elements (e.g. obstacle geoms) to the
+        MjSpec before it compiles. No-op here; the fall-data generator in
+        machinekind/humanoid-fall-gat uses it for its trip obstacle."""
 
     def _customize_model(self, m: mujoco.MjModel) -> None:
         """Task-specific tweaks applied before the model is put on device."""
