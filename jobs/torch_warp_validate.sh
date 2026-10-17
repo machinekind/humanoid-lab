@@ -58,8 +58,10 @@ set -uo pipefail
 : "${TORCH_INDEX:=https://download.pytorch.org/whl/cu126}"
 # JAX stays on the CPU here. torch and warp own the GPU, and the Torch
 # trainer refuses a GPU JAX backend.
+# MUJOCO_GL is left alone: an exported `egl` makes `import mujoco` fail on an
+# image without libEGL, and only the video step renders. eval/video.py sets
+# egl itself on Linux.
 export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
-export MUJOCO_GL="${MUJOCO_GL:-egl}"
 
 if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
     echo "ERROR: run this from the repo root; '$PWD' has no pyproject.toml and configs/" >&2
