@@ -1,0 +1,14 @@
+name: goal
+
+# Point-goal walking with a sparse reward: see src/humanoid_lab/envs/goal.py.
+# The robot overlay (configs/robot/<name>.yaml) still writes its joystick
+# blocks (command, reward, push) into task.env; this task never reads them.
+env:
+  reset_keyframe: "home"
+  reset_noise: 0.05
+  fall:
+    min_height: 0.45
+    max_tilt_gz: -0.4
+
+ppo:
+  discounting: 0.99

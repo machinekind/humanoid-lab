@@ -107,6 +107,22 @@ class GaitReseedWrapper(playground_wrapper.Wrapper):
         return state.replace(info=info)
 
 
+class GoalReseedWrapper(playground_wrapper.Wrapper):
+    """Redraw task=goal's goal whenever an episode respawns.
+
+    The same `BraxAutoResetWrapper(full_reset=False)` behavior as above: the
+    respawn restores `data` but keeps `info`, and the goal lives in world
+    coordinates in `info`, so without this the respawned robot would chase
+    the dead episode's goal. The curriculum level is deliberately kept.
+    """
+
+    def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+        state = self.env.step(state, action)
+        done = state.done > 0.0
+        info = jax.vmap(self.unwrapped.respawn_goal)(state.info, state.data, done)
+        return state.replace(info=info)
+
+
 def make_wrap_env_fn(env_config):
     """The `wrap_env_fn` train.py hands brax's ppo.train.
 
@@ -115,6 +131,8 @@ def make_wrap_env_fn(env_config):
     no run that uses neither changes shape.
     """
     layers = []
+    if env_config.get("goal") is not None:
+        layers.append(GoalReseedWrapper)
     no_progress = env_config.get("no_progress")
     if no_progress is not None and no_progress.enable:
         layers.append(ProgressReseedWrapper)

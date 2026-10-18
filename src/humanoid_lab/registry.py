@@ -7,6 +7,8 @@ tuple/float coercion so yaml `vx: [-0.8, 1.8]` lands on a tuple field.
 
 from ml_collections import config_dict
 
+from humanoid_lab.envs.goal import Goal
+from humanoid_lab.envs.goal import default_config as goal_default_config
 from humanoid_lab.envs.joystick import Joystick
 from humanoid_lab.envs.joystick import default_config as joystick_default_config
 from humanoid_lab.envs.sizing import Sizing
@@ -17,6 +19,7 @@ from humanoid_lab.envs.sizing import default_config as sizing_default_config
 TASKS = {
     "joystick": (Joystick, joystick_default_config),
     "sizing": (Sizing, sizing_default_config),
+    "goal": (Goal, goal_default_config),
 }
 
 
