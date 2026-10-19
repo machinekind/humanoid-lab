@@ -107,9 +107,10 @@ def stub_loader(monkeypatch):
     record."""
     seen = {}
 
-    def fake_loader(run_dir, extra_env_overrides=None):
+    def fake_loader(run_dir, extra_env_overrides=None, step=None):
         seen["run_dir"] = run_dir
         seen["extra_env_overrides"] = extra_env_overrides
+        seen["step"] = step
         env = SimpleNamespace(
             reset=lambda rng: None,
             step=lambda state, act: None,
@@ -139,6 +140,15 @@ def test_run_battery_forwards_and_records_the_extra(tmp_path, stub_loader):
 
     assert stub_loader["extra_env_overrides"] == extra
     assert results["env_overrides"] == extra
+
+
+def test_run_battery_forwards_the_step(tmp_path, stub_loader):
+    """The step picks the checkpoint. battery.json's existing checkpoint
+    field records it, so no top-level key is added."""
+    results = battery.run_battery(tmp_path, step=200)
+
+    assert stub_loader["step"] == 200
+    assert list(results) == ["run", "checkpoint", "contacts"]
 
 
 # -- the CLI -----------------------------------------------------------------

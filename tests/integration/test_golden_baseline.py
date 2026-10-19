@@ -16,19 +16,28 @@ bit. See golden_rollout.py for the rollout itself.
 
 from __future__ import annotations
 
+import platform
+import sys
+
 import jax
 import numpy as np
 import pytest
 
 from golden_rollout import CASE_IDS, CASES, rollout
 
-pytestmark = pytest.mark.skipif(
-    jax.default_backend() != "cpu",
-    reason=(
-        f"goldens are CPU-recorded bit patterns; this host's default backend is "
-        f"{jax.default_backend()!r}. Re-run with JAX_PLATFORMS=cpu."
+pytestmark = [
+    pytest.mark.skipif(
+        jax.default_backend() != "cpu",
+        reason=(
+            f"goldens are CPU-recorded bit patterns; this host's default backend is "
+            f"{jax.default_backend()!r}. Re-run with JAX_PLATFORMS=cpu."
+        ),
     ),
-)
+    pytest.mark.skipif(
+        (sys.platform, platform.machine()) != ("darwin", "arm64"),
+        reason="the goldens are bit patterns recorded on darwin arm64",
+    ),
+]
 
 # Arrays compared whole, by npz key.
 _EXACT_KEYS = (

@@ -15,15 +15,29 @@ import os
 os.environ.setdefault("XLA_FLAGS", "--xla_gpu_triton_gemm_any=true")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
 
+import contextlib
 import functools
-import json
 import time
+from collections.abc import Mapping
 from datetime import datetime
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from humanoid_lab import paths
+from humanoid_lab import paths, run_record
+
+# tests/integration/reference_rollouts.py imports build_ppo_params and
+# _apply_ppo_overrides from humanoid_lab.train, on origin/main too, so both
+# stay importable here. Never edit reference_rollouts.py: it must still run
+# on 042f018.
+from humanoid_lab.ppo_config import (  # noqa: F401
+    REPO_PPO_KEYS,
+    _apply_ppo_overrides,
+    brax_train_kwargs,
+    build_ppo_params,
+    compose_ppo_params,
+    resolve_episode_length,
+)
 
 
 class EarlyStop(Exception):
@@ -68,53 +82,6 @@ def record_eval(metrics: dict, num_steps: int, eval_rewards: list, last_eval: di
     return True
 
 
-def _apply_ppo_overrides(p, overrides: dict) -> None:
-    for k, v in (overrides or {}).items():
-        if isinstance(v, dict):
-            _apply_ppo_overrides(getattr(p, k), v)
-        else:
-            if isinstance(v, float) and v.is_integer() and not isinstance(
-                getattr(p, k, None), float
-            ):
-                v = int(v)  # ppo.num_timesteps=3e8 arrives as float
-            setattr(p, k, v)
-
-
-def build_ppo_params(overrides, smoke: bool):
-    """Playground Go1 PPO config + overrides.
-
-    `overrides` is either a dict (hydra path) or a legacy ["k=v", ...] list
-    (app.py / eval.py still call it that way).
-    """
-    from mujoco_playground.config import locomotion_params
-
-    p = locomotion_params.brax_ppo_config("Go1JoystickFlatTerrain")
-    p.network_factory.policy_obs_key = "state"
-    p.network_factory.value_obs_key = "privileged_state"
-    # Not in the playground config; set to brax's default so ppo.gae_lambda
-    # overrides land on a visible key.
-    p.gae_lambda = 0.95
-    if smoke:
-        p.num_timesteps = 100_000
-        p.num_envs = 64
-        p.batch_size = 64
-        p.num_minibatches = 4
-        p.num_evals = 2
-    if isinstance(overrides, dict):
-        _apply_ppo_overrides(p, overrides)
-    else:
-        for kv in overrides or []:
-            k, v = kv.split("=", 1)
-            for cast in (int, float):
-                try:
-                    v = cast(v)
-                    break
-                except ValueError:
-                    continue
-            setattr(p, k, v)
-    return p
-
-
 # Contact-budget preflight. Deliberately smaller than
 # check_contacts' own defaults (200 steps x 5 seeds): this runs in front of
 # every training job, and three seeds is what the fallen sweep's three
@@ -153,29 +120,105 @@ def _contact_preflight(env, cfg) -> dict:
     return sim_budget.budget_report_for_env(env, peak["nacon_max"], nefc)
 
 
+def _with_sym_loss(
+    params,
+    normalizer_params,
+    data,
+    rng,
+    *,
+    ppo_network,
+    sym_coef,
+    obs_key,
+    obs_perm,
+    obs_sign,
+    act_perm,
+    act_sign,
+    compute_ppo_loss,
+    **kwargs,
+):
+    """brax's PPO loss plus sym_coef * mean((loc(M s) - M loc(s))^2).
+
+    loc is the policy mean, the first half of the distribution params. The
+    mirror M applies to the raw observation, before the network normalizes
+    it. Gradients flow through both branches. The metrics gain 'sym_loss',
+    which brax reports as training/sym_loss.
+    """
+    import jax.numpy as jnp
+
+    loss, metrics = compute_ppo_loss(
+        params, normalizer_params, data, rng, ppo_network=ppo_network, **kwargs
+    )
+    a = ppo_network.parametric_action_distribution.param_size // 2
+    obs = data.observation
+    if isinstance(obs, Mapping):
+        obs_m = {**obs, obs_key: obs[obs_key][..., obs_perm] * obs_sign}
+    else:
+        obs_m = obs[..., obs_perm] * obs_sign
+    apply = ppo_network.policy_network.apply
+    loc = apply(normalizer_params, params.policy, obs)[..., :a]
+    loc_m = apply(normalizer_params, params.policy, obs_m)[..., :a]
+    sym = jnp.mean(jnp.square(loc_m - loc[..., act_perm] * act_sign))
+    return loss + sym_coef * sym, {**metrics, "sym_loss": sym}
+
+
+def sym_loss_patch(sym_coef, obs_perm, obs_sign, act_perm, act_sign, obs_key):
+    """A context manager that adds the mirror-symmetry loss to brax's PPO.
+
+    brax's ppo.train takes no loss argument. It reads
+    ppo_losses.compute_ppo_loss when train() runs, so the patch must wrap the
+    whole train_fn call. The patch is undone when the block exits. The added
+    loss consumes no RNG key, so the run's random stream is unchanged.
+
+    A zero sym_coef returns a nullcontext and patches nothing, so the run is
+    the same as without this function.
+
+    Verified on brax 0.14.2 only. tests/unit/test_brax_sym_loss.py checks
+    that ppo.train still looks the loss up by that name.
+    """
+    if sym_coef == 0:
+        return contextlib.nullcontext()
+    from unittest import mock
+
+    import jax.numpy as jnp
+    from brax.training.agents.ppo import losses as ppo_losses
+
+    original = ppo_losses.compute_ppo_loss
+    return mock.patch.object(
+        ppo_losses,
+        "compute_ppo_loss",
+        functools.partial(
+            _with_sym_loss,
+            compute_ppo_loss=original,
+            sym_coef=float(sym_coef),
+            obs_key=obs_key,
+            obs_perm=jnp.asarray(obs_perm),
+            obs_sign=jnp.asarray(obs_sign),
+            act_perm=jnp.asarray(act_perm),
+            act_sign=jnp.asarray(act_sign),
+        ),
+    )
+
+
 def _wandb_group(cfg: DictConfig) -> str | None:
     group = cfg.wandb.get("group")
     if group:
         return str(group)
-    from hydra.core.hydra_config import HydraConfig
+    from humanoid_lab.ppo_config import experiment_name
 
-    try:
-        choice = HydraConfig.get().runtime.choices.get("experiment")
-    except ValueError:
-        return None  # main() invoked outside a Hydra app (e.g. tests)
-    return None if choice in (None, "null") else choice
+    return experiment_name()
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
-    import jax  # noqa: F401  # heavy imports stay inside main so --cfg job is fast
+    import jax  # heavy imports stay inside main so --cfg job is fast
     from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.agents.ppo import train as ppo
 
     from humanoid_lab.dr.randomize import make_domain_randomize
+    from humanoid_lab.dr.transform import check_dr_enabled
+    from humanoid_lab.envs import symmetry
     from humanoid_lab.envs.wrappers import make_wrap_env_fn
     from humanoid_lab.registry import make_env
-    from humanoid_lab.robot.presets import effective_gains, load_actuator_preset
 
     task = cfg.task.name
     robot_dir = paths.REPO_ROOT / cfg.robot.dir
@@ -186,17 +229,9 @@ def main(cfg: DictConfig) -> None:
     # PPO params resolve before the envs because the warp backend sizes its
     # contact buffer across the whole training batch, so the env config
     # needs the final num_envs at construction time.
-    ppo_params = build_ppo_params({}, cfg.smoke)
-    # Network group (configs/network) merges into the factory kwargs; explicit
-    # ppo.network_factory.* overrides still win below.
-    _apply_ppo_overrides(
-        ppo_params.network_factory,
-        OmegaConf.to_container(cfg.network, resolve=True) or {},
-    )
-    task_ppo_overrides = OmegaConf.to_container(cfg.task.ppo, resolve=True) or {}
-    ppo_overrides = OmegaConf.to_container(cfg.ppo, resolve=True) or {}
-    _apply_ppo_overrides(ppo_params, task_ppo_overrides)
-    _apply_ppo_overrides(ppo_params, ppo_overrides)
+    # The network group merges into the factory kwargs, then task.ppo, then
+    # ppo (see ppo_config.compose_ppo_params).
+    ppo_params = compose_ppo_params(cfg)
 
     # The eval wrapper vmaps num_eval_envs worlds through the same env, so
     # the warp contact budget covers the larger of the two batches. This is
@@ -210,18 +245,10 @@ def main(cfg: DictConfig) -> None:
     eval_env = make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     print(f"actor obs ({len(env.actor_obs_names)} components): {env.actor_obs_names}")
 
-    # Gains as the compiled model holds them, for run.json. Read here rather
-    # than from cfg.actuators: the yaml is what was asked for, and
-    # actuators.overrides merges on top of it inside load_actuator_preset.
-    # The preset is re-loaded through that same choke point purely for its
-    # model name, which the mjModel does not carry.
-    gains = effective_gains(
-        env.mj_model.actuator_gainprm,
-        env.mj_model.actuator_biasprm,
-        env.robot_spec.actuated_joints,
-        model=load_actuator_preset(robot_dir, preset_name, actuator_overrides).model,
-        preset=preset_name,
-    )
+    # Gains as the compiled model holds them, for run.json (see
+    # run_record.actuator_gains).
+    hydra_cfg = OmegaConf.to_container(cfg, resolve=True)
+    gains = run_record.actuator_gains(env, hydra_cfg)
     print(f"actuator gains: {gains['model']} preset {gains['preset']}")
 
     contacts = _contact_preflight(env, cfg)
@@ -235,13 +262,8 @@ def main(cfg: DictConfig) -> None:
         )
 
     # Episode length follows the env config unless ppo yaml overrides it.
-    # Smoke keeps episodes short too: brax's eval unrolls full episodes, so
-    # a 1000-step episode dominates a CPU pipeline check.
-    if "episode_length" not in task_ppo_overrides and "episode_length" not in ppo_overrides:
-        ppo_params.episode_length = (
-            min(200, env._config.episode_length) if cfg.smoke
-            else env._config.episode_length
-        )
+    # Smoke keeps episodes short too (see ppo_config.resolve_episode_length).
+    resolve_episode_length(ppo_params, cfg, env._config.episode_length)
 
     restore = cfg.restore
     if restore and not os.path.isabs(restore):
@@ -255,8 +277,16 @@ def main(cfg: DictConfig) -> None:
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    training_params = dict(ppo_params)
-    network_factory_cfg = training_params.pop("network_factory")
+    # REPO_PPO_KEYS leave training_params here. brax's ppo.train rejects them.
+    training_params, network_factory_cfg, repo = brax_train_kwargs(ppo_params)
+    sym_coef = float(repo.get("sym_coef", 0.0))
+    # Maps are built only for a nonzero coefficient. A robot without a
+    # JOINT_SIGNS entry (asimov_v1) then raises a KeyError naming it, and
+    # still trains at 0.
+    mirror_maps = (None, None, None, None)
+    if sym_coef != 0:
+        mirror_maps = symmetry.policy_mirror_maps(env.robot_spec, env.actor_obs_names)
+        print(f"symmetry loss on, coef {sym_coef}")
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks, **network_factory_cfg
     )
@@ -269,13 +299,7 @@ def main(cfg: DictConfig) -> None:
             env.mj_model, env.robot_spec, dr_cfg
         )
     else:
-        enabled = [k for k, v in dr_cfg.items() if isinstance(v, dict) and v.get("enable")]
-        if enabled:
-            raise ValueError(
-                f"domain_rand=false disables the whole dr block, but "
-                f"cfg.dr fields {enabled} have enable=true; either set "
-                f"domain_rand=true or disable those fields too"
-            )
+        check_dr_enabled(cfg.domain_rand, dr_cfg)
 
     wb = None
     if cfg.wandb.enable:
@@ -313,7 +337,11 @@ def main(cfg: DictConfig) -> None:
         # ADAPTIVE_KL, and kl_mean is what drives it.
         opt = "".join(
             f"  {label} {float(metrics[key]):.3g}"
-            for label, key in (("lr", "training/learning_rate"), ("kl", "training/kl_mean"))
+            for label, key in (
+                ("lr", "training/learning_rate"),
+                ("kl", "training/kl_mean"),
+                ("sym", "training/sym_loss"),
+            )
             if key in metrics
         )
         print(
@@ -352,9 +380,13 @@ def main(cfg: DictConfig) -> None:
     )
     early_stopped = False
     try:
-        make_inference_fn, params, metrics = train_fn(
-            environment=env, eval_env=eval_env
-        )
+        # With sym_coef 0 the patch is a nullcontext and this is the plain call.
+        with sym_loss_patch(
+            sym_coef, *mirror_maps, network_factory_cfg.get("policy_obs_key", "state")
+        ):
+            make_inference_fn, params, metrics = train_fn(
+                environment=env, eval_env=eval_env
+            )
     except EarlyStop:
         # Brax saves a checkpoint at every eval, so the newest checkpoint in
         # ckpt_dir IS the early-stopped policy -- nothing is lost by cutting
@@ -363,38 +395,29 @@ def main(cfg: DictConfig) -> None:
         early_stopped = True
         metrics = last_eval["metrics"]
 
-    (run_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_name": run_name,
-                "task": task,
-                "num_timesteps": int(ppo_params.num_timesteps),
-                "early_stopped": early_stopped,
-                # The last eval's step count. On a normal run that is the
-                # final eval, so this equals the budget brax actually ran.
-                "stopped_at_steps": int(last_eval["steps"]),
-                "final_reward": float(
-                    metrics.get("eval/episode_reward", float("nan"))
-                ),
-                "checkpoint_dir": str(ckpt_dir),
-                # Warp contact/constraint budgets and the preflight's peaks.
-                # Same schema as battery.json's, on every backend, so a GPU
-                # run and a local one diff without branching.
-                "contacts": contacts,
-                "env_config": env._config.to_dict(),
-                "ppo_config": ppo_params.to_dict(),
-                "hydra_config": OmegaConf.to_container(cfg, resolve=True),
-                "actuators": OmegaConf.to_container(cfg.actuators, resolve=True),
-                # What the BUILT model got, next to the `actuators` block
-                # above, which is what the config asked for. The two differ
-                # whenever actuators.overrides patches a gain: the override
-                # never appears in the preset yaml.
-                "actuator_gains": gains,
-            },
-            indent=2,
-            default=str,
-        )
+    # Written once, after training. jobs/train_chain.sh reads a fresh
+    # run.json as proof that the run finished.
+    record = run_record.build_run_record(
+        env,
+        hydra_cfg,
+        ppo_params,
+        run_name=run_name,
+        checkpoint_dir=ckpt_dir,
+        contacts=contacts,
+        env_config=env._config.to_dict(),
+        actuator_gains=gains,
+        trainer=run_record.trainer_block("brax_ppo", env._backend, jax.devices()[0]),
+        results={
+            "early_stopped": early_stopped,
+            "stopped_at_steps": int(last_eval["steps"]),
+            "final_reward": float(metrics.get("eval/episode_reward", float("nan"))),
+        },
+        # A missing source run never stops a Brax run.
+        warm_start=(
+            run_record.warm_start_block(restore, hydra_cfg, strict=False) if restore else None
+        ),
     )
+    run_record.write_run(run_dir, record)
     print(f"done -> {run_dir}")
     if wb is not None:
         wb.finish()

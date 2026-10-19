@@ -6,9 +6,14 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # jax 0.9.2 is the proven pin for this driver family; cuda extra only on linux
+    # jax 0.9.2 is the proven pin for this driver family. The cuda extra is
+    # installed only on linux; every other platform, Windows included, pins
+    # the CPU build. Without the pin Windows resolves jax 0.10/0.11, which
+    # fails the goldens.
     "jax[cuda12]==0.9.2; sys_platform == 'linux'",
-    "jax==0.9.2; sys_platform == 'darwin'",
+    "jax==0.9.2; sys_platform != 'linux'",
+    # The shared task modules use it; 1.15.0 is the tested version.
+    "array-api-compat>=1.15",
     # One vendored unit: mujoco-mjx 3.10.0 vendors the MJWarp that needs
     # exactly warp-lang 1.13.0. A floating mujoco resolve on a fresh venv
     # pulled a newer mjx whose MJWarp stubbed out against warp 1.13 and
@@ -33,6 +38,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "ruff>=0.14.1"]
+# The Torch+MJWarp trainer in src/humanoid_lab/torch_warp/.
+# On Windows, install CUDA torch from the PyTorch index first. PyPI's Windows
+# torch is CPU-only, and an extra cannot name an index.
+# The extra installs no torch on Linux. PyPI's Linux torch brings CUDA 13 next
+# to jax's CUDA 12. Linux parity users install torch by hand from the cu126
+# index.
+# The validated build is in src/humanoid_lab/torch_warp/README.md.
+torch_warp = ["torch>=2.7; sys_platform != 'linux'", "psutil>=5.9"]
 
 [build-system]
 requires = ["hatchling"]

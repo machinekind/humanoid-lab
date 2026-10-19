@@ -1,0 +1,2 @@
+# Git for Windows' default CRLF checkout breaks run.sh and jobs/*.sh in bash (verified).
+*.sh text eol=lf

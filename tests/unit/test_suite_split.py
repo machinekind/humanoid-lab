@@ -69,3 +69,16 @@ def test_no_test_file_sits_outside_the_split():
         f"these test files sit directly in tests/ and belong to neither suite: "
         f"{stray}. Classify each one into tests/unit or tests/integration."
     )
+
+
+def test_test_file_basenames_are_unique():
+    seen = {}
+    for p in sorted(TESTS_DIR.rglob("test_*.py")):
+        seen.setdefault(p.name, []).append(str(p.relative_to(TESTS_DIR)))
+    dupes = {n: ps for n, ps in seen.items() if len(ps) > 1}
+    assert not dupes, (
+        f"these test basenames occur more than once: {dupes}. The test "
+        "directories have no __init__.py files, so pytest cannot collect two "
+        "files with one basename, and ./run.sh test-all aborts with 'import "
+        "file mismatch'. Rename one of each pair."
+    )

@@ -2,9 +2,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=.venv/bin/python
+# A Windows venv puts the interpreter in .venv/Scripts. This is for Git Bash.
+if [[ ! -x "$PY" && -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; fi
 
 case "${1:-}" in
   train) shift; "$PY" -m humanoid_lab.train "$@" ;;
+  # The Torch+MJWarp trainer. Its config is configs/torch_warp.yaml.
+  train-warp) shift; "$PY" -m humanoid_lab.torch_warp.ppo "$@" ;;
+  # The Torch+MJWarp benchmark. It writes one JSON file.
+  bench-warp) shift; "$PY" -m humanoid_lab.torch_warp.bench "$@" ;;
   smoke) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.train smoke=true wandb.enable=false "$@" ;;
   build) shift; "$PY" -m humanoid_lab.build_model "$@" ;;
   check) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.check_model "$@" ;;
@@ -22,7 +28,10 @@ case "${1:-}" in
   check-friction) shift; "$PY" -m humanoid_lab.check_friction "$@" ;;
   # The split (tests/unit/test_suite_split.py guards it):
   # `test` is the edit-loop suite -- model-free, runs in seconds. `test-slow`
-  # builds models and steps MJX. `test-all` is both, for CI and pre-merge.
+  # builds models and steps MJX. `test-parity` checks the Torch+MJWarp runner
+  # against the JAX env: task math, a lockstep env run, physics, DR and RNG.
+  # It skips when torch is not installed.
+  # `test-all` is all three, for CI and pre-merge.
   test)  shift; "$PY" -m pytest tests/unit -q "$@" ;;
   # JAX_COMPILATION_CACHE_DIR makes the MJX compiles persist across runs, so
   # a re-run of the slow suite skips the tens of seconds of XLA compilation.
@@ -34,11 +43,21 @@ case "${1:-}" in
     export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
     "$PY" -m pytest tests/integration -q "$@"
     ;;
+  # The parity suite, on CPU, with the same compile cache as test-slow.
+  test-parity)
+    shift
+    export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
+    export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+    JAX_PLATFORMS=cpu "$PY" -m pytest tests/parity -q "$@"
+    ;;
   test-all)
     shift
     export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-.jax_cache}"
     export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
     "$PY" -m pytest tests/unit tests/integration -q "$@"
+    # JAX_PLATFORMS must be set before the first jax import, so parity runs
+    # in its own process.
+    JAX_PLATFORMS=cpu "$PY" -m pytest tests/parity -q
     ;;
   # Single-purpose verb: just the checkpoint rollout -> runs/<name>/sizing_data.npz.
   # Passthrough args: --run runs/<name> [--episodes N] [--steps N] [--seed N].
@@ -78,7 +97,7 @@ case "${1:-}" in
     "$PY" -m humanoid_lab.sizing.report "${report_args[@]}"
     ;;
   # Fixed eval battery -> runs/<name>/battery.json.
-  # Passthrough args: --run runs/<name> [--out path.json].
+  # Passthrough args: --run runs/<name> [--out path.json] [--set BLOCK.KEY=VALUE ...] [--checkpoint STEP].
   battery) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.battery "$@" ;;
   # Renders runs/<name>/eval_report.md from battery.json (run `battery`
   # first). If runs/<name>/sizing_data.npz also exists, additionally runs
@@ -103,16 +122,17 @@ case "${1:-}" in
       "$PY" -m humanoid_lab.sizing.report --run "$run"
     fi
     ;;
-  # Renders one battery scenario rollout to MP4 (mujoco Renderer,
+  # Renders one battery scenario (or the video-only long) rollout to MP4 (mujoco Renderer,
   # offscreen). darwin: uses the default GL backend (CGL); linux:
   # eval/video.py sets MUJOCO_GL=egl unless already exported -- see its
   # module docstring. Only exercised on darwin so far in this repo; treat
   # the linux/egl path as untested until a GPU-box run confirms it.
   # Rollouts are push-free by default (the battery's measurement
   # convention); --push restores the run's own random pushes.
-  # Passthrough args: --run runs/<name> [--scenario name] [--steps N]
+  # Passthrough args: --run runs/<name> [--scenario name|long] [--steps N]
   # [--out path.mp4] [--seed N] [--video-size WxH] [--overlay-torque]
-  # [--plot-torque] [--plot-joints] [--joint NAME] [--push].
+  # [--plot-torque] [--plot-joints] [--joint NAME] [--push]
+  # [--heading-gain G] [--compare] [--checkpoint STEP].
   eval) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.eval.video "$@" ;;
   # Writes runs/<name>/deploy/{policy.npz,policy_meta.json} from the run's
   # latest checkpoint (see docs/deploy.md). Forced
@@ -122,7 +142,7 @@ case "${1:-}" in
   # Passthrough args: --run runs/<name> [--out DIR].
   export) shift; JAX_PLATFORMS=cpu "$PY" -m humanoid_lab.export.policy "$@" ;;
   *)
-    echo "usage: run.sh {train|smoke|build|check|check-contacts|check-friction|test|test-slow|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
+    echo "usage: run.sh {train|train-warp|bench-warp|smoke|build|check|check-contacts|check-friction|test|test-slow|test-parity|test-all|sizing-collect|sizing-report|battery|report|eval|export} [args]"
     exit 1
     ;;
 esac

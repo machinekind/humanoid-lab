@@ -131,3 +131,23 @@ def draw_torques(frame, torque, caps, joint_names, joint_groups):
         fill=TEXT_RGB, font=font,
     )
     return np.asarray(im)
+
+
+def draw_label(frame, text):
+    """A new frame with `text` in a dark box at its top-left corner.
+
+    The box starts at (MARGIN, MARGIN) and fits the text plus a padding of
+    half the font size. The input frame is not modified.
+    """
+    from PIL import Image, ImageDraw
+
+    im = Image.fromarray(np.asarray(frame))
+    draw = ImageDraw.Draw(im, "RGBA")
+    px = font_px(im.size)
+    font = _font(px)
+    pad = max(1, px // 2)
+    x, y = MARGIN + pad, MARGIN + pad
+    _, _, right, bottom = draw.textbbox((x, y), text, font=font)
+    draw.rectangle([MARGIN, MARGIN, right + pad, bottom + pad], fill=PANEL_RGBA)
+    draw.text((x, y), text, fill=TEXT_RGB, font=font)
+    return np.asarray(im)

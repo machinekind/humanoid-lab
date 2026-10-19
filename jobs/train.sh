@@ -49,15 +49,15 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
 fi
 
 : "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
-TASK="${TASK:-joystick}"
-ACTUATORS="${ACTUATORS:-sizing_ideal}"
-EXPERIMENT="${EXPERIMENT:-}"
-RUN_NAME="${RUN_NAME:-}"
-NUM_ENVS="${NUM_ENVS:-32768}"
-BATCH="${BATCH:-1024}"
-SEED="${SEED:-0}"
-WANDB="${WANDB:-true}"
-RUN_ARGS="${RUN_ARGS:-}"
+: "${TASK:=joystick}"
+: "${ACTUATORS:=sizing_ideal}"
+: "${EXPERIMENT:=}"
+: "${RUN_NAME:=}"
+: "${NUM_ENVS:=32768}"
+: "${BATCH:=1024}"
+: "${SEED:=0}"
+: "${WANDB:=true}"
+: "${RUN_ARGS:=}"
 
 if [ "$WANDB" = "true" ]; then
     WANDB_FLAG="wandb.enable=true"
@@ -72,9 +72,9 @@ hydra_args=()
 [ -n "$EXPERIMENT" ] && hydra_args+=("experiment=$EXPERIMENT")
 [ -n "$RUN_NAME" ] && hydra_args+=("run_name=$RUN_NAME")
 
-# ++ = add-or-override. The root `ppo:` block is an empty dict in config.yaml
-# and in every task preset, so plain `ppo.foo=` fails hydra's struct check for
-# keys the preset did not already set.
+# ++ = add-or-override. config.yaml's root `ppo:` block holds only sym_coef,
+# so every other key still needs `++`. Plain `ppo.foo=` fails hydra's struct
+# check for keys the preset did not already set.
 overrides=(
     robot="$ROBOT" task="$TASK" actuators="$ACTUATORS"
     seed="$SEED"

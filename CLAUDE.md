@@ -6,7 +6,7 @@ network and experiment groups.
 
 ## Local commands
 
-`./run.sh` wraps `.venv/bin/python` and takes a verb:
+`./run.sh` wraps `.venv/bin/python` (`.venv/Scripts/python.exe` on Windows) and takes a verb:
 
 | verb | what it does |
 |---|---|
@@ -17,11 +17,13 @@ network and experiment groups.
 | `check-friction` | verify a `dr.foot_friction` draw is the friction the feet walk on |
 | `test` | `pytest tests/unit -q` — model-free, seconds, the edit loop |
 | `test-slow` / `test-all` | `tests/integration` (builds and steps MJX) / both, before a merge |
+| `test-parity` | `tests/parity`, Torch against JAX, skipped without torch |
+| `train-warp` / `bench-warp` | Torch+MJWarp training run / its JSON benchmark |
 | `battery` / `report` / `eval` | eval battery, report, video |
 | `sizing-collect` / `sizing-report` | actuator sizing rollout and report |
 | `export` | deploy artifacts (`policy.npz`, `policy_meta.json`) from a checkpoint |
 
-Overrides pass straight through, e.g. `./run.sh train ppo.num_timesteps=3e8 run_name=roboto_walk_v1`.
+Overrides pass straight through, e.g. `./run.sh train ++ppo.num_timesteps=3e8 run_name=roboto_walk_v1`.
 
 docs/configuration.md's `run.sh` verbs table is the authoritative one and
 lists every flag each verb takes.

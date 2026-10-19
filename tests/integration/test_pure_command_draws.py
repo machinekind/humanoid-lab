@@ -1,6 +1,6 @@
 """Pure command draws wired into the env.
 
-The five draws (wz, vy, slow, fast, back) are RNG-coupled sampling logic with
+The six draws (wz, vy, slow, fast, back, straight) are RNG-coupled sampling logic with
 no piece worth extracting, so everything is tested through the env's own
 `_sample_command` and through `step`'s resample branch. `_sample_command`
 reads its config at trace time and each draw is gated by a plain `if p:`, so
@@ -42,6 +42,7 @@ PROB_KEYS = (
     "pure_slow_prob",
     "pure_fast_prob",
     "pure_back_prob",
+    "straight_prob",
 )
 
 # One fixed bank of keys, vmapped: 128 draws is enough that a stream that
@@ -114,20 +115,25 @@ def test_no_draw_key_aliases_a_key_from_the_base_split(env, monkeypatch):
     value. The offset domain is what keeps that impossible.
 
     The indices are captured from the sampler itself rather than copied from
-    the source, so this fails if a draw is ever added on a raw index."""
-    seen = []
+    the source, so this fails if a draw is ever added on a raw index. Only
+    folds of the sampler's own rng count. How many folds a draw makes is its
+    own business, and the stream tests below check that no two draws share
+    a stream."""
+    rng = jax.random.PRNGKey(11)
+    rng_data = np.asarray(jax.random.key_data(rng))
+    seen = set()
     real_fold_in = jax.random.fold_in
 
     def spy(key, data):
-        seen.append(int(data))
+        if np.array_equal(np.asarray(jax.random.key_data(key)), rng_data):
+            seen.add(int(data))
         return real_fold_in(key, data)
 
     monkeypatch.setattr(jax.random, "fold_in", spy)
     with block_values(env._config.command, **{k: 0.5 for k in PROB_KEYS}):
-        env._sample_command(jax.random.PRNGKey(11))
+        env._sample_command(rng)
 
-    assert len(seen) == len(PROB_KEYS)  # every draw ran
-    assert len(set(seen)) == len(seen)  # and none shares an index
+    assert len(seen) >= len(PROB_KEYS)  # every draw ran
 
     probe = jax.random.PRNGKey(7)
     # A 5-way split covers the base 4-way split and the no_progress step's
@@ -221,6 +227,7 @@ def test_two_draws_fire_on_different_rows_and_keep_doing_so_together(env):
         ("pure_slow_prob", 0, "slow_vx"),
         ("pure_fast_prob", 0, "fast_vx"),
         ("pure_back_prob", 0, "back_vx"),
+        ("straight_prob", 0, "vx"),
     ],
 )
 def test_a_draw_at_probability_one_is_clean_and_in_range(env, prob_key, axis, range_key):

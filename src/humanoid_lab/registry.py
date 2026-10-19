@@ -5,6 +5,8 @@ plain dicts/lists. _apply_overrides merges the latter onto the former with
 tuple/float coercion so yaml `vx: [-0.8, 1.8]` lands on a tuple field.
 """
 
+import copy
+
 from ml_collections import config_dict
 
 from humanoid_lab.envs.joystick import Joystick
@@ -37,6 +39,15 @@ def _apply_overrides(cfg: config_dict.ConfigDict, overrides: dict) -> None:
                 setattr(cfg, key, tuple(float(v) for v in value))
             continue
         setattr(cfg, key, value)
+
+
+def env_config(task: str, env_overrides: dict | None = None) -> config_dict.ConfigDict:
+    """The task's env ConfigDict with the overrides merged. Builds no model."""
+    if task not in TASKS:
+        raise KeyError(f"unknown task '{task}', have {sorted(TASKS)}")
+    cfg = TASKS[task][1]()
+    _apply_overrides(cfg, copy.deepcopy(env_overrides or {}))
+    return cfg
 
 
 def make_env(

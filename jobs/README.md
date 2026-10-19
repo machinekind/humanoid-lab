@@ -15,8 +15,11 @@ name.
 back through `train.sh`, the second restored from the first's latest
 checkpoint. `preflight_sizing.sh` runs bounded slices at
 several env counts and reports peak GPU memory and steps/s per size, so a
-full-budget launch is sized from measurements. Each script's header documents
-its parameters, their defaults, and a worked example.
+full-budget launch is sized from measurements. `video_watch.sh` runs next to
+a running training and renders a CPU clip from each new complete checkpoint
+of its run. It follows the same contract and writes only under `runs/`. Its
+`PY` parameter is required. Each script's header documents its parameters,
+their defaults, and a worked example.
 
 ## The contract
 

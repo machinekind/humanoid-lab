@@ -11,7 +11,11 @@ robots/*/mjx/
 *.egg-info/
 MUJOCO_LOG.TXT
 train.log
+ppo.log
+bench.log
 CLAUDE.local.md
 logs/
 .DS_Store
 .jax_cache/
+.gpu-ops
+.ops-state/

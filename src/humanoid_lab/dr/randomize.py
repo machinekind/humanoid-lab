@@ -1,7 +1,10 @@
 """Domain randomization, brax randomization_fn convention.
 
 A vmapped function builds per-environment copies of the physics fields,
-then tree_replace produces a batched model plus an in_axes template.
+then tree_replace produces a batched model plus an in_axes template. The
+draw table and the field math live in dr/transform.py, shared with the Torch
+runner. This module is the JAX draw adapter: it makes each draw with the key
+scheme below, then calls transform.dr_fields inside the vmap.
 Nothing is hardcoded to one robot: the floor geom is found by searching the
 model for
 the plane type (error if none/multiple, overridable by name), the base body
@@ -38,45 +41,46 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import mujoco
+import numpy as np
+
+from humanoid_lab.dr import transform
 
 # Base of the optional fields' fold_in domain, disjoint from any split of the
 # same key (see the module docstring). Same constant, same reason, as
 # envs/joystick.py's pure command draws.
 _DRAW = 0x100
 
-# Defaults for each dr_cfg field. configs/dr/default.yaml mirrors this shape
-# exactly (tests/integration/test_randomize.py pins the two together); missing keys fall
-# back to these values.
-_DEFAULT_DR = {
-    # The always-on base set (once DR itself is enabled): floor friction,
-    # base and link mass, and the single gain/kd scalar used when
-    # joint_gains is off. Multiplicative ranges.
-    "base": {
-        "floor_friction": [0.6, 1.2],
-        "base_mass": [0.7, 1.3],
-        "link_mass": [0.9, 1.1],
-        "gain_fallback": [0.8, 1.2],
-    },
-    "com_offset": {"enable": False, "xy": 0.02, "z": 0.01},
-    "joint_gains": {"enable": False, "gain_pct": 0.2, "kd_pct": 0.2},
-    "dof": {
-        "enable": False,
-        "damping": [0.9, 1.1],
-        "armature": [0.9, 1.1],
-        "frictionloss": [0.9, 1.1],
-    },
-    "foot_friction": {"enable": False, "range": [0.8, 1.2]},
-    # Weak-skewed: the failure mode this guards is motors too weak to pull
-    # the hips back under the body, not a symmetric strength spread.
-    "motor_strength": {"enable": False, "range": [0.5, 1.1]},
-    # Additive +-kg draw on the base body, on top of base_mass's scale: a
-    # payload weighs the same on a light robot and a heavy one.
-    "base_mass_add": {"enable": False, "kg": 1.0},
-}
+# configs/dr/default.yaml mirrors transform.DEFAULT_DR exactly
+# (tests/integration/test_randomize.py pins the two together).
+_DEFAULT_DR = transform.DEFAULT_DR
+_field_cfg = transform.field_cfg
 
 
-def _field_cfg(dr_cfg, name):
-    return {**_DEFAULT_DR[name], **((dr_cfg or {}).get(name) or {})}
+def jax_dr_draws(rng, table):
+    """One world's draws for a transform.DR_DRAWS table, with the key scheme above.
+
+    Call it per world (under vmap). The range scaling stays inside
+    jax.random.uniform(minval, maxval), so the values match the original code
+    bit for bit. Each enabled fold-in field calls jax.random.fold_in once.
+    """
+    base_keys = jax.random.split(rng, 5)
+    folded = {}
+
+    def key_of(slot):
+        if slot[0] == "split":
+            return base_keys[slot[1]]
+        _, idx, pos, n = slot
+        if idx not in folded:
+            k = jax.random.fold_in(rng, _DRAW + idx)
+            folded[idx] = k if pos is None else jax.random.split(k, n)
+        return folded[idx] if pos is None else folded[idx][pos]
+
+    draws = {}
+    for name, (shape, lo, hi, slot) in table.items():
+        lo = jnp.array(lo) if isinstance(lo, list) else lo
+        hi = jnp.array(hi) if isinstance(hi, list) else hi
+        draws[name] = jax.random.uniform(key_of(slot), shape, minval=lo, maxval=hi)
+    return draws
 
 
 def _find_floor_geom_id(mj_model: mujoco.MjModel, floor_geom_name: str | None) -> int:
@@ -106,17 +110,23 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
     fields `enable: False`) reproduces the original 5-field DR (floor
     friction, base/link mass, single gain/kd scale) bitwise.
     """
-    base_cfg = _field_cfg(dr_cfg, "base")
-    com_cfg = _field_cfg(dr_cfg, "com_offset")
-    joint_cfg = _field_cfg(dr_cfg, "joint_gains")
-    dof_cfg = _field_cfg(dr_cfg, "dof")
-    foot_cfg = _field_cfg(dr_cfg, "foot_friction")
-    motor_cfg = _field_cfg(dr_cfg, "motor_strength")
-    mass_add_cfg = _field_cfg(dr_cfg, "base_mass_add")
+    cfg = transform.resolved_cfg(dr_cfg)
+    foot_cfg = cfg["foot_friction"]
 
     floor_id = _find_floor_geom_id(mj_model, floor_geom_name)
     root_id = _find_base_body_id(mj_model)
     foot_ids = jnp.array([mj_model.geom(name).id for name in robot_spec.foot_geoms])
+    dims = dict(nbody=mj_model.nbody, nu=mj_model.nu, nv=mj_model.nv, nfoot=len(robot_spec.foot_geoms))
+    table = transform.DR_DRAWS(cfg, dims)
+    masks = {
+        k: jnp.asarray(v)
+        for k, v in transform.dr_masks(
+            mj_model.ngeom, mj_model.nbody, floor_id, root_id, np.asarray(foot_ids)
+        ).items()
+    }
+    drawn = (["body_ipos"] if "com_offset" in table else []) + (
+        ["dof_damping", "dof_armature", "dof_frictionloss"] if "dof_damping" in table else []
+    )
 
     def domain_randomize(model, rng):
         if foot_cfg["enable"]:
@@ -141,91 +151,21 @@ def make_domain_randomize(mj_model, robot_spec, dr_cfg=None, floor_geom_name=Non
             priority[foot_ids] = 1
             model = model.tree_replace({"geom_priority": priority})
 
+        base = {
+            f: getattr(model, f)
+            for f in (
+                "geom_friction",
+                "body_mass",
+                "actuator_gainprm",
+                "actuator_biasprm",
+                "actuator_forcerange",
+                *drawn,
+            )
+        }
+
         @jax.vmap
         def rand(rng):
-            r1, r2, r3, r4, r5 = jax.random.split(rng, 5)
-            fr_lo, fr_hi = base_cfg["floor_friction"]
-            friction = jax.random.uniform(r1, minval=fr_lo, maxval=fr_hi)
-            geom_friction = model.geom_friction.at[floor_id, 0].set(friction)
-
-            bm_lo, bm_hi = base_cfg["base_mass"]
-            lm_lo, lm_hi = base_cfg["link_mass"]
-            base_scale = jax.random.uniform(r2, minval=bm_lo, maxval=bm_hi)
-            link_scale = jax.random.uniform(r3, (model.nbody,), minval=lm_lo, maxval=lm_hi)
-            body_mass = model.body_mass * link_scale
-            body_mass = body_mass.at[root_id].set(model.body_mass[root_id] * base_scale)
-            if mass_add_cfg["enable"]:
-                ra = jax.random.fold_in(rng, _DRAW + 6)
-                kg = mass_add_cfg["kg"]
-                body_mass = body_mass.at[root_id].add(
-                    jax.random.uniform(ra, minval=-kg, maxval=kg)
-                )
-
-            if joint_cfg["enable"]:
-                rg, rk = jax.random.split(jax.random.fold_in(rng, _DRAW + 1), 2)
-                pct = joint_cfg["gain_pct"]
-                kpct = joint_cfg["kd_pct"]
-                gain_scale = jax.random.uniform(rg, (model.nu,), minval=1 - pct, maxval=1 + pct)
-                kd_scale = jax.random.uniform(rk, (model.nu,), minval=1 - kpct, maxval=1 + kpct)
-            else:
-                # One scalar from r4/r5 broadcast to all joints, matching the
-                # original single-scale code.
-                gf_lo, gf_hi = base_cfg["gain_fallback"]
-                gain_scale = jnp.full((model.nu,), jax.random.uniform(r4, minval=gf_lo, maxval=gf_hi))
-                kd_scale = jnp.full((model.nu,), jax.random.uniform(r5, minval=gf_lo, maxval=gf_hi))
-
-            gainprm = model.actuator_gainprm.at[:, 0].multiply(gain_scale)
-            biasprm = model.actuator_biasprm.at[:, 1].multiply(gain_scale)
-            biasprm = biasprm.at[:, 2].multiply(kd_scale)
-
-            if motor_cfg["enable"]:
-                rm = jax.random.fold_in(rng, _DRAW + 5)
-                mlo, mhi = motor_cfg["range"]
-                motor_scale = jax.random.uniform(rm, (model.nu,), minval=mlo, maxval=mhi)
-            else:
-                # Coupled to the gain draw, matching the original code: a
-                # weak-motor world also reads as a soft one.
-                motor_scale = gain_scale
-            forcerange = model.actuator_forcerange * motor_scale[:, None]
-
-            out = {
-                "geom_friction": geom_friction,
-                "body_mass": body_mass,
-                "actuator_gainprm": gainprm,
-                "actuator_biasprm": biasprm,
-                "actuator_forcerange": forcerange,
-            }
-
-            if com_cfg["enable"]:
-                rc = jax.random.fold_in(rng, _DRAW + 2)
-                xy, z = com_cfg["xy"], com_cfg["z"]
-                offset = jax.random.uniform(
-                    rc, (3,), minval=jnp.array([-xy, -xy, -z]), maxval=jnp.array([xy, xy, z])
-                )
-                out["body_ipos"] = model.body_ipos.at[root_id].add(offset)
-
-            if dof_cfg["enable"]:
-                rd1, rd2, rd3 = jax.random.split(jax.random.fold_in(rng, _DRAW + 3), 3)
-                dlo, dhi = dof_cfg["damping"]
-                alo, ahi = dof_cfg["armature"]
-                flo, fhi = dof_cfg["frictionloss"]
-                out["dof_damping"] = model.dof_damping * jax.random.uniform(
-                    rd1, (model.nv,), minval=dlo, maxval=dhi
-                )
-                out["dof_armature"] = model.dof_armature * jax.random.uniform(
-                    rd2, (model.nv,), minval=alo, maxval=ahi
-                )
-                out["dof_frictionloss"] = model.dof_frictionloss * jax.random.uniform(
-                    rd3, (model.nv,), minval=flo, maxval=fhi
-                )
-
-            if foot_cfg["enable"]:
-                rf = jax.random.fold_in(rng, _DRAW + 4)
-                flo2, fhi2 = foot_cfg["range"]
-                foot_scale = jax.random.uniform(rf, (foot_ids.shape[0],), minval=flo2, maxval=fhi2)
-                out["geom_friction"] = out["geom_friction"].at[foot_ids, 0].multiply(foot_scale)
-
-            return out
+            return transform.dr_fields(base, masks, jax_dr_draws(rng, table))
 
         out = rand(rng)
 

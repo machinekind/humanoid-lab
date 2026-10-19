@@ -33,7 +33,9 @@ Three properties of the classification, each forced by this env:
   form of ctrl_dt, the command and `gait.freq`, so it ships in `gait_clock`
   and the runtime advances it (export/runtime.py). A speed-blended
   walk/trot clock would not be reproducible on the robot and would have to
-  be refused.
+  be refused. `gait_clock.phase_obs` ships the phase observation of a
+  frozen clock (gait.frozen_phase_obs). A contract with "cos_sin" is
+  schema 1, the legacy schema. A contract with "zeros" is schema 2.
 - `real_pose_ref` is training-only. It leaves both the ctrl anchor and the
   obs anchor where they were, and this env has no height command, so no
   contract field moves with it.
@@ -48,7 +50,12 @@ import numpy as np
 from humanoid_lab.envs import progress
 from humanoid_lab.robot.presets import effective_gains
 
-SCHEMA_VERSION = 1
+# The newest schema this module writes, and the legacy one. Schema 1 is the
+# legacy cos/sin phase observation with no heading block. A contract that
+# fits it is still written as schema 1, so stock exports load on robots that
+# run an old vendored runtime. Every other contract is schema 2.
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 
 # Observations a robot can actually produce. `gyro`/`gravity` come from the
 # IMU, `joint_pos`/`joint_vel` from the encoders, `command` from the
@@ -83,6 +90,13 @@ CONSUMED_KEYS = frozenset(
         # Frequency band of the gait clock the actor observes as `phase`.
         # Ships in `gait_clock`; the runtime integrates the same clock.
         "gait.freq",
+        # Speed at or below which a command is a stand command. It sets where
+        # the actor-observed gait clock freezes. Ships resolved in
+        # `gait_clock.speed_deadband`.
+        "command.deadband",
+        # Picks the phase observation of a frozen clock (gait.freq (0, 0)).
+        # Ships as gait_clock.phase_obs.
+        "gait.frozen_phase_obs",
     }
 )
 
@@ -130,7 +144,9 @@ TRAINING_ONLY_KEYS = frozenset(
         # stays inside command_low/command_high (check_config_covered
         # enforces that below), so what the policy trained under is the box
         # the contract already ships, and none of these keys is readable
-        # from the control loop.
+        # from the control loop. straight_prob zeroes axes like pure_wz and
+        # pure_vy, so it stays inside the shipped box when 0 lies in the vy
+        # and wz ranges.
         "command.resample_steps",
         "command.zero_prob",
         "command.pure_wz_prob",
@@ -141,6 +157,12 @@ TRAINING_ONLY_KEYS = frozenset(
         "command.fast_vx",
         "command.pure_back_prob",
         "command.back_vx",
+        "command.straight_prob",
+        # The command ramp is a training curriculum. The runtime feeds the
+        # operator command directly and does not ramp it, so the robot side
+        # should rate-limit operator commands (docs/deploy.md).
+        "command.ramp.lin",
+        "command.ramp.yaw",
         # CaT-style early termination for an env that ignores its command: a
         # PPO training signal (future value zero), no reward term, nothing in
         # the control loop. The robot has no episode to cut.
@@ -167,6 +189,11 @@ TRAINING_ONLY_KEYS = frozenset(
         "gait.swing_height",
         "gait.duty",
         "gait.air_time_cap",
+        # Speed-scaled lift. Both keys scale reward targets only. The phase
+        # observation reads neither. The reward. prefix rule does not cover
+        # gait.*, so they are listed here.
+        "gait.lift.v_full",
+        "gait.lift.min_frac",
     }
 )
 
@@ -271,9 +298,14 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
     # constant: the runtime applies the same wrap, so these are the numbers
     # its cos/sin sees.
     offsets = np.asarray(env._leg_phases({"phase": jp.array(0.0)}), np.float64)
+    # Schema 1 is the legacy cos/sin phase with no heading block, so a stock
+    # export still loads on a robot that runs an old vendored runtime. Any
+    # other contract is schema 2, which an old runtime refuses.
+    phase_obs = "zeros" if env._consts.frozen_phase_zeros else "cos_sin"
+    schema_version = LEGACY_SCHEMA_VERSION if phase_obs == "cos_sin" else SCHEMA_VERSION
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         # -- provenance -----------------------------------------------------
         "run_name": run.get("run_name", ""),
         "task": task,
@@ -331,10 +363,15 @@ def build_contract(env, run: dict, checkpoint: str = "") -> dict:
             "freq_low": float(gait.freq[0]),
             "freq_high": float(gait.freq[1]),
             # |v_xy| + turn_weight * |wz|, normalized by cmd_speed_max, is
-            # the speed fraction the frequency lerps over. Shipped from the
-            # env's own constants (envs/progress.py), never re-typed here.
+            # the speed fraction the frequency lerps over. turn_weight ships
+            # from envs/progress.py. speed_deadband ships the env's resolved
+            # command.deadband. Neither is re-typed here.
             "turn_weight": progress.YAW_SPEED_WEIGHT,
-            "speed_deadband": progress.SPEED_DEADBAND,
+            "speed_deadband": float(env._deadband),
             "cmd_speed_max": float(env._cmd_vmax),
+            # "cos_sin" or "zeros". "zeros" means the clock is frozen and the
+            # phase observation is zeros(2F). The runtime reads this field and
+            # never infers it from freq.
+            "phase_obs": phase_obs,
         },
     }

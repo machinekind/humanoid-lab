@@ -19,7 +19,7 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from humanoid_lab import paths
-from humanoid_lab.train import _apply_ppo_overrides, build_ppo_params
+from humanoid_lab.ppo_config import REPO_PPO_KEYS, compose_ppo_params
 
 EXPERIMENT = "novel_adaptive_kl"
 SCHEDULE_KEYS = {
@@ -50,13 +50,7 @@ def _compose(experiment=EXPERIMENT):
 
 def _ppo_params(cfg):
     """The ppo params exactly as train.main assembles them."""
-    p = build_ppo_params({}, smoke=False)
-    _apply_ppo_overrides(
-        p.network_factory, OmegaConf.to_container(cfg.network, resolve=True) or {}
-    )
-    _apply_ppo_overrides(p, OmegaConf.to_container(cfg.task.ppo, resolve=True) or {})
-    _apply_ppo_overrides(p, OmegaConf.to_container(cfg.ppo, resolve=True) or {})
-    return p
+    return compose_ppo_params(cfg)
 
 
 def test_novel_adaptive_kl_composes_the_schedule_block():
@@ -105,7 +99,7 @@ def test_every_forwarded_ppo_key_is_a_brax_train_parameter():
     """A misspelled key would reach ppo.train as an unexpected kwarg and fail
     only after the env is built on the training host."""
     params = inspect.signature(ppo.train).parameters
-    forwarded = set(dict(_ppo_params(_compose()))) | MAIN_KWARGS
+    forwarded = (set(dict(_ppo_params(_compose()))) - REPO_PPO_KEYS) | MAIN_KWARGS
     assert forwarded - set(params) == set()
     assert params["bootstrap_on_timeout"].default is False
 

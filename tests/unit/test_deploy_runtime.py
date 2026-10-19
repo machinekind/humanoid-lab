@@ -172,6 +172,18 @@ def test_the_clock_is_frozen_below_the_command_deadband():
     assert policy.phase == 0.0
 
 
+def test_the_clock_freezes_at_a_wider_deadband_and_runs_above_it():
+    meta = toy_meta()
+    meta["gait_clock"]["speed_deadband"] = 0.15
+    policy = runtime.DeployPolicy(toy_weights(), meta)
+    policy.reset()
+    for _ in range(5):
+        policy.step(**sensors(command=np.array([0.1, 0.0, 0.0])))
+    assert policy.phase == 0.0
+    policy.step(**sensors(command=np.array([0.2, 0.0, 0.0])))
+    assert policy.phase > 0.0
+
+
 def test_the_clock_advances_at_the_speed_scaled_frequency():
     policy = toy_policy()
     policy.reset()
@@ -217,3 +229,66 @@ def test_a_meta_from_a_newer_schema_is_refused(tmp_path):
     (tmp_path / "policy_meta.json").write_text(json.dumps(toy_meta(schema_version=99)))
     with pytest.raises(ValueError, match="schema"):
         runtime.DeployPolicy.load(tmp_path)
+
+
+def frozen_meta(schema_version: int, phase_obs=None) -> dict:
+    """toy_meta with a frozen clock (freq 0, 0), and phase_obs when given."""
+    meta = toy_meta(schema_version=schema_version)
+    meta["gait_clock"]["freq_low"] = 0.0
+    meta["gait_clock"]["freq_high"] = 0.0
+    if phase_obs is not None:
+        meta["gait_clock"]["phase_obs"] = phase_obs
+    return meta
+
+
+def test_a_schema_1_frozen_clock_still_observes_cos_sin():
+    """The mode is never inferred from freq: schema 1 is always cos/sin."""
+    policy = runtime.DeployPolicy(toy_weights(), frozen_meta(1))
+    obs = policy.observe(**sensors(command=np.array([0.5, 0.0, 0.0])))
+    assert np.allclose(obs[10:], [1.0, -1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_schema_2_zeros_observes_zeros():
+    policy = runtime.DeployPolicy(toy_weights(), frozen_meta(2, "zeros"))
+    for _ in range(3):
+        obs = policy.observe(**sensors(command=np.array([0.5, 0.0, 0.0])))
+        assert obs.dtype == np.float32
+        assert np.array_equal(obs[10:], np.zeros(4, np.float32))
+        policy.act(**sensors(command=np.array([0.5, 0.0, 0.0])))
+
+
+def test_schema_2_cos_sin_observes_cos_sin():
+    meta = toy_meta(schema_version=2)
+    meta["gait_clock"]["phase_obs"] = "cos_sin"
+    policy = runtime.DeployPolicy(toy_weights(), meta)
+    policy.reset()
+    policy.act(**sensors(command=np.array([0.8, 0.0, 0.0])))
+    # vx 0.8 is the clock's cmd_speed_max, so it runs at freq_high, 2 Hz.
+    # The right leg's offset is -pi, so its cos and sin are the left leg's negated.
+    phi = 2 * np.pi * 0.02 * 2.0
+    obs = policy.observe(**sensors())
+    assert np.allclose(
+        obs[10:], [np.cos(phi), -np.cos(phi), np.sin(phi), -np.sin(phi)], atol=1e-6
+    )
+
+
+def test_a_schema_2_meta_without_phase_obs_is_refused():
+    with pytest.raises(ValueError, match="gait_clock.phase_obs"):
+        runtime.DeployPolicy(toy_weights(), toy_meta(schema_version=2))
+
+
+def test_a_schema_1_meta_carrying_zeros_is_refused():
+    with pytest.raises(ValueError, match="schema 1.*inconsistent"):
+        runtime.DeployPolicy(toy_weights(), frozen_meta(1, "zeros"))
+
+
+def test_an_unknown_phase_obs_is_refused():
+    with pytest.raises(ValueError, match="offsets"):
+        runtime.DeployPolicy(toy_weights(), frozen_meta(2, "offsets"))
+
+
+def test_a_heading_err_layout_is_refused():
+    """heading_err stays refused at export (owner decision 1, option b)."""
+    layout = toy_meta()["obs_layout"] + [{"name": "heading_err", "size": 1}]
+    with pytest.raises(ValueError, match="heading_err"):
+        runtime.DeployPolicy(toy_weights(obs_size=15), toy_meta(obs_layout=layout, obs_size=15))

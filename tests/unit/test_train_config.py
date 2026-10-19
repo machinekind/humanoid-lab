@@ -1,4 +1,4 @@
-from humanoid_lab.train import build_ppo_params
+from humanoid_lab.ppo_config import build_ppo_params
 
 
 def test_defaults_come_from_go1_tuning():

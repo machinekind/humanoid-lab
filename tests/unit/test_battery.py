@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,13 +16,13 @@ import pytest
 from humanoid_lab.eval import battery
 from humanoid_lab.eval.battery import (
     _measurement_env_overrides,
-    peak_over,
-    settle_steps,
     antiphase_score,
     battery_scenarios,
     foot_slip,
     mech_power_mean,
+    peak_over,
     scenario_result,
+    settle_steps,
     torque_saturation_fraction,
     tracking_error,
     vibration_index,
@@ -304,25 +305,81 @@ def test_yaw_progress_is_none_when_nothing_outlived_the_settle_window():
 # -- scenario_result's spin fields -------------------------------------------
 
 
+# The sizes behind RECORD_FIELDS' shape symbols in the synthetic record.
+_DIMS = {"F": 2, "nu": 4, "n_act": 4}
+
+
 def _rec(n: int, wz: float = 0.0, cmd_wz: float = 0.0) -> dict:
-    """A synthetic rollout record of `n` steps, shaped like rollout()'s."""
-    cmd = np.zeros((n, 3))
-    cmd[:, 2] = cmd_wz
-    return {
-        "cmd": cmd,
-        "vx": np.zeros(n),
-        "vy": np.zeros(n),
-        "wz": np.full(n, wz),
-        "height": np.full(n, 0.7),
-        "qvel": np.zeros((n, 4)),
-        "contact": np.ones((n, 2), dtype=bool),
-        "foot_speed": np.zeros((n, 2)),
-        "foot_clear": np.zeros((n, 2)),
-        "foot_vz": np.zeros((n, 2)),
-        "tau": np.zeros((n, 4)),
-        "ctrl": np.zeros((n, 4)),
-        "qpos": np.zeros((n, 4)),
+    """A synthetic rollout record of `n` steps, built from RECORD_FIELDS.
+
+    Every required field starts at zero. Both feet are in contact, the base
+    stands at 0.7 m with the identity orientation, and the yaw rate and its
+    command are set from the arguments."""
+    rec = {
+        key: np.zeros((n, *battery.field_shape(f, _DIMS)), dtype=f.dtype)
+        for key, f in battery.RECORD_FIELDS.items()
+        if not f.optional
     }
+    rec["contact"][:] = True
+    rec["height"][:] = 0.7
+    rec["base_pos"][:, 2] = 0.7
+    rec["base_quat"][:, 0] = 1.0
+    rec["wz"][:] = wz
+    rec["cmd"][:, 2] = cmd_wz
+    return rec
+
+
+def test_check_record_names_a_missing_field():
+    rec = _rec(12)
+    del rec["foot_pos"]
+
+    with pytest.raises(ValueError, match="foot_pos: missing"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_names_an_unknown_field():
+    rec = _rec(12)
+    rec["mystery"] = np.zeros(12)
+
+    with pytest.raises(ValueError, match="mystery: not in RECORD_FIELDS"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_catches_a_wrong_shape():
+    rec = _rec(12)
+    rec["foot_pos"] = np.zeros((12, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="foot_pos: shape"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_catches_a_wrong_dtype():
+    rec = _rec(12)
+    rec["contact"] = rec["contact"].astype(np.float32)
+
+    with pytest.raises(ValueError, match="contact: dtype"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_check_record_accepts_a_record_without_knee_q_and_checks_one_that_has_it():
+    rec = _rec(12)
+    battery.check_record(rec, _DIMS)
+
+    rec["knee_q"] = np.zeros((12, 2), dtype=np.float32)
+    battery.check_record(rec, _DIMS)
+
+    rec["knee_q"] = np.zeros((12, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="knee_q: shape"):
+        battery.check_record(rec, _DIMS)
+
+
+def test_scenario_result_refuses_a_record_missing_a_field():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    del rec["base_quat"]
+
+    with pytest.raises(ValueError, match="base_quat"):
+        scenario_result("stand", rec, None, _DT, np.zeros(4), n)
 
 
 def test_scenario_result_reports_yaw_progress_per_direction():
@@ -417,6 +474,39 @@ def test_a_scenario_that_never_lifted_a_foot_reports_zero_swings():
 
     assert r["swings"] == 0
     assert r["touchdown_softness_med"] is None
+
+
+def test_scenario_result_carries_the_gait_shape_metrics():
+    n = SETTLE_STEPS + 100
+    r = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert r["speed_frac"] is None
+    assert r["heading_drift_deg"] == 0.0
+    assert r["support_frac_2"] == 1.0
+    assert r["roll_std_deg"] == 0.0
+
+
+def test_scenario_result_scores_gait_shape_up_to_the_fall():
+    n = SETTLE_STEPS + 100
+    rec = _rec(n)
+    rec["contact"][-1] = False  # the fallen row the record keeps
+
+    r = scenario_result("stand", rec, n - 1, _DT, np.zeros(4), n)
+
+    assert r["support_frac_0"] == 0.0
+
+
+def test_scenario_result_names_per_foot_keys_from_meta():
+    n = SETTLE_STEPS + 100
+    meta = {"dt": _DT, "foot_sides": ("left", "right")}
+
+    named = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n, meta=meta)
+    plain = scenario_result("stand", _rec(n), None, _DT, np.zeros(4), n)
+
+    assert "landing_x_m_left" in named
+    assert "knee_td_rad_right" in named
+    assert "landing_x_m_foot0" not in named
+    assert "landing_x_m_foot0" in plain
 
 
 # -- tracking_error ----------------------------------------------------------
@@ -576,6 +666,26 @@ def test_mirroring_is_off_even_when_the_run_never_mentioned_it():
     assert overrides["symmetry"]["enable"] is False
 
 
+def test_a_run_trained_with_the_command_ramp_measures_with_it_off():
+    """rollout() writes the scripted command into info["command"]. A ramp
+    would slew it toward the random target drawn at reset. The run's other
+    command keys stay."""
+    overrides = _measurement_env_overrides(
+        _run({"command": {"ramp": {"lin": 0.5, "yaw": 1.0}, "zero_prob": 0.3, "vx": [-0.5, 1.0]}})
+    )
+
+    assert overrides["command"]["ramp"] == {"lin": 0.0, "yaw": 0.0}
+    assert overrides["command"]["zero_prob"] == 0.3
+    assert overrides["command"]["vx"] == [-0.5, 1.0]
+    assert overrides["command"]["resample_steps"] == 10_000_000
+
+
+def test_the_ramp_is_off_even_when_the_run_never_mentioned_it():
+    overrides = _measurement_env_overrides(_run({}))
+
+    assert overrides["command"]["ramp"] == {"lin": 0.0, "yaw": 0.0}
+
+
 # -- the CLI -----------------------------------------------------------------
 #
 # main() with run_battery stubbed out: the argparse wiring and the write
@@ -630,6 +740,102 @@ def test_without_out_the_battery_writes_the_canonical_file(
     _main(["--run", str(run_dir)], monkeypatch)
 
     assert (run_dir / "battery.json").exists()
+
+
+def test_the_checkpoint_flag_reaches_run_battery(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir), "--checkpoint", "200"], monkeypatch)
+
+    assert stub_battery["step"] == 200
+
+
+def test_without_the_flag_the_latest_is_measured(tmp_path, monkeypatch, stub_battery):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _main(["--run", str(run_dir)], monkeypatch)
+
+    assert stub_battery["step"] is None
+
+
+# -- checkpoint selection ----------------------------------------------------
+#
+# Step dirs are zero-padded. A non-numeric dir (an orbax temp dir) is never
+# a candidate.
+
+
+def _ckpt_run(tmp_path) -> dict:
+    ckpts = tmp_path / "checkpoints"
+    for name in ("000000000100", "000000000200", "tmp"):
+        (ckpts / name).mkdir(parents=True)
+    return {"checkpoint_dir": str(ckpts)}
+
+
+def test_find_checkpoint_takes_the_latest_by_default(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    assert battery._find_checkpoint(run, tmp_path) == tmp_path / "checkpoints" / "000000000200"
+
+
+def test_find_checkpoint_selects_the_requested_step(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    assert battery._find_checkpoint(run, tmp_path, step=100) == tmp_path / "checkpoints" / "000000000100"
+
+
+def test_a_missing_step_lists_the_available_ones(tmp_path):
+    run = _ckpt_run(tmp_path)
+
+    with pytest.raises(FileNotFoundError) as exc:
+        battery._find_checkpoint(run, tmp_path, step=150)
+
+    msg = str(exc.value)
+    assert "150" in msg
+    assert "[100, 200]" in msg
+
+
+def test_the_checkpoint_flag_loads_and_records_that_step(tmp_path, monkeypatch):
+    """main() runs the real checkpoint loader and checkpoint lookup. Only the
+    run.json read, the env build and the policy restore are stubbed, and the
+    scenario table is empty, so nothing is built or rolled out."""
+    run = {
+        **_ckpt_run(tmp_path),
+        "run_name": "stub",
+        "task": "joystick",
+        "ppo_config": {},
+        "hydra_config": {
+            "robot": {"dir": "robots/stub"},
+            "actuators": {"name": "stub"},
+            "task": {"env": {}},
+        },
+    }
+    env = SimpleNamespace(
+        reset=lambda rng: None,
+        step=lambda state, act: None,
+        mj_model=SimpleNamespace(actuator_forcerange=np.zeros((2, 2))),
+        dt=_DT,
+        _config=SimpleNamespace(command=_CMD),
+    )
+    restored = []
+
+    def fake_restore(ckpt, env, ppo_params, deterministic=True):
+        restored.append(ckpt)
+        return lambda obs, rng: (obs, None)
+
+    monkeypatch.setattr("humanoid_lab.run_record.load_run", lambda run_dir: run)
+    monkeypatch.setattr("humanoid_lab.registry.make_env", lambda *args: env)
+    monkeypatch.setattr("humanoid_lab.policy_io.load_policy", fake_restore)
+    monkeypatch.setattr(battery, "battery_scenarios", lambda dt, command: {})
+    monkeypatch.setattr(battery.sim_budget, "budget_report_for_env", lambda env, a, b: {})
+
+    # 100 is the older of the two checkpoints, so the default would pick 200.
+    _main(["--run", str(tmp_path), "--checkpoint", "100"], monkeypatch)
+
+    assert restored == [tmp_path / "checkpoints" / "000000000100"]
+    written = json.loads((tmp_path / "battery.json").read_text())
+    assert int(written["checkpoint"]) == 100
 
 
 # -- contact budget peaks ----------------------------------------------------

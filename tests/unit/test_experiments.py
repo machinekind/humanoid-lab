@@ -10,6 +10,8 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from humanoid_lab import paths
+from humanoid_lab.envs import joystick
+from humanoid_lab.ppo_config import brax_train_kwargs, compose_ppo_params
 from humanoid_lab.registry import TASKS, _apply_overrides
 from humanoid_lab.robot.presets import load_actuator_preset, resolve
 from humanoid_lab.robot.spec import load_robot_spec
@@ -246,3 +248,29 @@ def test_the_mirror_presets_reach_the_env_config(experiment):
     _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
     assert env_cfg.symmetry.enable is True
     assert env_cfg.symmetry.mirror_prob == 0.5
+
+
+V40_LANDING_TERMS = ("step_length", "foot_reach", "knee_extend")
+
+
+def test_roboto_gait_v40_passes_the_construction_checks():
+    cfg = _compose(["experiment=roboto_gait_v40"])
+    _, default_config = TASKS[cfg.task.name]
+    env_cfg = default_config()
+    _apply_overrides(env_cfg, OmegaConf.to_container(cfg.task.env, resolve=True))
+    # The preset turns the landing and lean terms on, so the checks below have work to do.
+    for term in (*V40_LANDING_TERMS, "forward_lean"):
+        assert env_cfg.reward.scales[term] != 0.0, term
+
+    n_feet = len(load_robot_spec(paths.REPO_ROOT / cfg.robot.dir).foot_sites)
+    joystick.check_kept_terms(env_cfg.reward, env_cfg.gait, n_feet)
+    joystick.check_pure_draw_ranges(env_cfg.command)
+    joystick.check_command_ramp(env_cfg.command)
+    joystick.check_gait_symmetry_cap(env_cfg.reward)
+    joystick.check_frozen_phase_obs(env_cfg.gait)
+
+    # The mirror-symmetry loss is on, and brax's ppo.train never sees the key.
+    assert cfg.ppo.sym_coef > 0
+    training_params, _, repo = brax_train_kwargs(compose_ppo_params(cfg))
+    assert "sym_coef" not in training_params
+    assert repo["sym_coef"] == cfg.ppo.sym_coef
