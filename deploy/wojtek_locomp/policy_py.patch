@@ -1,0 +1,28 @@
+--- a/wojtek_policy/policy.py
++++ b/wojtek_policy/policy.py
+@@ class WojtekPolicy:
+     def __init__(self, npz_path, meta_path=None, clamp_knee=False, robot=None):
+         ...
+         self.action_filter = float(m["action_filter"])
++        # optional (schema 2 extension): hidden activation and output squashing.
++        # Default = the historical behaviour (SiLU hidden layers, tanh output).
++        self.activation = str(m.get("activation", "silu")).lower()
++        if self.activation not in ("silu", "elu"):
++            raise ValueError(f"unsupported activation {self.activation!r}")
++        self.output_tanh = bool(m.get("output_tanh", True))
+         self.ctrl_dt = float(m["ctrl_dt"])
+
+     def _mlp(self, obs):
+         x = (obs - self._norm_mean) / self._norm_std
+         for kernel, bias in self._layers[:-1]:
+             x = x @ kernel + bias
+-            x = x * np.exp(-np.logaddexp(0.0, -x))  # SiLU
++            if self.activation == "elu":
++                x = np.where(x > 0, x, np.expm1(np.minimum(x, 0.0)))  # ELU
++            else:
++                x = x * np.exp(-np.logaddexp(0.0, -x))  # SiLU
+         kernel, bias = self._layers[-1]
+         x = x @ kernel + bias
+-        return np.tanh(x[: self._action_dim])
++        x = x[: self._action_dim]
++        return np.tanh(x) if self.output_tanh else x
