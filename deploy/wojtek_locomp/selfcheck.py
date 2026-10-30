@@ -16,13 +16,14 @@ rng = np.random.default_rng(123)
 STEPS = 6
 seq = []
 for k in range(STEPS):
+    big = 40.0 if k == 3 else 1.0  # one step with a joint_vel spike: exercises obs_clip
     seq.append(dict(gyro=(0.3 * rng.normal(size=3)).tolist(), gravity=[0.05 * k, -0.03, -0.998],
-                    joint_pos=(home + 0.1 * rng.normal(size=12)).tolist(), joint_vel=(1.0 * rng.normal(size=12)).tolist(),
+                    joint_pos=(home + 0.1 * rng.normal(size=12)).tolist(), joint_vel=(big * rng.normal(size=12)).tolist(),
                     command=[0.4, 0.0, 0.2]))
 
 if "--make" in sys.argv:
     def mlp(o):
-        x = (o - npz["norm_mean"]) / npz["norm_std"]
+        x = np.clip((o - npz["norm_mean"]) / npz["norm_std"], -meta.get("obs_clip", 1e9), meta.get("obs_clip", 1e9))
         i = 0
         while f"hidden_{i}_kernel" in npz:
             x = x @ npz[f"hidden_{i}_kernel"] + npz[f"hidden_{i}_bias"]

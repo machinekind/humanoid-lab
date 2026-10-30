@@ -52,7 +52,7 @@ meta = dict(schema_version=2, run_name=name, checkpoint=src, task="locomp_dots",
             target_low=[float(x) for x in b["lo"]], target_high=[float(x) for x in b["hi"]],
             command_low=[cfg["vx"][0], cfg["vy"][0], cfg["wz"][0]], command_high=[cfg["vx"][1], cfg["vy"][1], cfg["wz"][1]],
             command_fill=[], action_filter=0.0, ctrl_dt=cfg["ctrl_dt"], knee_singularity=None,
-            activation="elu", output_tanh=False,
+            activation="elu", output_tanh=False, obs_clip=10.0,
             pd=dict(kp=60.0 * kpf, kp_per_actuator=[k * kpf for k in [80.0, 60.0, 60.0] * 4], kd=2.0 * float(np.sqrt(kpf)), max_torque=9.8),
             tau_ff=dict(enable=False, scale=0.0),
             notes="trained on the calibrated twin (gains x2.09 in sim == robot gains); kp factor %.2f" % kpf)
@@ -64,7 +64,7 @@ json.dump(meta, open(os.path.join(out, "policy_meta.json"), "w"), indent=1)
 
 # ---- self-check: runtime formula (patched policy.py) == training numpy policy on random obs
 def runtime(o):
-    x = (o - npz["norm_mean"]) / npz["norm_std"]
+    x = np.clip((o - npz["norm_mean"]) / npz["norm_std"], -10, 10)
     i = 0
     while f"hidden_{i}_kernel" in npz:
         x = x @ npz[f"hidden_{i}_kernel"] + npz[f"hidden_{i}_bias"]

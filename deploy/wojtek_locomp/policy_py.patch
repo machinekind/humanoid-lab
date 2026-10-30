@@ -26,3 +26,13 @@
 -        return np.tanh(x[: self._action_dim])
 +        x = x[: self._action_dim]
 +        return np.tanh(x) if self.output_tanh else x
+
+--- optional obs clipping (second hunk set) ---
+         self.output_tanh = bool(m.get("output_tanh", True))
++        oc = m.get("obs_clip")
++        self.obs_clip = None if oc is None else float(oc)
+
+     def _mlp(self, obs):
+         x = (obs - self._norm_mean) / self._norm_std
++        if self.obs_clip is not None:
++            x = np.clip(x, -self.obs_clip, self.obs_clip)
