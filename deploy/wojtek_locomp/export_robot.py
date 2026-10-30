@@ -15,12 +15,14 @@ kpf = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 b = pickle.load(open(src, "rb"))
 cfg = b["cfg"]
 NA = 12
-assert not cfg["var_kp"] and cfg["deploy_obs"], "export needs var_kp False and deploy_obs True"
 layers = b["actor"]
 obs_dim = layers[0]["W"].shape[0]
-base = 3 + 3 + 3 + 2 * NA + NA
+NACT = 2 * NA if cfg["var_kp"] else NA
+base = 3 + 3 + 3 + 2 * NA + NACT
 nextra = obs_dim - base
-assert layers[-1]["W"].shape[1] == NA, layers[-1]["W"].shape
+assert layers[-1]["W"].shape[1] == NACT, layers[-1]["W"].shape
+# with the carrot on the robot (odometry) the 3 carrot entries stay a live obs component; otherwise they are zero constants
+carrot_live = bool(cfg["dots"]) and not cfg.get("deploy_obs", False)
 
 mean, std = b["mean"].astype(np.float64), np.sqrt(b["var"].astype(np.float64) + 1e-8)
 W0, b0 = layers[0]["W"].astype(np.float64), layers[0]["b"].astype(np.float64)
@@ -28,14 +30,18 @@ W0, b0 = layers[0]["W"].astype(np.float64), layers[0]["b"].astype(np.float64)
 const = []
 if cfg["battery"]:
     const += [0.5, 0.5]
-if cfg["dots"]:
+if cfg["dots"] and not carrot_live:
     const += [0.0, 0.0, 0.0]
-assert len(const) == nextra, (len(const), nextra)
-ce = (np.array(const) - mean[base:]) / std[base:]
-b0 = b0 + ce @ W0[base:]
-W0 = W0[:base]
+nc = len(const)
+assert nc + (3 if carrot_live else 0) == nextra, (nc, nextra)
+ce = (np.array(const) - mean[base:base + nc]) / std[base:base + nc]
+b0 = b0 + ce @ W0[base:base + nc]
+W0 = np.concatenate([W0[:base], W0[base + nc:]])  # drop the folded rows, keep the carrot rows
+keep = list(range(base)) + list(range(base + nc, obs_dim))
+mean, std = mean[keep], std[keep]
+OBS = len(keep)
 
-npz = dict(norm_mean=mean[:base].astype(np.float32), norm_std=std[:base].astype(np.float32),
+npz = dict(norm_mean=mean.astype(np.float32), norm_std=std.astype(np.float32),
            hidden_0_kernel=W0.astype(np.float32), hidden_0_bias=b0.astype(np.float32))
 for i, l in enumerate(layers[1:], 1):
     npz[f"hidden_{i}_kernel"] = np.asarray(l["W"], np.float32)
@@ -45,8 +51,10 @@ LEGS = ["rear_left", "rear_right", "front_right", "front_left"]
 names = [f"{l}_{j}_joint" for l in LEGS for j in ("first", "second", "third")]
 home = [float(x) for x in b["home"]]
 meta = dict(schema_version=2, run_name=name, checkpoint=src, task="locomp_dots", robot="legs_v627",
-            obs_size=base, action_size=NA,
-            obs_layout=["gyro:3", "gravity:3", "command:3", "joint_pos:12", "joint_vel:12", "last_act:12"],
+            obs_size=OBS, action_size=NACT,
+            obs_layout=["gyro:3", "gravity:3", "command:3", "joint_pos:12", "joint_vel:12", f"last_act:{NACT}"]
+            + (["carrot:3"] if carrot_live else []),
+            carrot=dict(leash=cfg["leash"], leash_yaw=cfg["leash_yaw"]) if carrot_live else None,
             actuator_names=names, home_ctrl=home, anchor_ctrl=home,
             action_scale=[float(x) for x in b["act_scale"]],
             target_low=[float(x) for x in b["lo"]], target_high=[float(x) for x in b["hi"]],
@@ -87,7 +95,7 @@ rng = np.random.default_rng(0)
 err = 0.0
 for _ in range(20):
     o = (b["mean"] + np.sqrt(b["var"]) * rng.normal(size=obs_dim) * 0.5).astype(np.float32)
-    o[base:] = const
-    err = max(err, float(np.max(np.abs(runtime(o[:base]) - train_policy(o)))))
+    o[base:base + nc] = const
+    err = max(err, float(np.max(np.abs(runtime(o[keep]) - train_policy(o)))))
 print("max |runtime - training| action diff:", err)
-print("wrote", out, "obs", base, "act", NA, "kp", meta["pd"]["kp"], "kd", round(meta["pd"]["kd"], 3))
+print("wrote", out, "obs", OBS, "act", NACT, "carrot", carrot_live, "kp", meta["pd"]["kp"], "kd", round(meta["pd"]["kd"], 3))

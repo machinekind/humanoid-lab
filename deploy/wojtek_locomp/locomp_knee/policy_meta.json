@@ -1,0 +1,147 @@
+{
+ "schema_version": 2,
+ "run_name": "locomp_knee",
+ "checkpoint": "knee/policy.pkl",
+ "task": "locomp_dots",
+ "robot": "legs_v627",
+ "obs_size": 60,
+ "action_size": 24,
+ "obs_layout": [
+  "gyro:3",
+  "gravity:3",
+  "command:3",
+  "joint_pos:12",
+  "joint_vel:12",
+  "last_act:24",
+  "carrot:3"
+ ],
+ "carrot": {
+  "leash": 0.2,
+  "leash_yaw": 0.4
+ },
+ "actuator_names": [
+  "rear_left_first_joint",
+  "rear_left_second_joint",
+  "rear_left_third_joint",
+  "rear_right_first_joint",
+  "rear_right_second_joint",
+  "rear_right_third_joint",
+  "front_right_first_joint",
+  "front_right_second_joint",
+  "front_right_third_joint",
+  "front_left_first_joint",
+  "front_left_second_joint",
+  "front_left_third_joint"
+ ],
+ "home_ctrl": [
+  0.0,
+  -2.25159,
+  -2.03679,
+  0.0,
+  -2.25159,
+  -2.03679,
+  0.0,
+  2.2667,
+  1.98216,
+  0.0,
+  2.2667,
+  1.98216
+ ],
+ "anchor_ctrl": [
+  0.0,
+  -2.25159,
+  -2.03679,
+  0.0,
+  -2.25159,
+  -2.03679,
+  0.0,
+  2.2667,
+  1.98216,
+  0.0,
+  2.2667,
+  1.98216
+ ],
+ "action_scale": [
+  0.122875,
+  0.16383333333333333,
+  0.16383333333333333,
+  0.122875,
+  0.16383333333333333,
+  0.16383333333333333,
+  0.122875,
+  0.16383333333333333,
+  0.16383333333333333,
+  0.122875,
+  0.16383333333333333,
+  0.16383333333333333
+ ],
+ "target_low": [
+  -0.5,
+  -2.69479,
+  -2.83267,
+  -0.5,
+  -2.69479,
+  -2.83267,
+  -0.5,
+  1.53589,
+  0.244346,
+  -0.5,
+  1.53589,
+  0.244346
+ ],
+ "target_high": [
+  0.5,
+  -1.53589,
+  -0.244346,
+  0.5,
+  -1.53589,
+  -0.244346,
+  0.5,
+  2.69479,
+  2.83267,
+  0.5,
+  2.69479,
+  2.83267
+ ],
+ "command_low": [
+  -0.3,
+  -0.3,
+  -0.8
+ ],
+ "command_high": [
+  0.8,
+  0.3,
+  0.8
+ ],
+ "command_fill": [],
+ "action_filter": 0.0,
+ "ctrl_dt": 0.02,
+ "knee_singularity": null,
+ "activation": "elu",
+ "output_tanh": false,
+ "obs_clip": 10.0,
+ "pd": {
+  "kp": 60.0,
+  "kp_per_actuator": [
+   80.0,
+   60.0,
+   60.0,
+   80.0,
+   60.0,
+   60.0,
+   80.0,
+   60.0,
+   60.0,
+   80.0,
+   60.0,
+   60.0
+  ],
+  "kd": 2.0,
+  "max_torque": 9.8
+ },
+ "tau_ff": {
+  "enable": false,
+  "scale": 0.0
+ },
+ "notes": "trained on the calibrated twin (gains x2.09 in sim == robot gains); kp factor 1.00"
+}

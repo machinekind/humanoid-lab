@@ -19,7 +19,9 @@ for k in range(STEPS):
     big = 40.0 if k == 3 else 1.0  # one step with a joint_vel spike: exercises obs_clip
     seq.append(dict(gyro=(0.3 * rng.normal(size=3)).tolist(), gravity=[0.05 * k, -0.03, -0.998],
                     joint_pos=(home + 0.1 * rng.normal(size=12)).tolist(), joint_vel=(big * rng.normal(size=12)).tolist(),
-                    command=[0.4, 0.0, 0.2]))
+                    command=[0.4, 0.0, 0.2], carrot=[0.1 + 0.02 * k, -0.05, 0.1]))
+NACT = int(meta["action_size"])
+CARROT = any(e.startswith("carrot") for e in meta["obs_layout"])
 
 if "--make" in sys.argv:
     def mlp(o):
@@ -31,13 +33,14 @@ if "--make" in sys.argv:
                 x = np.where(x > 0, x, np.expm1(np.minimum(x, 0)))
             i += 1
         return x
-    last = np.zeros(12, np.float32)
+    last = np.zeros(NACT, np.float32)
     exp = []
     for s in seq:
-        o = np.concatenate([s["gyro"], s["gravity"], s["command"], np.array(s["joint_pos"]) - home, s["joint_vel"], last]).astype(np.float32)
+        o = np.concatenate([s["gyro"], s["gravity"], s["command"], np.array(s["joint_pos"]) - home, s["joint_vel"], last]
+                           + ([s["carrot"]] if CARROT else [])).astype(np.float32)
         a = mlp(o).astype(np.float32)
         last = a
-        t = np.clip(home + a * np.array(meta["action_scale"], np.float32), meta["target_low"], meta["target_high"])
+        t = np.clip(home + a[:12] * np.array(meta["action_scale"], np.float32), meta["target_low"], meta["target_high"])
         exp.append(t.tolist())
     json.dump(exp, open(os.path.join(d, "expected.json"), "w"))
     print("wrote expected.json", np.round(exp[-1], 3).tolist())
@@ -47,6 +50,6 @@ else:
     exp = json.load(open(os.path.join(d, "expected.json")))
     worst = 0.0
     for s, e in zip(seq, exp):
-        t = pol.step(s["gyro"], s["gravity"], s["joint_pos"], s["joint_vel"], s["command"])
+        t = pol.step(s["gyro"], s["gravity"], s["joint_pos"], s["joint_vel"], s["command"], **({"carrot": s["carrot"]} if CARROT else {}))
         worst = max(worst, float(np.max(np.abs(np.asarray(t) - np.asarray(e)))))
     print("SELFCHECK max |target - expected| =", worst, "rad ->", "OK" if worst < 1e-4 else "MISMATCH")
