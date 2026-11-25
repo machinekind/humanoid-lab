@@ -64,8 +64,11 @@ wandb:
   group: null # null: defaults to the selected experiment name (see train.py); no group when no experiment is selected
 
 # Free-form overrides applied onto the tuned playground Go1 PPO config,
-# after the task's own ppo block (so CLI ppo.foo=... wins).
-ppo: {}
+# after the task's own ppo block (so CLI ++ppo.foo=... wins). Plain
+# ppo.sym_coef=... works because the key is in this block.
+ppo:
+  # Repo-owned (ppo_config.REPO_PPO_KEYS) and popped before brax's ppo.train. It weights the mirror-symmetry loss, and 0 means off.
+  sym_coef: 0.0
 
 hydra:
   run:

@@ -1,0 +1,44 @@
+# @package _global_
+# novel_sighted: the v4 recipe with the actor's joint_vel noise cut from the
+# roboto overlay's +-1.75 to +-0.2 rad/s, joint_pos and gyro noise unchanged.
+# Hypothesis: a single-frame actor that can read its joint velocities damps
+# instead of answering noise, so stand vibration drops and touchdowns soften
+# at equal tracking.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  - override /actuators: deploy_pd
+  - override /network: large
+
+domain_rand: true
+
+dr:
+  joint_gains: { enable: true }
+  com_offset: { enable: true }
+  dof: { enable: true }
+  foot_friction: { enable: true }
+  base_mass_add: { enable: true }
+  # Decouple forcerange from the gain draw with a no-op range: upstream
+  # does not randomize effort limits.
+  motor_strength: { enable: true, range: [1.0, 1.0] }
+
+task:
+  env:
+    # Uniform +-scale per component on every actor obs (envs/base.py). 0.2
+    # is 2x the base joystick default and keeps SNR > 1 at standing-level
+    # joint velocities; the battery injects the same noise at eval, and
+    # `./run.sh battery --set obs_noise.joint_vel=1.75 --out ...` re-scores
+    # under the overlay's value.
+    obs_noise:
+      joint_vel: 0.2
+
+# RSL-RL BaseAgentCfg values (rpo_agent_cfg.py). num_envs and batch come
+# from jobs/train.sh. num_evals sets the checkpoint cadence: brax saves one
+# at every eval.
+ppo:
+  discounting: 0.994
+  gae_lambda: 0.9
+  entropy_cost: 0.005
+  learning_rate: 1.0e-4
+  num_timesteps: 1.0e9
+  num_evals: 24

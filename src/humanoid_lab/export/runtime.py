@@ -16,6 +16,11 @@ the previous action and the gait clock. Both advance once per `act` call,
 after the observation is assembled, which is the order `envs/joystick.py`
 step() uses.
 
+The phase observation is cos/sin of the leg phases, or zeros when the
+contract's `gait_clock.phase_obs` says "zeros". The runtime reads that mode
+from the contract and never infers it from the clock's frequencies. It reads
+schema 1 (the legacy cos/sin contract) and schema 2.
+
 The network is the actor half of a brax PPO checkpoint: a SiLU MLP whose
 last layer is a (loc, scale) pair, of which deterministic inference takes
 tanh(loc). `export/policy.py` validates this forward pass against the
@@ -29,8 +34,15 @@ from pathlib import Path
 
 import numpy as np
 
-# The contract schema this runtime interprets.
-SUPPORTED_SCHEMA = 1
+# The contract schemas this runtime interprets. Schema 1 is the legacy
+# contract: the phase observation is always cos/sin. Schema 2 adds
+# gait_clock.phase_obs.
+SUPPORTED_SCHEMAS = (1, 2)
+
+# The phase observation modes of schema 2. "cos_sin" observes cos/sin of the
+# leg phases. "zeros" observes zeros of the same width (a frozen clock with
+# no left/right marker).
+PHASE_OBS = ("cos_sin", "zeros")
 
 ARTIFACT_WEIGHTS = "policy.npz"
 ARTIFACT_META = "policy_meta.json"
@@ -75,10 +87,10 @@ class DeployPolicy:
 
     def __init__(self, weights: dict, meta: dict):
         schema = int(meta.get("schema_version", 0))
-        if schema != SUPPORTED_SCHEMA:
+        if schema not in SUPPORTED_SCHEMAS:
             raise ValueError(
-                f"policy_meta.json is schema {schema}; this runtime reads schema "
-                f"{SUPPORTED_SCHEMA}"
+                f"policy_meta.json is schema {schema}; this runtime reads schemas "
+                f"{SUPPORTED_SCHEMAS}"
             )
 
         self.meta = meta
@@ -116,6 +128,25 @@ class DeployPolicy:
         self._turn_weight = float(clock["turn_weight"])
         self._speed_deadband = float(clock["speed_deadband"])
         self._cmd_speed_max = float(clock["cmd_speed_max"])
+        # The phase observation mode ships in the contract. It is never
+        # inferred from freq_low and freq_high. Schema 1 predates the field
+        # and always observes cos/sin. Schema 2 must carry it.
+        if schema != 1 and "phase_obs" not in clock:
+            raise ValueError(
+                f"policy_meta.json is schema {schema} without gait_clock.phase_obs; "
+                "the contract is malformed"
+            )
+        phase_obs = clock.get("phase_obs", "cos_sin")
+        if schema == 1 and phase_obs != "cos_sin":
+            raise ValueError(
+                f"policy_meta.json is schema 1 with gait_clock.phase_obs = {phase_obs!r}; "
+                "schema 1 always observes cos/sin, so the contract is inconsistent"
+            )
+        if phase_obs not in PHASE_OBS:
+            raise ValueError(
+                f"gait_clock.phase_obs = {phase_obs!r}; this runtime produces {PHASE_OBS}"
+            )
+        self._phase_obs = phase_obs
         self._ctrl_dt = float(meta["ctrl_dt"])
 
         self.reset()
@@ -142,9 +173,15 @@ class DeployPolicy:
         """The actor observation, in `obs_layout` order.
 
         `joint_pos` is the raw encoder reading; the default pose is
-        subtracted here, as the env's observation catalog does it.
+        subtracted here, as the env's observation catalog does it. The
+        phase is cos/sin of the leg phases, or zeros when the contract's
+        gait_clock.phase_obs is "zeros". The mode is never inferred from freq.
         """
-        legs = self.leg_phases()
+        if self._phase_obs == "zeros":
+            phase = np.zeros(2 * self._offsets.size, np.float32)
+        else:
+            legs = self.leg_phases()
+            phase = np.concatenate([np.cos(legs), np.sin(legs)])
         parts = {
             "gyro": np.asarray(gyro),
             "gravity": np.asarray(gravity),
@@ -152,7 +189,7 @@ class DeployPolicy:
             "joint_vel": np.asarray(joint_vel),
             "last_action": self.last_action,
             "command": np.asarray(command),
-            "phase": np.concatenate([np.cos(legs), np.sin(legs)]),
+            "phase": phase,
         }
         obs = np.concatenate([parts[name] for name, _ in self._layout]).astype(np.float32)
         if obs.size != self._obs_size:

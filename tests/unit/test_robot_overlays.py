@@ -24,6 +24,23 @@ ROBOTO_PORTED_SCALES = {
     "action_accel": -2e-2,
     "energy": -1e-4,
     "termination": -200.0,
+    "pose_l1": -1.0,
+    "joint_pos_limits": -1.0,
+    "joint_vel": -2e-4,
+    "joint_acc": -2.5e-7,
+    "upward": 0.4,
+    "feet_distance": 0.1,
+    "knee_distance": 0.1,
+    "feet_contact_without_cmd": 0.1,
+    "feet_air_time_biped": 0.25,
+    # Off: the per-step feet_air_time_biped replaces the landing-event
+    # shape (run 2, docs/plans/roboto-first-run.md).
+    "feet_air_time": 0.0,
+    # Once-per-landing swing-peak payment against reward.apex_target;
+    # the w01-tek stiff-ladder weight (run 3, docs/plans/roboto-first-run.md).
+    "feet_apex": 5.0,
+    # Off: pose_l1 replaces the L2 pose term.
+    "pose": 0.0,
 }
 
 
@@ -65,20 +82,47 @@ def test_roboto_origin_overlay_wins_over_the_task_and_dr_bases():
     # else (partial overlay; the unlisted entries come from the env's
     # default_config, exercised by the merge-path test below).
     assert OmegaConf.to_container(cfg.task.env.reward.scales) == ROBOTO_PORTED_SCALES
-    assert list(cfg.task.env.reward.keys()) == ["scales"]
+    assert list(cfg.task.env.reward.keys()) == [
+        "scales",
+        "pose_l1_weights",
+        "feet_distance_range",
+        "knee_distance_range",
+        "phase_sigma",
+        "apex_target",
+    ]
+    # joint_deviation_l1's group split and body_distance_y's bands
+    # (rpo_env_cfg.py).
+    assert cfg.task.env.reward.pose_l1_weights.torso == 1.0
+    assert cfg.task.env.reward.pose_l1_weights.thigh_yaw == 0.03
+    assert cfg.task.env.reward.feet_distance_range == [0.16, 0.50]
+    assert cfg.task.env.reward.knee_distance_range == [0.18, 0.35]
 
-    # Mapped DR ranges: EventCfg.scale_joint_parameters (armature),
-    # EventCfg.scale_actuator_gains (joint_gains), EventCfg.
-    # randomize_rigid_body_com (com_offset) (base_config.py).
-    assert cfg.dr.dof.armature == [0.5, 1.5]
+    # Mapped DR ranges (base_config.py's EventCfg).
+    assert cfg.dr.dof.armature == [0.8, 1.2]
     assert cfg.dr.joint_gains.gain_pct == 0.1
     assert cfg.dr.joint_gains.kd_pct == 0.1
     assert cfg.dr.com_offset.xy == 0.025
     assert cfg.dr.com_offset.z == 0.05
+    assert cfg.dr.foot_friction.range == [0.333, 1.778]
+    assert cfg.dr.base_mass_add.kg == 1.0
 
-    # Untouched DR sub-fields still come from the base configs/dr/default.yaml.
-    assert cfg.dr.dof.damping == [0.9, 1.1]
-    assert cfg.dr.dof.frictionloss == [0.9, 1.1]
+    # The overlay pins ranges, not switches. The run config arms them.
+    assert cfg.dr.foot_friction.enable is False
+    assert cfg.dr.base_mass_add.enable is False
+
+    # EventCfg.push_robot schedule and magnitudes.
+    assert cfg.task.env.push.interval_steps_range == [500, 750]
+    assert cfg.task.env.push.vel == 0.5
+    assert cfg.task.env.push.vel_z == 0.2
+    assert cfg.task.env.push.ang_vel_rp == 0.52
+    assert cfg.task.env.push.ang_vel_yaw == 0.78
+
+    # No-op pins: arming dr.dof draws armature only.
+    assert cfg.dr.dof.damping == [1.0, 1.0]
+    assert cfg.dr.dof.frictionloss == [1.0, 1.0]
+
+    # An untouched DR sub-field still comes from configs/dr/default.yaml.
+    assert cfg.dr.motor_strength.range == [0.5, 1.1]
 
 
 def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
@@ -96,16 +140,37 @@ def test_roboto_origin_reward_overlay_survives_the_env_merge_path():
     for key, value in ROBOTO_PORTED_SCALES.items():
         assert env_cfg.reward.scales[key] == value, key
 
+    # The non-scale reward fields the overlay pins (runs 2 and 3).
+    assert env_cfg.reward.phase_sigma == 0.01
+    assert env_cfg.reward.apex_target == 0.08
+
     # Unlisted reward fields keep default_config's values.
     defaults = joystick_default_config()
     assert env_cfg.reward.tracking_sigma == defaults.reward.tracking_sigma
-    assert env_cfg.reward.phase_sigma == defaults.reward.phase_sigma
+    assert env_cfg.reward.biped_air_time_threshold == defaults.reward.biped_air_time_threshold
     assert env_cfg.reward.torque_limit_frac == defaults.reward.torque_limit_frac
-    assert env_cfg.reward.scales.pose == defaults.reward.scales.pose
-    assert env_cfg.reward.scales.feet_air_time == defaults.reward.scales.feet_air_time
+    assert env_cfg.reward.scales.feet_phase == defaults.reward.scales.feet_phase
     assert env_cfg.reward.scales.feet_slip == defaults.reward.scales.feet_slip
     assert env_cfg.reward.scales.stand_still == defaults.reward.scales.stand_still
     assert len(env_cfg.reward.scales) == len(defaults.reward.scales)
+
+    # The group-weight map replaces default_config's None wholesale.
+    assert dict(env_cfg.reward.pose_l1_weights) == {
+        "thigh_yaw": 0.03,
+        "thigh_roll": 0.03,
+        "thigh_pitch": 0.01,
+        "knee": 0.01,
+        "ankle_pitch": 0.01,
+        "ankle_roll": 0.01,
+        "torso": 1.0,
+        "arm_roll": 1.0,
+        "arm_yaw": 1.0,
+        "elbow_pitch": 1.0,
+        "elbow_yaw": 1.0,
+        "arm_pitch": 0.06,
+    }
+    assert env_cfg.reward.feet_distance_range == (0.16, 0.50)
+    assert env_cfg.reward.knee_distance_range == (0.18, 0.35)
 
     # The overlay's non-reward values landed on the merged env config too.
     assert env_cfg.obs_noise.joint_vel == 1.75

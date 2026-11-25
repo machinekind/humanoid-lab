@@ -292,3 +292,94 @@ def test_a_scenario_that_never_settled_renders_a_dash():
 def test_a_battery_without_a_tracking_error_renders_no_servo_section():
     """battery.json files written before the tracking error existed."""
     assert "## Servo tracking" not in render_markdown(BATTERY)
+
+
+# -- the gait shape ----------------------------------------------------------
+
+_SHAPED = {
+    **GOOD_ROW,
+    "speed_frac": 0.912, "heading_drift_deg": -3.45, "lateral_drift_m": 0.0812,
+    "support_frac_0": 0.0, "support_frac_1": 0.62, "support_frac_2": 0.38,
+    "roll_std_deg": 1.87, "pelvis_sway_cm": 1.42, "step_length_m": 0.1834,
+    "landing_x_m_left": 0.21, "landing_y_m_left": 0.0912, "knee_td_rad_left": 0.412,
+    "landing_x_m_right": 0.19, "landing_y_m_right": -0.0887, "knee_td_rad_right": 0.398,
+}
+_UNSHAPED = {
+    **GOOD_ROW,
+    "speed_frac": None, "heading_drift_deg": None, "lateral_drift_m": None,
+    "support_frac_0": None, "support_frac_1": None, "support_frac_2": None,
+    "roll_std_deg": None, "pelvis_sway_cm": None, "step_length_m": None,
+    "landing_x_m_left": None, "landing_y_m_left": None, "knee_td_rad_left": None,
+    "landing_x_m_right": None, "landing_y_m_right": None, "knee_td_rad_right": None,
+}
+_SHAPE_BATTERY = {**BATTERY, "walk_ramp": _SHAPED, "stand": _UNSHAPED}
+
+
+def _gait_shape_cells(battery: dict) -> dict[str, dict[str, str]]:
+    """The gait shape tables as {scenario: {column: cell}}.
+
+    A column is named by the first word of its header cell. Cells from both
+    tables of the section land in one dict per scenario."""
+    cells: dict[str, dict[str, str]] = {}
+    columns: list[str] = []
+    for line in _section(render_markdown(battery), "## Gait shape"):
+        if not line.startswith("|") or line.startswith("|---"):
+            continue
+        parts = [p.strip() for p in line.strip("|").split("|")]
+        if parts[0] == "scenario":
+            columns = [p.split()[0] for p in parts]
+            continue
+        cells.setdefault(parts[0], {}).update(zip(columns[1:], parts[1:]))
+    return cells
+
+
+def _numbers(cell: str) -> list[float]:
+    return [float(v) for v in cell.split("/")]
+
+
+def test_the_gait_shape_section_shows_the_travel_numbers():
+    row = _gait_shape_cells(_SHAPE_BATTERY)["walk_ramp"]
+
+    expected = {
+        "speed_frac": [0.912], "heading_drift_deg": [-3.45], "lateral_drift_m": [0.0812],
+        "support": [0.0, 0.62, 0.38], "roll_std_deg": [1.87], "pelvis_sway_cm": [1.42],
+        "step_length_m": [0.1834],
+    }
+    for column, want in expected.items():
+        assert _numbers(row[column]) == pytest.approx(want, abs=5e-4), column
+
+
+def test_the_gait_shape_section_shows_left_and_right_side_by_side():
+    row = _gait_shape_cells(_SHAPE_BATTERY)["walk_ramp"]
+
+    # Each cell holds the left value, then the right one.
+    assert _numbers(row["landing_x_m"]) == pytest.approx([0.21, 0.19], abs=5e-4)
+    assert _numbers(row["landing_y_m"]) == pytest.approx([0.0912, -0.0887], abs=5e-4)
+    assert _numbers(row["knee_td_rad"]) == pytest.approx([0.412, 0.398], abs=5e-4)
+
+
+def test_an_unmeasured_gait_shape_value_renders_a_dash():
+    section = _section(render_markdown(_SHAPE_BATTERY), "## Gait shape")
+    rows = [line for line in section if line.startswith("| stand |")]
+
+    assert len(rows) == 2
+    assert all("| - |" in r or "- / -" in r for r in rows)
+    assert not any("0.000" in r for r in rows)
+
+
+def test_a_battery_without_gait_shape_renders_no_gait_shape_section():
+    """battery.json files written before the gait-shape metrics existed."""
+    assert "## Gait shape" not in render_markdown(BATTERY)
+
+
+def test_gait_shape_sides_follow_the_keys():
+    """A robot whose foot sites carry no side token gets foot0, foot1 keys."""
+    row = {
+        k.replace("_left", "_foot0").replace("_right", "_foot1"): v
+        for k, v in _SHAPED.items()
+    }
+    section = _section(render_markdown({**BATTERY, "walk_ramp": row}), "## Gait shape")
+    header = next(line for line in section if line.startswith("| scenario | landing_x_m"))
+
+    assert "landing_x_m (foot0 / foot1)" in header
+    assert "left" not in header

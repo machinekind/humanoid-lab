@@ -39,35 +39,13 @@ sizing/report.py reduces this file; it needs no checkpoint or env.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import jax
 import numpy as np
 from ml_collections import config_dict
 
-from humanoid_lab import paths
-
-
-def _load_run(run_dir: Path) -> dict:
-    run_json = run_dir / "run.json"
-    if not run_json.exists():
-        raise FileNotFoundError(
-            f"{run_json} not found -- is {run_dir} a completed run.sh train/smoke output dir?"
-        )
-    run = json.loads(run_json.read_text())
-
-    missing = [k for k in ("task", "hydra_config", "checkpoint_dir", "ppo_config") if k not in run]
-    if missing:
-        raise ValueError(f"{run_json} is missing required key(s) {missing}")
-
-    hydra = run["hydra_config"]
-    for section, key in (("robot", "dir"), ("actuators", "name"), ("task", "name")):
-        if section not in hydra or key not in hydra[section]:
-            raise ValueError(
-                f"{run_json}: hydra_config.{section}.{key} missing -- cannot rebuild the env"
-            )
-    return run
+from humanoid_lab import paths, run_record
 
 
 def _find_latest_checkpoint(run: dict, run_dir: Path) -> Path:
@@ -95,6 +73,25 @@ def _ppo_params_from_run(run: dict) -> config_dict.ConfigDict:
     return config_dict.ConfigDict(run["ppo_config"])
 
 
+def sizing_env_overrides(run: dict) -> dict:
+    """The run's own task.env overrides with the command ramp forced off.
+
+    Pushes and the env's own command sampling deliberately stay ON, unlike
+    the battery's: sizing wants the distribution the trained gait actually
+    produces under its own command envelope. Every other key stays as the
+    run had it.
+    """
+    env_overrides = dict(run["hydra_config"]["task"].get("env") or {})
+    # The ramp is a training curriculum. It starts every episode from a zero
+    # command and slews each new command in. Sizing measures the trained
+    # gait under its own commands.
+    env_overrides["command"] = {
+        **(env_overrides.get("command") or {}),
+        "ramp": {"lin": 0.0, "yaw": 0.0},
+    }
+    return env_overrides
+
+
 def make_env_for_run(run: dict):
     from humanoid_lab import registry
 
@@ -103,11 +100,7 @@ def make_env_for_run(run: dict):
     robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
     preset_name = hydra["actuators"]["name"]
     actuator_overrides = hydra["actuators"].get("overrides") or {}
-    # The run's own env, unchanged. Pushes and the env's own command
-    # sampling deliberately stay ON, unlike the battery's: sizing wants the
-    # distribution the trained gait actually produces under its own command
-    # envelope.
-    env_overrides = dict(hydra["task"].get("env") or {})
+    env_overrides = sizing_env_overrides(run)
     env = registry.make_env(task, robot_dir, preset_name, env_overrides, actuator_overrides)
     return env, robot_dir, preset_name, actuator_overrides
 
@@ -169,7 +162,11 @@ def rollout_episode(env, reset_fn, step_fn, policy_fn, rng, steps: int):
 
 
 def collect(run_dir: Path, episodes: int, steps: int, seed: int, out_path: Path | None = None) -> Path:
-    run = _load_run(run_dir)
+    run = run_record.load_run(run_dir)
+    if "name" not in (run["hydra_config"].get("task") or {}):
+        raise ValueError(
+            f"{run_dir / 'run.json'}: hydra_config.task.name missing -- cannot rebuild the env"
+        )
     ckpt_dir = _find_latest_checkpoint(run, run_dir)
 
     env, robot_dir, preset_name, actuator_overrides = make_env_for_run(run)

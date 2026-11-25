@@ -41,7 +41,8 @@ _HEIGHT_STD_ATTENTION = 0.05  # m; base-height std, flags bouncing/instability
 
 # battery.json keys that are not scenarios. `contacts` is the warp budget
 # block (see sim_budget.budget_report); it gets its own section below.
-_META_KEYS = ("run", "checkpoint", "timestamp", "contacts")
+# `env_overrides` is present only in a battery re-scored with `--set`.
+_META_KEYS = ("run", "checkpoint", "timestamp", "contacts", "env_overrides")
 
 # The per-direction spin rows (eval/battery.py's battery_scenarios), listed
 # in the order the section renders them.
@@ -97,6 +98,8 @@ def render_markdown(battery: dict) -> str:
         f"- checkpoint: {battery.get('checkpoint', '?')}",
         f"- generated: {battery.get('timestamp', '?')}",
     ]
+    if "env_overrides" in battery:
+        lines.append(f"- env_overrides: {battery['env_overrides']}")
     lines += [
         "",
         "## Battery",
@@ -176,6 +179,69 @@ def render_markdown(battery: dict) -> str:
             "speed over the free-fall speed from that swing's own apex: 1.0 is a "
             "foot dropped like a brick, lower is a foot flown in. A `-` is a "
             "median with no swings behind it, not a zero.",
+        ]
+
+    # Gait shape. Raw metrics with no threshold, like the gait KPIs. Rows
+    # written before these metrics existed have no speed_frac, so an older
+    # battery.json renders no section.
+    if any("speed_frac" in battery[n] for n in scenario_names):
+        shaped = [n for n in scenario_names if "speed_frac" in battery[n]]
+        lines += [
+            "",
+            "## Gait shape",
+            "",
+            (
+                "| scenario | speed_frac | heading_drift_deg | lateral_drift_m "
+                "| support 0 / 1 / 2 | roll_std_deg | pelvis_sway_cm | step_length_m |"
+            ),
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for name in shaped:
+            r = battery[name]
+            support = " / ".join(_fmt(r.get(f"support_frac_{n}")) for n in range(3))
+            lines.append(
+                f"| {name} | {_fmt(r.get('speed_frac'))} | "
+                f"{_fmt(r.get('heading_drift_deg'), 2)} | {_fmt(r.get('lateral_drift_m'), 4)} | "
+                f"{support} | {_fmt(r.get('roll_std_deg'), 2)} | "
+                f"{_fmt(r.get('pelvis_sway_cm'), 2)} | {_fmt(r.get('step_length_m'), 4)} |"
+            )
+        # The per-foot keys end in the foot's side token. Read the sides off
+        # the first row that has them, in key order.
+        prefix = "landing_x_m_"
+        sides = next(
+            (
+                [k[len(prefix) :] for k in battery[n] if k.startswith(prefix)]
+                for n in shaped
+                if any(k.startswith(prefix) for k in battery[n])
+            ),
+            [],
+        )
+        if sides:
+            names = " / ".join(sides)
+            lines += [
+                "",
+                (
+                    f"| scenario | landing_x_m ({names}) | landing_y_m ({names}) "
+                    f"| knee_td_rad ({names}) |"
+                ),
+                "|---|---|---|---|",
+            ]
+            for name in shaped:
+                r = battery[name]
+                cells = [
+                    " / ".join(_fmt(r.get(f"{key}_{side}"), nd) for side in sides)
+                    for key, nd in (("landing_x_m", 4), ("landing_y_m", 4), ("knee_td_rad", 3))
+                ]
+                lines.append(f"| {name} | " + " | ".join(cells) + " |")
+        lines += [
+            "",
+            (
+                "These numbers are scored from the settle step to the step before a "
+                "fall. `speed_frac` is the displacement along the start heading over "
+                "the commanded distance. The heading drift nets out the commanded "
+                "turn. A landing is a contact rising edge. Each foot's first landing "
+                "is dropped. A `-` means nothing was measured."
+            ),
         ]
 
     # Servo tracking error. Raw, like the gait KPIs, and for

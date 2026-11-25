@@ -23,13 +23,12 @@ function that touches matplotlib.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
 import yaml
 
-from humanoid_lab import paths
+from humanoid_lab import paths, run_record
 
 _PERCENTILES = (50, 90, 95, 99)
 
@@ -322,19 +321,12 @@ def build_report(run_dir: Path, motors_name: str | None = "encos") -> tuple[str,
     joint_names = [str(x) for x in data["joint_names"]]
     effort_limit, velocity_limit = data["effort_limit"], data["velocity_limit"]
 
-    run_json_path = run_dir / "run.json"
-    if not run_json_path.exists():
-        raise FileNotFoundError(f"{run_json_path} not found -- is {run_dir} a run.sh train/smoke output dir?")
-    run = json.loads(run_json_path.read_text())
-    hydra = run.get("hydra_config", {})
-    preset_name = hydra.get("actuators", {}).get("name", "?")
-    robot_rel = hydra.get("robot", {}).get("dir")
-    if not robot_rel:
-        raise ValueError(
-            f"{run_json_path} records no robot.dir; refusing to guess which "
-            "robot produced this run"
-        )
-    robot_dir = paths.REPO_ROOT / robot_rel
+    # load_run refuses a run.json without hydra_config.robot.dir or
+    # hydra_config.actuators.name.
+    run = run_record.load_run(run_dir)
+    hydra = run["hydra_config"]
+    preset_name = hydra["actuators"]["name"]
+    robot_dir = paths.REPO_ROOT / hydra["robot"]["dir"]
 
     from humanoid_lab.robot.spec import load_robot_spec
 

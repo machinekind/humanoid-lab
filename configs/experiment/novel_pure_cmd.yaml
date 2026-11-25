@@ -1,0 +1,53 @@
+# @package _global_
+# Hypothesis: the straight-walk limp is the gait learned on the uniform
+# command box, where clean straight commands are ~2% of draws, served out of
+# distribution on clean straight commands. With yolo_v4 plus clean draws of
+# ~13% fast forward, ~7% slow forward and ~6.5% spin, antiphase on straight
+# commands should rise toward the 0.90 the turn and spin commands show.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  - override /actuators: deploy_pd
+  - override /network: large
+
+domain_rand: true
+
+dr:
+  joint_gains: { enable: true }
+  com_offset: { enable: true }
+  dof: { enable: true }
+  foot_friction: { enable: true }
+  base_mass_add: { enable: true }
+  # Decouple forcerange from the gain draw with a no-op range: upstream
+  # does not randomize effort limits.
+  motor_strength: { enable: true, range: [1.0, 1.0] }
+
+# _sample_command applies the pure draws in the order wz, vy, slow, fast,
+# back, each an independent bernoulli that overwrites the one before, then
+# zero_prob (0.15) overrides all of them. Resulting shares: fast
+# 0.15*0.85 = 12.75%, slow 0.10*0.85*0.85 = 7.2%, wz
+# 0.10*0.90*0.85*0.85 = 6.5%, stand 15%, the uniform box the remaining
+# ~58.5%. slow_vx (0.1, 0.35) and fast_vx (0.5, 0.8) are the Python
+# defaults and sit inside roboto_origin's vx box [-0.6, 1.0]; pure_wz keeps
+# the base draw's wz, so it cannot leave the box. pure_back_prob stays 0:
+# back_vx (-0.8, -0.2) is outside that box and check_pure_draw_ranges
+# refuses it at env construction.
+task:
+  env:
+    command:
+      pure_fast_prob: 0.15
+      pure_slow_prob: 0.10
+      pure_wz_prob: 0.10
+
+# RSL-RL BaseAgentCfg values (rpo_agent_cfg.py). Fixed LR. num_envs and
+# batch come from jobs/train.sh. num_evals sets the checkpoint cadence:
+# brax saves one at every eval, so a run that dies loses at most 1/24 of
+# its budget. jobs/train.sh's RUN_ARGS="++ppo.num_timesteps=..." overrides
+# the budget.
+ppo:
+  discounting: 0.994
+  gae_lambda: 0.9
+  entropy_cost: 0.005
+  learning_rate: 1.0e-4
+  num_timesteps: 1.0e9
+  num_evals: 24

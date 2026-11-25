@@ -1,0 +1,51 @@
+# @package _global_
+# roboto_walk_v5: roboto_origin run 5, the style package -- twice reduced
+# by its gates (verdicts in docs/plans/roboto-first-run.md). Gate 1
+# (job-11): the full four-change package stood under command; knee_stance
+# taxes the loading-response flexion walking needs, and the clock change
+# fell with it (pre-committed cut). Gate 2 (job-13): still standing --
+# the uncapped gait_symmetry charge on the near-maximal asymmetry of the
+# first clumsy steps (~0.32/step at weight -2.0) beat the fragile
+# exploration income, and standing never arms the term at all. What runs
+# at gate 3, against v4's signal:
+#   - gait_symmetry -1.0, capped at 1.0 (reward.gait_symmetry_cap Python
+#     default): worst-case fee -0.02/step during exploration, a settled
+#     limp still pays in proportion to its asymmetry.
+#   - energy -3e-4 (x3 the ported upstream weight): measured cost while
+#     standing is ~0.17/episode, style pressure at negligible risk.
+# PPO sizing stays in the submit line (NUM_ENVS=4096 BATCH=128, one GPU),
+# the run-4 default. DR switches and PPO knobs are unchanged from v4.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  - override /actuators: deploy_pd
+  - override /network: large
+
+domain_rand: true
+
+dr:
+  joint_gains: { enable: true }
+  com_offset: { enable: true }
+  dof: { enable: true }
+  foot_friction: { enable: true }
+  base_mass_add: { enable: true }
+  # Decouple forcerange from the gain draw with a no-op range: upstream
+  # does not randomize effort limits.
+  motor_strength: { enable: true, range: [1.0, 1.0] }
+
+task:
+  env:
+    reward:
+      scales:
+        gait_symmetry: -1.0
+        energy: -3.0e-4
+
+# RSL-RL BaseAgentCfg values (rpo_agent_cfg.py). Fixed LR: brax has no
+# adaptive-KL schedule. Budget: 4096 envs x 24 steps x 12000 iterations,
+# ~1.2e9 env steps. num_envs and batch come from jobs/train.sh.
+ppo:
+  discounting: 0.994
+  gae_lambda: 0.9
+  entropy_cost: 0.005
+  learning_rate: 1.0e-4
+  num_timesteps: 1.2e9

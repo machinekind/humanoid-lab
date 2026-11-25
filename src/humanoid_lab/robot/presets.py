@@ -9,8 +9,9 @@ for the preset's model.
 load_actuator_preset's `overrides` (cfg.actuators.overrides, or a CLI --set
 parsed by parse_set_overrides) is deep-merged onto the loaded yaml dict
 before validation: a top-level key (model/soft_limit_factor/
-action_scale_factor) replaces that preset field, `groups.<group>.<param>`
-patches one per-group value in place. This is the ONE choke point overrides
+action_scale_factor/action_scale_rad) replaces that preset field,
+`groups.<group>.<param>` patches one per-group value in place. A group may
+carry its own action_scale_rad. This is the ONE choke point overrides
 flow through, so every consumer (train, eval, sizing, build/check CLIs)
 resolves identical values.
 """
@@ -30,8 +31,13 @@ _OPTIONAL_PARAM_KEYS = ("kp", "kd", "velocity_limit", "armature", "frictionloss"
 # Schema for the raw preset dict, checked AFTER overrides are merged in: a
 # typo'd override key (e.g. kp_) must fail loudly here rather than vanish
 # silently inside resolve()'s explicit key extraction below.
-_TOP_LEVEL_KEYS = frozenset({"model", "soft_limit_factor", "action_scale_factor", "groups"})
-_GROUP_PARAM_KEYS = frozenset({"effort_limit", *_OPTIONAL_PARAM_KEYS})
+_TOP_LEVEL_KEYS = frozenset(
+    {"model", "soft_limit_factor", "action_scale_factor", "action_scale_rad", "groups"}
+)
+# A group's own action_scale_rad replaces the preset-wide value for that
+# group's joints (pd model only). It is an RL action-window setting, not an
+# actuator parameter, so resolve() leaves it out of JointActuatorParams.
+_GROUP_PARAM_KEYS = frozenset({"effort_limit", "action_scale_rad", *_OPTIONAL_PARAM_KEYS})
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -71,12 +77,20 @@ def _validate_preset_keys(data: dict, label: str) -> None:
 
 @dataclass(frozen=True)
 class ActuatorPreset:
-    """Parsed contents of an actuators/<name>.yaml preset file."""
+    """Parsed contents of an actuators/<name>.yaml preset file.
+
+    action_scale_rad, when set, is a flat action scale in radians for every
+    joint. It replaces the action_scale_factor formula for the pd model.
+    A group's own action_scale_rad replaces the preset-wide value for that
+    group's joints. Other models ignore both, as they ignore
+    action_scale_factor: their ctrl is not an angle.
+    """
 
     model: str
     soft_limit_factor: float
     action_scale_factor: float
     groups: dict[str, dict[str, float]]
+    action_scale_rad: float | None = None
 
 
 def load_actuator_preset(
@@ -111,11 +125,13 @@ def load_actuator_preset(
             f"{sorted(ACTUATOR_MODELS)}"
         )
 
+    action_scale_rad = raw.get("action_scale_rad")
     return ActuatorPreset(
         model=model,
         soft_limit_factor=float(raw.get("soft_limit_factor", 0.9)),
         action_scale_factor=float(raw.get("action_scale_factor", 0.3)),
         groups={group: dict(params) for group, params in raw["groups"].items()},
+        action_scale_rad=None if action_scale_rad is None else float(action_scale_rad),
     )
 
 
@@ -158,11 +174,26 @@ def resolve(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, JointAct
 def action_scale(preset: ActuatorPreset, robot_spec: RobotSpec) -> dict[str, float]:
     """The per-joint action_scale for this preset's model.
 
-    pd: action_scale_factor * effort_limit / kp. ideal_torque: effort_limit
-    (action_scale_factor does not apply). See ActuatorModel.action_scale.
+    pd takes the first that is set: the joint's group action_scale_rad,
+    then the preset action_scale_rad, then
+    action_scale_factor * effort_limit / kp. ideal_torque uses effort_limit
+    and ignores all three. See ActuatorModel.action_scale.
     """
-    model = ACTUATOR_MODELS[preset.model]
     params_by_joint = resolve(preset, robot_spec)
+    if preset.model == "pd":
+        group_rad = {
+            joint_name: preset.groups[robot_spec.group_of(joint_name)].get("action_scale_rad")
+            for joint_name in params_by_joint
+        }
+        if preset.action_scale_rad is not None or any(v is not None for v in group_rad.values()):
+            model = ACTUATOR_MODELS[preset.model]
+            return {
+                joint_name: float(group_rad[joint_name]) if group_rad[joint_name] is not None
+                else preset.action_scale_rad if preset.action_scale_rad is not None
+                else model.action_scale(params, preset.action_scale_factor)
+                for joint_name, params in params_by_joint.items()
+            }
+    model = ACTUATOR_MODELS[preset.model]
     return {
         joint_name: model.action_scale(params, preset.action_scale_factor)
         for joint_name, params in params_by_joint.items()

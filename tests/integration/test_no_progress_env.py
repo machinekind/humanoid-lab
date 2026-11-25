@@ -31,7 +31,7 @@ from mujoco_playground import wrapper as playground_wrapper
 
 from humanoid_lab import paths
 from humanoid_lab.envs import wrappers
-from humanoid_lab.envs.joystick import Joystick, default_config
+from humanoid_lab.envs.joystick import Joystick, default_config, reward_term_names
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 PRESET = "sizing_ideal"
@@ -302,8 +302,11 @@ def test_the_reseed_layer_is_not_wrapped_around_a_run_with_the_cut_off(env):
 
 def test_the_cut_costs_the_episode_and_nothing_else(env):
     """A true termination: it flips done, the fall-only termination reward
-    stays at zero because nothing fell, and no reward key is added."""
+    stays at zero because nothing fell, and no reward key is added. The
+    expected keys are the terms the scales arm: a gated term at scale 0 has
+    no reward/* metric (joystick._reward_metric_names)."""
     scales = set(default_config().reward.scales)
+    armed = set(reward_term_names(default_config().reward.scales))
     with block_values(env._config.no_progress, enable=True, p_max=1.0, risk_below=1.0):
         state = env.reset(jax.random.PRNGKey(0))
         stepped = step_once(env, cut_state(state, steps_since_cmd=99))
@@ -314,4 +317,4 @@ def test_the_cut_costs_the_episode_and_nothing_else(env):
         assert "no_progress" not in scales
         assert set(env._config.reward.scales) == scales
         reward_keys = {k[len("reward/") :] for k in stepped.metrics if k.startswith("reward/")}
-        assert reward_keys == scales
+        assert reward_keys == armed

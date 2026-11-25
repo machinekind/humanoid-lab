@@ -11,12 +11,14 @@ is the property the deploy side relies on when it re-derives nothing.
 from __future__ import annotations
 
 import jax
+import jax.numpy as jp
 import numpy as np
 import pytest
 
 from humanoid_lab import deploy_contract as dc
 from humanoid_lab import paths
 from humanoid_lab.envs.joystick import Joystick, default_config
+from humanoid_lab.export import runtime
 
 ROBOT_DIR = paths.ROBOTS_DIR / "asimov_v1"
 
@@ -44,6 +46,20 @@ def run_for(env, preset: str = "sizing_ideal") -> dict:
             "actuators": {"name": preset},
         },
     }
+
+
+def zero_policy(contract: dict) -> runtime.DeployPolicy:
+    """A runtime policy with all-zero weights for `contract`."""
+    obs_size, nu = contract["obs_size"], contract["action_size"]
+    weights = {
+        "norm_mean": np.zeros(obs_size, np.float32),
+        "norm_std": np.ones(obs_size, np.float32),
+        "hidden_0_kernel": np.zeros((obs_size, 4), np.float32),
+        "hidden_0_bias": np.zeros(4, np.float32),
+        "hidden_1_kernel": np.zeros((4, 2 * nu), np.float32),
+        "hidden_1_bias": np.zeros(2 * nu, np.float32),
+    }
+    return runtime.DeployPolicy(weights, contract)
 
 
 @pytest.fixture(scope="module")
@@ -153,6 +169,56 @@ def test_the_gait_clock_parameters_travel_with_the_policy(ideal_env, ideal_contr
     assert np.allclose(clock["cmd_speed_max"], float(ideal_env._cmd_vmax))
     assert len(clock["offsets"]) == ideal_env._n_feet
     assert ideal_contract["ctrl_dt"] == ideal_env._config.ctrl_dt
+    # The runtime advances its clock by the env's step for every command.
+    # Pure turns and commands near the deadband pin the turn weight and the
+    # deadband.
+    policy = zero_policy(ideal_contract)
+    commands = [
+        [0.0, 0.0, 0.0],
+        [0.03, 0.0, 0.0],
+        [0.0, 0.0, 0.1],
+        [0.0, 0.0, 0.5],
+        [0.04, 0.0, 0.05],
+        [0.3, 0.1, 0.4],
+        [1.0, 0.0, 0.0],
+    ]
+    for command in commands:
+        want = float(ideal_env._phase_dt(jp.array(command)))
+        assert policy.phase_increment(command) == pytest.approx(want, abs=1e-6), command
+
+
+def test_a_wider_deadband_freezes_the_clock_in_the_env_and_in_the_runtime():
+    env = build_env(
+        "sizing_ideal",
+        **{"command.deadband": 0.15, "command.resample_steps": 10000, "push.enable": False},
+    )
+    contract = dc.build_contract(env, run_for(env), "ckpt/000000001024")
+    assert contract["gait_clock"]["speed_deadband"] == 0.15
+
+    assert float(env._phase_dt(jp.array([0.1, 0.0, 0.0]))) == 0.0
+    assert float(env._phase_dt(jp.array([0.2, 0.0, 0.0]))) > 0.0
+
+    state = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    state.info["command"] = jp.array([0.1, 0.0, 0.0])
+    step = jax.jit(env.step)
+    action = jp.zeros(env.action_size)
+    for _ in range(5):
+        state = step(state, action)
+        assert float(state.info["phase"]) == 0.0
+
+    nu = contract["action_size"]
+    policy = zero_policy(contract)
+    policy.reset()
+    reading = {
+        "gyro": np.zeros(3),
+        "gravity": np.array([0.0, 0.0, -1.0]),
+        "joint_pos": np.asarray(contract["default_pose"]),
+        "joint_vel": np.zeros(nu),
+        "command": np.array([0.1, 0.0, 0.0]),
+    }
+    for _ in range(5):
+        policy.step(**reading)
+    assert policy.phase == 0.0
 
 
 def test_an_ideal_torque_preset_anchors_on_zero_torque():
@@ -196,3 +262,58 @@ def test_an_actor_observation_the_robot_cannot_measure_is_refused():
     env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
     with pytest.raises(ValueError, match="height"):
         dc.build_contract(env, run_for(env), "ckpt")
+
+
+def test_the_default_contract_is_schema_1_with_cos_sin(ideal_contract):
+    """A stock export still loads on a robot running an old vendored runtime."""
+    assert ideal_contract["schema_version"] == dc.LEGACY_SCHEMA_VERSION == 1
+    assert ideal_contract["gait_clock"]["phase_obs"] == "cos_sin"
+
+
+def test_a_frozen_clock_at_the_default_mode_stays_schema_1_cos_sin():
+    env = build_env("sizing_ideal", **{"gait.freq": (0.0, 0.0)})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == 1
+    assert meta["gait_clock"]["phase_obs"] == "cos_sin"
+    state = env.reset(jax.random.PRNGKey(0))
+    phase = np.asarray(env._obs_catalog(state.data, state.info)["phase"])
+    assert np.allclose(phase, [1.0, -1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_a_frozen_clock_with_zeros_ships_schema_2_and_observes_zeros():
+    env = build_env("sizing_ideal", **{"gait.freq": (0.0, 0.0), "gait.frozen_phase_obs": "zeros"})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == dc.SCHEMA_VERSION == 2
+    assert meta["gait_clock"]["phase_obs"] == "zeros"
+    state = env.reset(jax.random.PRNGKey(0))
+    phase = np.asarray(env._obs_catalog(state.data, state.info)["phase"])
+    assert phase.shape == (2 * env._n_feet,)
+    assert np.array_equal(phase, np.zeros(2 * env._n_feet, np.float32))
+
+
+def test_zeros_on_a_running_clock_keeps_cos_sin():
+    """The mode applies only when gait.freq is (0, 0)."""
+    env = build_env("sizing_ideal", **{"gait.frozen_phase_obs": "zeros"})
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert meta["schema_version"] == 1
+    assert meta["gait_clock"]["phase_obs"] == "cos_sin"
+
+
+def test_a_heading_err_policy_is_refused_at_export():
+    """Owner decision 1 (b): the runtime has no yaw input and no yaw_ref."""
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.obs.state = tuple(cfg.obs.state) + ("heading_err",)
+    env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
+    with pytest.raises(ValueError, match="heading_err"):
+        dc.build_contract(env, run_for(env), "ckpt")
+
+
+def test_heading_err_on_the_critic_list_only_builds_a_contract():
+    cfg = default_config()
+    cfg.episode_length = 50
+    cfg.obs.privileged = tuple(cfg.obs.privileged) + ("heading_err",)
+    env = Joystick(ROBOT_DIR, "sizing_ideal", cfg)
+    meta = dc.build_contract(env, run_for(env), "ckpt")
+    assert "heading_err" not in [c["name"] for c in meta["obs_layout"]]
+    assert meta["schema_version"] == 1

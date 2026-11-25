@@ -70,15 +70,15 @@ if [ ! -f pyproject.toml ] || [ ! -d configs ]; then
 fi
 
 : "${ROBOT:?set ROBOT to a configs/robot/ name, e.g. roboto_origin}"
-TASK="${TASK:-joystick}"
-ACTUATORS="${ACTUATORS:-sizing_ideal}"
-EXPERIMENT="${EXPERIMENT:-}"
-SIZES_LIST="${SIZES_LIST:-8192 16384 32768}"
-STEPS="${STEPS:-30000000}"
-SEED="${SEED:-0}"
-TAG="${TAG:-$(date +%Y%m%d-%H%M%S)}"
-WANDB="${WANDB:-false}"
-RUN_ARGS="${RUN_ARGS:-}"
+: "${TASK:=joystick}"
+: "${ACTUATORS:=sizing_ideal}"
+: "${EXPERIMENT:=}"
+: "${SIZES_LIST:=8192 16384 32768}"
+: "${STEPS:=30000000}"
+: "${SEED:=0}"
+: "${TAG:=$(date +%Y%m%d-%H%M%S)}"
+: "${WANDB:=false}"
+: "${RUN_ARGS:=}"
 
 # Without this every slice measures the same number: nvidia-smi reports the
 # preallocated XLA pool rather than real usage. It is also mandatory under the

@@ -13,6 +13,15 @@ them from Google DeepMind's MuJoCo Playground
 PPO hyper-parameters and network sizes start from Playground's tuned Go1
 configuration.
 
+Biped reward terms. Several terms in src/humanoid_lab/rewards/terms.py
+(pose_l1, joint_pos_limits, joint_vel, joint_acc, upward, distance_band
+for the feet and knee bands, feet_contact_without_cmd, feet_air_time_biped) are
+ported from RoboLab, the training module of Roboparty/roboto_origin
+(modules/roboparty_train/robolab/), Copyright (c) 2022-2025 The Isaac Lab
+Project Developers and (c) 2025-2026 The RoboLab Project Developers,
+licensed under BSD-3-Clause. The license text is vendored at
+robots/roboto_origin/robolab-LICENSE.
+
 Licensing exception: the robot models under robots/*/source/ are copied
 verbatim from their upstream repositories and are NOT distributed under
 this repository's Apache-2.0 license.

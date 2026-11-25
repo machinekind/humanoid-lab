@@ -365,7 +365,8 @@ def test_the_anchor_touches_no_other_reward_term(legacy_env, settled_env):
 
     assert list(settled) == list(legacy)
     for key in legacy:
-        if key in ("pose", "stand_still"):
+        # pose, pose_l1 and stand_still read the anchor by design.
+        if key in ("pose", "pose_l1", "stand_still"):
             continue
         assert float(settled[key]) == float(legacy[key]), key
 

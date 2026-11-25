@@ -1,4 +1,4 @@
-from humanoid_lab.train import build_ppo_params
+from humanoid_lab.ppo_config import build_ppo_params
 
 
 def test_defaults_come_from_go1_tuning():
@@ -18,3 +18,10 @@ def test_smoke_is_tiny():
     p = build_ppo_params([], smoke=True)
     assert p.num_timesteps <= 200_000
     assert p.num_envs <= 64
+
+
+def test_gae_lambda_exists_and_takes_overrides():
+    p = build_ppo_params({}, smoke=False)
+    assert p.gae_lambda == 0.95
+    p = build_ppo_params({"gae_lambda": 0.9}, smoke=False)
+    assert p.gae_lambda == 0.9

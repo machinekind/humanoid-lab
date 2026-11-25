@@ -1,0 +1,19 @@
+# The Torch trainer's primary config (python -m humanoid_lab.torch_warp.ppo).
+# It is config.yaml plus the Torch-only blocks below. The Brax trainer never
+# loads this file, and config.yaml rejects these keys.
+defaults:
+  - config
+  - _self_
+
+torch_warp:
+  device: cuda:0 # cpu runs only when set explicitly, and they are slow
+  ckpt_minutes: 10 # wall-clock minutes between checkpoints
+  max_minutes: null # stop after a checkpoint once this many minutes have passed; null runs to num_timesteps
+  critic_warmup_iters: 0 # iterations that train only the value net at the start
+  resume: false # continue runs/<run_name> from its trainer_state.pt
+
+# Only humanoid_lab.torch_warp.bench reads this block.
+bench:
+  iters: 3 # timed PPO iterations
+  physics_steps: 100 # timed physics-only steps
+  out: null # JSON output path; null writes runs/bench/bench_<timestamp>.json

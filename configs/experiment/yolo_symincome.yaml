@@ -1,0 +1,41 @@
+# @package _global_
+# yolo_v4 plus gait_symmetry_income: single stance pays for left/right
+# swing and stance symmetry, so symmetry is earned rather than charged.
+# Tests whether an income shapes a symmetric gait from scratch.
+defaults:
+  - override /robot: roboto_origin
+  - override /task: joystick
+  - override /actuators: deploy_pd
+  - override /network: large
+
+domain_rand: true
+
+dr:
+  joint_gains: { enable: true }
+  com_offset: { enable: true }
+  dof: { enable: true }
+  foot_friction: { enable: true }
+  base_mass_add: { enable: true }
+  # Decouple forcerange from the gain draw with a no-op range: upstream
+  # does not randomize effort limits.
+  motor_strength: { enable: true, range: [1.0, 1.0] }
+
+task:
+  env:
+    reward:
+      scales:
+        gait_symmetry_income: 0.5
+
+# RSL-RL BaseAgentCfg values (rpo_agent_cfg.py). Fixed LR: brax has no
+# adaptive-KL schedule. num_envs and batch come from jobs/train.sh.
+# num_evals sets the checkpoint cadence: brax saves one after each of the
+# num_evals-1 training epochs (none at step 0), so a run that dies loses at
+# most 1/23 of its budget. jobs/train.sh's
+# RUN_ARGS="++ppo.num_timesteps=..." overrides the budget.
+ppo:
+  discounting: 0.994
+  gae_lambda: 0.9
+  entropy_cost: 0.005
+  learning_rate: 1.0e-4
+  num_timesteps: 1.0e9
+  num_evals: 24
